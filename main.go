@@ -550,7 +550,6 @@ func saveToJSON(data []GameResultData, config *Config, rtpLevel float64, testNum
 		RtpLevel int                      `json:"rtpLevel"`
 		SrNumber int                      `json:"srNumber"`
 		Data     []map[string]interface{} `json:"data"`
-		Metadata map[string]interface{}   `json:"metadata"`
 	}
 
 	// 转换数据为字典数组格式
@@ -566,8 +565,6 @@ func saveToJSON(data []GameResultData, config *Config, rtpLevel float64, testNum
 			"sp":        item.SP,
 			"fb":        item.FB,
 			"gd":        item.GD.Data,
-			"createdAt": item.CreatedAt.Format(time.RFC3339),
-			"updatedAt": item.UpdatedAt.Format(time.RFC3339),
 		}
 		jsonData = append(jsonData, row)
 	}
@@ -577,9 +574,6 @@ func saveToJSON(data []GameResultData, config *Config, rtpLevel float64, testNum
 		RtpLevel: int(rtpLevel),
 		SrNumber: testNumber,
 		Data:     jsonData,
-		Metadata: map[string]interface{}{
-			"gameId": config.Game.ID,
-		},
 	}
 
 	// 将数据转换为压缩的JSON
