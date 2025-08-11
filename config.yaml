@@ -1,0 +1,64 @@
+# 数据过滤项目配置文件
+# Database Configuration
+database:
+  postgres:
+    port: 5432
+    sslmode: "disable"
+    timezone: "Asia/Shanghai"
+    host: "127.0.0.1"
+    username: "postgres"
+    password: "123666"
+    database: "postgres"
+    # host: "mpg-rds-aurora-ae.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com"
+    # username: "devadmin"
+    # password: "*ztnEY8n12"
+    # database: "mpgdb"
+
+# Game Configuration
+game:
+  id: 93
+
+# Table Configuration
+tables:
+  source_table_prefix: "GameResultData_" # 读取数据的表前缀
+  output_table_prefix: "GameResults_" # 写入数据的表前缀
+  data_num: 10000
+
+# Bet Configuration (投注配置)
+bet:
+  cs: 1 # 投注额基数 (coin size)
+  ml: 1 # 投注倍数 (multiplier)
+  bl: 20 # 投注线数 (bet lines)
+  # 实际投注额 = cs * ml * bl
+
+# Prize Ratios (小数形式)
+prize_ratios:
+  # 大奖比例
+  big_prize: 0.003
+  # 巨奖比例
+  mega_prize: 0.0008
+  # 超巨奖比例
+  super_mega_prize: 0.00065
+
+# Gameplay Ratios (比例)
+gameplay_ratios:
+  # 普通玩法比例
+  normal_gameplay: 0.3335
+  # 特殊玩法比例
+  special_gameplay: 0.0032
+
+# RTP Configuration (Return to Player)
+rtp:
+  # 普通玩法RTP
+  normal_gameplay: 0.7489
+  # 特殊玩法RTP
+  special_gameplay: 0.2180
+
+# Additional Settings
+settings:
+  # 日志级别
+  log_level: "info"
+  # 数据处理批次大小
+  batch_size: 1000
+  # 超时设置（秒）
+  timeout: 30
