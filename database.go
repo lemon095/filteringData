@@ -54,44 +54,6 @@ func (d *Database) GetTableName() string {
 	return fmt.Sprintf("\"%s%d\"", d.Config.Tables.SourceTablePrefix, d.Config.Game.ID)
 }
 
-// CheckTableExists 检查源表是否存在
-func (d *Database) CheckTableExists() (bool, error) {
-	// 获取不带引号的表名用于信息模式查询
-	plainTableName := fmt.Sprintf("%s%d", d.Config.Tables.SourceTablePrefix, d.Config.Game.ID)
-	query := `
-		SELECT EXISTS (
-			SELECT FROM information_schema.tables 
-			WHERE table_schema = 'public' 
-			AND table_name = $1
-		);`
-
-	var exists bool
-	err := d.DB.QueryRow(query, plainTableName).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("检查表存在性失败: %v", err)
-	}
-
-	return exists, nil
-}
-
-// GetTotalCount 获取符合基础条件的数据总数
-func (d *Database) GetTotalCount() (int, error) {
-	tableName := d.GetTableName()
-	query := fmt.Sprintf(`
-		SELECT COUNT(*) 
-		FROM %s 
-		WHERE aw < tb * 100
-	`, tableName)
-
-	var count int
-	err := d.DB.QueryRow(query).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("获取数据总数失败: %v", err)
-	}
-
-	return count, nil
-}
-
 // GetWinData 获取所有中奖数据 (aw > 0 且 aw/tb < 100)
 func (d *Database) GetWinData() ([]GameResultData, error) {
 	tableName := d.GetTableName()

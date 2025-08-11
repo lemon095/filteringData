@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,11 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"sync"
 	"time"
-
-	"github.com/xuri/excelize/v2"
 )
 
 type RtpLevel struct {
@@ -43,70 +39,6 @@ var RtpLevels = []RtpLevel{
 
 // 保证并发任务按块输出日志
 var outputMu sync.Mutex
-
-// createRtpTestTable 创建RTP测试结果表并添加索引
-func createRtpTestTable(db *Database, config *Config) error {
-	tableName := fmt.Sprintf("%s%d", config.Tables.OutputTablePrefix, config.Game.ID)
-
-	createSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS "%s" (
-			id SERIAL NOT NULL,
-			"rtpLevel" REAL NOT NULL,
-			"srNumber" INTEGER NOT NULL,
-			"srId" INTEGER NOT NULL,
-			"bet" INTEGER NOT NULL,
-			"win" DECIMAL(65,30) NOT NULL,
-			"detail" JSONB,
-			"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			"updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			CONSTRAINT "%s_pkey" PRIMARY KEY (id)
-		);
-	`, tableName, tableName)
-
-	// 执行创建表语句
-	_, err := db.DB.Exec(createSQL)
-	if err != nil {
-		return fmt.Errorf("创建表失败: %v", err)
-	}
-
-	// 创建索引
-	indexes := []string{
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_rtpLevel_idx" ON "%s" ("rtpLevel")`, tableName, tableName),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_srNumber_idx" ON "%s" ("srNumber")`, tableName, tableName),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_srId_idx" ON "%s" ("srId")`, tableName, tableName),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_rtpLevel_srNumber_srId_idx" ON "%s" ("rtpLevel", "srNumber", "srId")`, tableName, tableName),
-	}
-
-	for _, indexSQL := range indexes {
-		_, err := db.DB.Exec(indexSQL)
-		if err != nil {
-			return fmt.Errorf("创建索引失败: %v", err)
-		}
-	}
-
-	log.Printf("✅ 成功创建RTP测试表: %s", tableName)
-	return nil
-}
-
-// convertToGameResults 将GameResultData转换为GameResult
-func convertToGameResults(data []GameResultData, rtpLevel float64, testNumber int) []GameResult {
-	var results []GameResult
-	for _, item := range data {
-		// 将JsonData转换为json.RawMessage
-		detailBytes, _ := json.Marshal(item.GD.Data)
-
-		result := GameResult{
-			RtpLevel: rtpLevel,
-			SrNumber: testNumber,
-			SrId:     item.ID,
-			Bet:      float64(item.TB), // 转换为float64
-			Win:      item.AW,
-			Detail:   detailBytes, // 转换为json.RawMessage
-		}
-		results = append(results, result)
-	}
-	return results
-}
 
 // runRtpTest 执行单次RTP测试
 func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData) error {
@@ -310,11 +242,6 @@ func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, tes
 					for _, idx := range permWin {
 						item := winDataAll[idx]
 						// 跳过精度有问题的数据
-						aw := item.AW
-						roundedAW := math.Round(aw*100) / 100
-						if math.Abs(aw-roundedAW) > 0.0001 {
-							continue
-						}
 
 						// 检查大奖、巨奖、超级巨奖的数量限制
 						switch item.GWT {
@@ -364,13 +291,6 @@ func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, tes
 
 					filledAny := false
 					for _, item := range fillData {
-						// 跳过精度有问题的数据
-						// aw := item.AW
-						// roundedAW := math.Round(aw*100) / 100
-						// if math.Abs(aw-roundedAW) > 0.0001 {
-						// 	continue
-						// }
-
 						// 检查大奖、巨奖、超级巨奖的数量限制
 						switch item.GWT {
 						case 2: // 大奖
@@ -493,39 +413,17 @@ func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, tes
 		fmt.Printf("🎯 RtpNo为15 RTP验证通过: %.4f 在范围 [%.1f, %.1f] 内\n", finalRTP, targetRtpMin, targetRtpMax)
 	}
 
-	// 保存数据到Excel文件（暂时注释掉数据库写入）
-	// dbWriter := NewDBWriter(db, config)
-	// if err := dbWriter.SaveFilteredData(convertToGameResults(data, rtpLevel, testNumber)); err != nil {
-	// 	return fmt.Errorf("保存数据失败: %v", err)
-	// }
-
 	//这里的随机data顺序呢
 	rand.Shuffle(len(data), func(i, j int) {
 		data[i], data[j] = data[j], data[i]
 	})
 
-	// 先构建将要保存的文件路径, 便于记录日志
-	// outputDir := "output"
-	// fileName := fmt.Sprintf("%s%.0f_%d.json", config.Tables.OutputTablePrefix, rtpLevel, testNumber)
-	// filePath := filepath.Join(outputDir, fileName)
-
 	if err := saveToJSON(data, config, rtpLevel, testNumber); err != nil {
 		return fmt.Errorf("保存CSV文件失败: %v", err)
 	}
 
-	// 追加保存CSV（顺序与JSON一致，因前面已Shuffle）
-	// if err := saveToCSV(data, config, rtpLevel, testNumber); err != nil {
-	// 	return fmt.Errorf("保存CSV文件失败: %v", err)
-	// }
-
-	// // 追加保存Excel，便于大字段（gd）在表格中查看
-	// if err := saveToExcel(data, config, rtpLevel, testNumber); err != nil {
-	// 	return fmt.Errorf("保存Excel文件失败: %v", err)
-	// }
-
 	// 任务尾分隔线
 	printf("========== [TASK END]   RtpNo: %.0f | Test: %d =========\n\n", rtpLevel, testNumber)
-	// 一次性按任务输出日志, 避免与其它 goroutine 交错
 	// printf("📊 数据已保存到JSON文件: %s\n", filePath)
 	printf("⏱️  RTP等级 %.0f (第%d次生成) 耗时: %v\n", rtpLevel, testNumber, time.Since(testStartTime))
 	outputMu.Lock()
@@ -555,16 +453,13 @@ func saveToJSON(data []GameResultData, config *Config, rtpLevel float64, testNum
 	// 转换数据为字典数组格式
 	var jsonData []map[string]interface{}
 	for _, item := range data {
-		// 确保AW字段是2位小数
-		// roundedAW := math.Round(item.AW*100) / 100
-
 		row := map[string]interface{}{
-			"tb":        item.TB,
-			"aw":        item.AW,
-			"gwt":       item.GWT,
-			"sp":        item.SP,
-			"fb":        item.FB,
-			"gd":        item.GD.Data,
+			"tb":  item.TB,
+			"aw":  item.AW,
+			"gwt": item.GWT,
+			"sp":  item.SP,
+			"fb":  item.FB,
+			"gd":  item.GD.Data,
 		}
 		jsonData = append(jsonData, row)
 	}
@@ -588,186 +483,6 @@ func saveToJSON(data []GameResultData, config *Config, rtpLevel float64, testNum
 	}
 
 	fmt.Printf("📊 数据已保存到JSON文件: %s\n", filePath)
-	return nil
-}
-
-// saveToCSV 将数据保存为CSV到 outcsv 目录
-func saveToCSV(data []GameResultData, config *Config, rtpLevel float64, testNumber int) error {
-	// 创建输出目录
-	outputDir := "outcsv"
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return fmt.Errorf("创建CSV输出目录失败: %v", err)
-	}
-
-	// 文件名与 JSON 保持一致前缀，扩展名为 .csv
-	fileName := fmt.Sprintf("%s%.0f_%d.csv", config.Tables.OutputTablePrefix, rtpLevel, testNumber)
-	filePath := filepath.Join(outputDir, fileName)
-
-	// 打开文件
-	f, err := os.Create(filePath)
-	if err != nil {
-		return fmt.Errorf("创建CSV文件失败: %v", err)
-	}
-	defer f.Close()
-
-	// 写入 UTF-8 BOM，便于部分工具识别编码（不写 sep 行）
-	_, _ = f.Write([]byte{0xEF, 0xBB, 0xBF}) // BOM
-
-	w := csv.NewWriter(f)
-	// 使用 CRLF 以提升在表格工具中的兼容性；分隔符采用标准逗号
-	w.UseCRLF = true
-	// 1) 统计 gd 顶层键，生成动态列
-	gdKeySet := make(map[string]struct{})
-	for _, item := range data {
-		if item.GD.Data == nil {
-			continue
-		}
-		if m, ok := item.GD.Data.(map[string]interface{}); ok {
-			for k := range m {
-				gdKeySet[k] = struct{}{}
-			}
-		}
-	}
-	gdKeys := make([]string, 0, len(gdKeySet))
-	for k := range gdKeySet {
-		gdKeys = append(gdKeys, k)
-	}
-	sort.Strings(gdKeys)
-
-	// 2) 写表头：固定列 + 动态 gd.* 列 + 固定时间列
-	header := []string{"tb", "aw", "gwt", "sp", "fb"}
-	header = append(header, gdKeys...)
-	header = append(header, "createdAt", "updatedAt")
-	if err := w.Write(header); err != nil {
-		return fmt.Errorf("写入CSV表头失败: %v", err)
-	}
-
-	// 3) 写数据行
-	for _, item := range data {
-		roundedAW := math.Round(item.AW*100) / 100
-
-		row := []string{
-			fmt.Sprintf("%d", item.TB),
-			fmt.Sprintf("%.2f", roundedAW),
-			fmt.Sprintf("%d", item.GWT),
-			fmt.Sprintf("%t", item.SP),
-			fmt.Sprintf("%d", item.FB),
-		}
-
-		var m map[string]interface{}
-		if item.GD.Data != nil {
-			if mm, ok := item.GD.Data.(map[string]interface{}); ok {
-				m = mm
-			}
-		}
-		for _, k := range gdKeys {
-			var valStr string
-			if m != nil {
-				if v, ok := m[k]; ok && v != nil {
-					switch vv := v.(type) {
-					case string:
-						valStr = vv
-					case float64, bool, int, int64, float32:
-						valStr = fmt.Sprint(vv)
-					case map[string]interface{}, []interface{}:
-						if b, err := json.Marshal(v); err == nil {
-							valStr = string(b)
-						}
-					default:
-						valStr = fmt.Sprint(vv)
-					}
-				}
-			}
-			row = append(row, valStr)
-		}
-
-		row = append(row,
-			item.CreatedAt.Format(time.RFC3339),
-			item.UpdatedAt.Format(time.RFC3339),
-		)
-
-		if err := w.Write(row); err != nil {
-			return fmt.Errorf("写入CSV记录失败: %v", err)
-		}
-	}
-
-	w.Flush()
-	if err := w.Error(); err != nil {
-		return fmt.Errorf("刷新CSV写入器失败: %v", err)
-	}
-
-	fmt.Printf("📄 CSV 已保存: %s\n", filePath)
-	return nil
-}
-
-// saveToExcel 将数据保存为Excel到 outexcel 目录
-func saveToExcel(data []GameResultData, config *Config, rtpLevel float64, testNumber int) error {
-	// 创建输出目录
-	outputDir := "outexcel"
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return fmt.Errorf("创建Excel输出目录失败: %v", err)
-	}
-
-	// 文件名
-	fileName := fmt.Sprintf("%s%.0f_%d.xlsx", config.Tables.OutputTablePrefix, rtpLevel, testNumber)
-	filePath := filepath.Join(outputDir, fileName)
-
-	f := excelize.NewFile()
-	defer func() { _ = f.Close() }()
-
-	sheet := f.GetSheetName(0)
-	if sheet == "" {
-		sheet = "Sheet1"
-	}
-	// 统一命名为 Data
-	_ = f.SetSheetName(sheet, "Data")
-	sheet = "Data"
-
-	// 表头
-	headers := []string{"tb", "aw", "gwt", "sp", "fb", "gd", "createdAt", "updatedAt"}
-	for i, h := range headers {
-		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
-		_ = f.SetCellValue(sheet, cell, h)
-	}
-
-	// 内容
-	for rowIdx, item := range data {
-		r := rowIdx + 2
-		roundedAW := math.Round(item.AW*100) / 100
-
-		// gd 写为紧凑 JSON 文本，使用 SetCellStr 避免被当作公式或日期
-		gdStr := ""
-		if item.GD.Data != nil {
-			if b, err := json.Marshal(item.GD.Data); err == nil {
-				gdStr = string(b)
-			}
-		}
-
-		// 逐列写入
-		_ = f.SetCellValue(sheet, fmt.Sprintf("A%d", r), item.TB)
-		_ = f.SetCellValue(sheet, fmt.Sprintf("B%d", r), fmt.Sprintf("%.2f", roundedAW))
-		_ = f.SetCellValue(sheet, fmt.Sprintf("C%d", r), item.GWT)
-		_ = f.SetCellValue(sheet, fmt.Sprintf("D%d", r), item.SP)
-		_ = f.SetCellValue(sheet, fmt.Sprintf("E%d", r), item.FB)
-		_ = f.SetCellStr(sheet, fmt.Sprintf("F%d", r), gdStr)
-		_ = f.SetCellValue(sheet, fmt.Sprintf("G%d", r), item.CreatedAt.Format(time.RFC3339))
-		_ = f.SetCellValue(sheet, fmt.Sprintf("H%d", r), item.UpdatedAt.Format(time.RFC3339))
-	}
-
-	// 样式：自动换行、设置列宽
-	wrapID, _ := f.NewStyle(&excelize.Style{Alignment: &excelize.Alignment{WrapText: true}})
-	_ = f.SetColWidth(sheet, "A", "H", 14)
-	_ = f.SetColWidth(sheet, "F", "F", 60)
-	_ = f.SetCellStyle(sheet, "A2", fmt.Sprintf("H%d", len(data)+1), wrapID)
-
-	// 冻结表头
-	_ = f.SetPanes(sheet, &excelize.Panes{Freeze: true, YSplit: 1})
-
-	if err := f.SaveAs(filePath); err != nil {
-		return fmt.Errorf("保存Excel失败: %v", err)
-	}
-
-	fmt.Printf("📘 Excel 已保存: %s\n", filePath)
 	return nil
 }
 
