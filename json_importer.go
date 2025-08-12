@@ -41,7 +41,9 @@ type FileInfo struct {
 
 // ImportAllFiles 导入所有JSON文件
 func (ji *JSONImporter) ImportAllFiles(fileLevelId string) error {
-	outputDir := "output"
+	// 读取目录：按游戏ID分目录，例如 output/93
+	outputDir := filepath.Join("output", fmt.Sprintf("%d", ji.config.Game.ID))
+	fmt.Printf("📂 导入目录: %s\n", outputDir)
 
 	// 获取所有JSON文件
 	files, err := ji.getJSONFiles(outputDir)
@@ -169,7 +171,7 @@ func (ji *JSONImporter) createTargetTable(tableName string) error {
 	query := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS "%s" (
 			"id" SERIAL PRIMARY KEY,
-			"rtpLevel" NUMERIC NOT NULL,
+			"rtpLevel" REAL NOT NULL,
 			"srNumber" INTEGER NOT NULL,
 			"srId" SERIAL NOT NULL,
 			"bet" NUMERIC NOT NULL,
