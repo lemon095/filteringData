@@ -90,17 +90,49 @@ func (d *Database) GetWinData() ([]GameResultData, error) {
 	return data, nil
 }
 
-// GetWinDataFb 获取购买模式的中奖数据 (aw > 0, gwt <= 1, fb = 2, sp = true, aw < tb*100)
+// GetWinDataFb 获取购买模式的中奖但是亏损的数据 (aw > 0&aw<tb, gwt <= 1, fb = 2, sp = true, aw < tb*100)
 func (d *Database) GetWinDataFb() ([]GameResultData, error) {
 	tableName := d.GetTableName()
 	query := fmt.Sprintf(`
         SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
         FROM %s 
-        WHERE aw > 0 AND aw < tb * 100 AND gwt <= 1 AND fb = 2 AND sp = true
+        WHERE aw > 0 AND aw <= tb AND gwt <= 1 AND fb = 2 AND sp = true
         ORDER BY id
-        LIMIT 40000
     `, tableName)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
+	defer cancel()
+	rows, err := d.DB.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 
+	var data []GameResultData
+	for rows.Next() {
+		var item GameResultData
+		err := rows.Scan(
+			&item.ID, &item.TB, &item.AW, &item.GWT,
+			&item.SP, &item.FB, &item.GD,
+			&item.CreatedAt, &item.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		data = append(data, item)
+	}
+
+	return data, nil
+}
+
+//购买模式 盈利的中奖数据
+func (d *Database) GetProfitDataFb() ([]GameResultData, error) {
+	tableName := d.GetTableName()
+	query := fmt.Sprintf(`
+        SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
+        FROM %s 
+        WHERE aw > 0 AND aw > tb AND gwt <= 1 AND fb = 2 AND sp = true
+        ORDER BY id
+    `, tableName)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
 	defer cancel()
 	rows, err := d.DB.QueryContext(ctx, query)
@@ -168,7 +200,6 @@ func (d *Database) GetNoWinDataFb() ([]GameResultData, error) {
         FROM %s 
         WHERE aw = 0 AND sp = true AND fb = 2
         ORDER BY id
-        LIMIT 40000
     `, tableName)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
