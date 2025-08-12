@@ -426,8 +426,8 @@ func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, tes
 	rand.Shuffle(len(data), func(i, j int) {
 		data[i], data[j] = data[j], data[i]
 	})
-
-	if err := saveToJSON(data, config, rtpLevel, testNumber); err != nil {
+	var outputDir string = filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
+	if err := saveToJSON(data, config, rtpLevel, testNumber, outputDir); err != nil {
 		return fmt.Errorf("保存CSV文件失败: %v", err)
 	}
 
@@ -441,12 +441,8 @@ func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, tes
 	return nil
 }
 
-func saveToJSON(data []GameResultData, config *Config, rtpLevel float64, testNumber int) error {
+func saveToJSON(data []GameResultData, config *Config, rtpLevel float64, testNumber int, outputDir string) error {
 	// 创建输出目录：按游戏ID分目录，例如 output/93
-	var outputDir string = filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
-	if config.Game.IsFb {
-		outputDir = filepath.Join("output", fmt.Sprintf("%d_fb", config.Game.ID))
-	}
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("创建输出目录失败: %v", err)
 	}
@@ -1035,8 +1031,9 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	rtpDeviation := math.Abs(finalRTP - rtp)
 	printf("✅ [FB] 档位: %.0f, 目标RTP: %.6f, 实际RTP: %.6f, 偏差: %.6f\n", rtpLevel, rtp, finalRTP, rtpDeviation)
 
+	var outputDir = filepath.Join("output", fmt.Sprintf("%d_fb", config.Game.ID))
 	// 最终保存：沿用普通保存逻辑，但输出仍落在 output/<gameId>，文件名前缀复用
-	if err := saveToJSON(data, config, rtpLevel, testNumber); err != nil {
+	if err := saveToJSON(data, config, rtpLevel, testNumber, outputDir); err != nil {
 		return fmt.Errorf("[FB] 保存JSON失败: %v", err)
 	}
 
