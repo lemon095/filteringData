@@ -43,3 +43,7 @@ Thumbs.db
 
 outcsv/*
 config.yaml
+ 
+# Generated artifacts (do not track large outputs)
+/output/
+/output/**
