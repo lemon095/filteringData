@@ -110,6 +110,47 @@ df -h
 - 普通导入与购买导入默认写入同一张目标表：`"<output_table_prefix><gameId>"`（例如 `"GameResults_93"`）。购买导入会将 `rtpLevel` 写成数值型（如 `13.1`）。
 - 生成的 JSON 文件命名形如：`GameResults_<rtpLevel>_<srNumber>.json`。
 
+### 文件同步到远端（rsync）
+
+如下命令用于仅同步本地输出目录中名称匹配 `GameResults_15*` 的文件到远端服务器指定目录：
+
+```bash
+rsync -avz \
+  -e "ssh -i /Users/wangfukang/Desktop/mpgKey/ec2-server-ape.pem -o StrictHostKeyChecking=no" \
+  --include 'GameResults_15*' --exclude '*' \
+  /Users/wangfukang/Desktop/project-go/filteringData/output/93/ \
+  ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93/
+```
+
+参数说明：
+
+- **-a (archive)**: 归档模式，递归复制，并尽量保留权限、时间戳、符号链接等元数据。
+- **-v (verbose)**: 输出详细过程，便于观察同步进度与匹配结果。
+- **-z (compress)**: 传输时启用压缩，降低网络带宽占用（CPU 与网络做权衡）。
+- **-e "ssh ..."**: 指定远程 shell 为 `ssh` 并附带选项。
+  - **-i /path/to/key.pem**: 指定 SSH 私钥文件用于免密认证。
+  - **-o StrictHostKeyChecking=no**: 首次连接自动接受主机指纹（降低交互，存在一定安全风险）。
+- **--include 'GameResults_15\*'**: 仅包含匹配该模式的文件。
+- **--exclude '\*'**: 排除其他一切未被包含规则匹配到的文件。
+- **源路径 `/.../output/93/`（带斜杠）**: 表示同步该目录“内容”。若不带末尾斜杠则会在目标下创建一层 `93` 目录。
+- **目标路径 `user@host:/path/.../93/`**: 目标机上的接收目录，需确保用户拥有写入权限。
+
+更稳妥的写法（确保能遍历子目录，同时只同步 15 档位文件）：
+
+```bash
+rsync -avz \
+  -e "ssh -i /Users/wangfukang/Desktop/mpgKey/ec2-server-ape.pem -o StrictHostKeyChecking=no" \
+  --include '*/' --include 'GameResults_15*' --exclude '*' \
+  /Users/wangfukang/Desktop/project-go/filteringData/output/93/ \
+  ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93/
+```
+
+补充建议：
+
+- **首次执行**: 若目标目录不存在，可先在远端创建：`ssh -i <key> ec2-user@<ip> 'mkdir -p /home/ec2-user/filteringData/output/93'`。
+- **显示进度**: 追加 `--progress` 可查看每个文件的实时进度。
+- **安全性**: 生产环境建议移除 `-o StrictHostKeyChecking=no`，并在已知主机中预先加入主机指纹。
+
 ## 开发环境
 
 - Go 1.21+
