@@ -1212,16 +1212,89 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		printf("[FB] 阶段1：已加入 %d 条（目标 %.0f%%=%d），累计中奖=%.2f\n", len(data), stage1Ratio*100, stage1Count, totalWin)
 	}
 
-	// 阶段2：用 profitDataAll 随机补，直到总中奖达到 allowWin（或达边界/数量上限）
-	if totalWin < allowWin && len(profitDataAll) > 0 && len(data) < targetCount {
-		perm := rng.Perm(len(profitDataAll))
-		for _, idx := range perm {
+	// 阶段2：动态占比（profit vs win），根据缺口/剩余名额决定倾向，直到达到 allowWin 或数量上限
+	if totalWin < allowWin && len(data) < targetCount && (len(profitDataAll) > 0 || len(winDataAll) > 0) {
+		permProfit := rng.Perm(len(profitDataAll))
+		permWin2 := rng.Perm(len(winDataAll))
+		pi, wi := 0, 0
+
+		// 估算初始倾向
+		remainingSlots := targetCount - len(data)
+		remainingWin := allowWin - totalWin
+		needFactor := 0.0
+		if remainingSlots > 0 {
+			needFactor = remainingWin / (perSpinBet * float64(remainingSlots))
+		}
+		basePProfit := needFactor
+		if basePProfit < 0.2 {
+			basePProfit = 0.2
+		}
+		if basePProfit > 0.8 {
+			basePProfit = 0.8
+		}
+		printf("[FB] 阶段2：动态占比起始 pProfit=%.3f (needFactor=%.3f)\n", basePProfit, needFactor)
+
+		maxOuter := len(profitDataAll) + len(winDataAll) + 1024
+		for outer := 0; outer < maxOuter; outer++ {
 			if totalWin >= allowWin || len(data) >= targetCount {
 				break
 			}
-			_ = tryAppend(profitDataAll[idx])
+			// 实时更新占比
+			remainingSlots = targetCount - len(data)
+			remainingWin = allowWin - totalWin
+			if remainingSlots <= 0 || remainingWin <= 0 {
+				break
+			}
+			needFactor = remainingWin / (perSpinBet * float64(remainingSlots))
+			pProfit := needFactor
+			if pProfit < 0.2 {
+				pProfit = 0.2
+			}
+			if pProfit > 0.8 {
+				pProfit = 0.8
+			}
+
+			chooseProfit := rng.Float64() < pProfit
+			appended := false
+
+			if chooseProfit && pi < len(permProfit) {
+				for pi < len(permProfit) {
+					cand := profitDataAll[permProfit[pi]]
+					pi++
+					if tryAppend(cand) {
+						appended = true
+						break
+					}
+				}
+			}
+			// 若未能加入或无可用 profit，则尝试 win
+			if !appended && wi < len(permWin2) {
+				for wi < len(permWin2) {
+					cand := winDataAll[permWin2[wi]]
+					wi++
+					if tryAppend(cand) {
+						appended = true
+						break
+					}
+				}
+			}
+			// 若先选 win 失败，再尝试 profit 兜底
+			if !appended && !chooseProfit && pi < len(permProfit) {
+				for pi < len(permProfit) {
+					cand := profitDataAll[permProfit[pi]]
+					pi++
+					if tryAppend(cand) {
+						appended = true
+						break
+					}
+				}
+			}
+			// 两边都无法加入，提前退出
+			if !appended {
+				break
+			}
 		}
-		printf("[FB] 阶段2：累计中奖=%.2f, 目标=%.2f, 数量=%d/%d\n", totalWin, allowWin, len(data), targetCount)
+		printf("[FB] 阶段2完成：累计中奖=%.2f, 目标=%.2f, 数量=%d/%d\n", totalWin, allowWin, len(data), targetCount)
 	}
 
 	// 阶段3：若还需要补充（数量未达标），先用 winDataAll 的大额补 90% 的剩余名额
