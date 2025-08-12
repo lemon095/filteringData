@@ -263,8 +263,8 @@ func (ji *JSONImporter) importFile(file FileInfo, tableName string) error {
 		if len(batch) >= batchSize {
 			batchCount++
 			fmt.Printf("  🔄 处理批次 %d (记录 %d-%d)\n", batchCount, totalProcessed-len(batch)+1, totalProcessed)
-
-			if err := ji.insertBatch(batch, tableName, header.rtpLevel, header.srNumber, batchCount); err != nil {
+			fmt.Print("导入档位: ", file.RtpLevel)
+			if err := ji.insertBatch(batch, tableName, file.RtpLevel, file.TestNum, batchCount); err != nil {
 				return fmt.Errorf("插入批次 %d 失败: %v", batchCount, err)
 			}
 
@@ -278,7 +278,7 @@ func (ji *JSONImporter) importFile(file FileInfo, tableName string) error {
 		batchCount++
 		fmt.Printf("  🔄 处理最后批次 %d (记录 %d-%d)\n", batchCount, totalProcessed-len(batch)+1, totalProcessed)
 
-		if err := ji.insertBatch(batch, tableName, header.rtpLevel, header.srNumber, batchCount); err != nil {
+		if err := ji.insertBatch(batch, tableName, file.RtpLevel, file.TestNum, batchCount); err != nil {
 			return fmt.Errorf("插入最后批次失败: %v", err)
 		}
 	}

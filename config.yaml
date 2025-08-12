@@ -5,14 +5,14 @@ database:
     port: 5432
     sslmode: "disable"
     timezone: "Asia/Shanghai"
-    # host: "127.0.0.1"
-    # username: "postgres"
-    # password: "123666"
-    # database: "postgres"
-    host: "mpg-rds-aurora-ae.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com"
-    username: "devadmin"
-    password: "*ztnEY8n12"
-    database: "mpgdb"
+    host: "127.0.0.1"
+    username: "postgres"
+    password: "123666"
+    database: "postgres"
+    # host: "mpg-rds-aurora-ae.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com"
+    # username: "devadmin"
+    # password: "*ztnEY8n12"
+    # database: "mpgdb"
 
 # Game Configuration
 game:
@@ -24,7 +24,7 @@ tables:
   source_table_prefix: "GameResultData_" # 读取数据的表前缀
   output_table_prefix: "GameResults_" # 写入数据的表前缀
   data_num: 10000 #普通流程
-  data_table_num: 10 #普通流程表的数量
+  data_table_num: 1 #普通流程表的数量
   data_num_fb: 5000 #购买夺宝模式
   data_table_num_fb: 1 #购买夺宝的表数量
 
