@@ -797,13 +797,13 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	var data []GameResultData
 	var totalWin float64
 
-	// 高RTP特殊区间：按 rtp 值判断，不再绑定档位编号
-	isHighRtpRange := (rtp >= 1.0 && rtp <= 1.2)
+	// 15档位特殊区间：绑定档位编号（rtpLevel == 15），范围改为 [0.8, 0.9]
+	isSpecialRtp15 := (rtpLevel == 15)
 	var targetRtpMin, targetRtpMax float64
-	if isHighRtpRange {
-		targetRtpMin = 1.0
-		targetRtpMax = 1.2
-		fmt.Printf("🎯 [FB] 高区间特殊处理: 目标RTP范围 [%.1f, %.1f], 允许偏差 ±0.005\n", targetRtpMin, targetRtpMax)
+	if isSpecialRtp15 {
+		targetRtpMin = 0.8
+		targetRtpMax = 0.9
+		fmt.Printf("🎯 [FB] 15档位特殊处理: 目标RTP范围 [%.1f, %.1f], 允许偏差 ±0.005\n", targetRtpMin, targetRtpMax)
 	}
 
 	// 先遍历优先区间，再遍历其余
@@ -829,15 +829,15 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 			continue
 		}
 
-		// 高区间特殊：不超过上限即可；其他档位：需达到 [allowWin, allowWin*1.005] 目标区间
-		if isHighRtpRange {
+		// 15档位特殊：不超过上限即可；其他档位：需达到 [allowWin, allowWin*1.005] 目标区间
+		if isSpecialRtp15 {
 			// 先加入再看是否达标区间
 			if currentRtp > targetRtpMax {
 				continue
 			}
 		}
 		// 若仍未达标，遍历其余数据
-		if !(isHighRtpRange || (totalWin >= allowWin && totalWin <= allowWin*(1+0.005))) {
+		if !(isSpecialRtp15 || (totalWin >= allowWin && totalWin <= allowWin*(1+0.005))) {
 			for _, idx := range permRest {
 				if len(data) >= config.Tables.DataNumFb {
 					break
@@ -858,7 +858,7 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 				if newTotalWin > allowWin*1.005 {
 					continue
 				}
-				if isHighRtpRange {
+				if isSpecialRtp15 {
 					if currentRtp > targetRtpMax {
 						continue
 					}
@@ -868,12 +868,12 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 				}
 				totalWin += item.AW
 				data = append(data, item)
-				if isHighRtpRange {
+				if isSpecialRtp15 {
 					if currentRtp >= targetRtpMin && len(data) >= config.Tables.DataNumFb {
 						break
 					}
 				}
-				if !isHighRtpRange {
+				if !isSpecialRtp15 {
 					if totalWin >= allowWin && totalWin <= allowWin*(1+0.005) {
 						break
 					}
@@ -888,13 +888,13 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		data = append(data, item)
 
 		//先判断15档位是否达到下限
-		if isHighRtpRange {
+		if isSpecialRtp15 {
 			if currentRtp >= targetRtpMin && len(data) >= config.Tables.DataNumFb {
 				break
 			}
 		}
 
-		if !isHighRtpRange {
+		if !isSpecialRtp15 {
 			if totalWin >= allowWin && totalWin <= allowWin*(1+0.005) {
 				break
 			}
@@ -903,7 +903,7 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	//判断当前是否达标
 	if totalWin < allowWin {
 		//判断是否为普通档位
-		if !isHighRtpRange {
+		if !isSpecialRtp15 {
 			//需要继续补全，优先查询符合的
 			remainingWin := (allowWin - totalWin) * 1.005
 			// 优先从数据库中查询满足条件的购买模式候选，限制 100 条
@@ -960,8 +960,8 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 
 		targetSum := allowWin
 		upperBound := allowWin * (1 + 0.005)
-		if isHighRtpRange {
-			// 高区间瞄准区间中位值，提高命中概率
+		if isSpecialRtp15 {
+			// 15档位瞄准区间中位值，提高命中概率
 			targetSum = ((targetRtpMin + targetRtpMax) / 2.0) * totalBet
 			upperBound = targetRtpMax * totalBet
 		}
@@ -990,7 +990,7 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 				if newTotal > upperBound {
 					continue
 				}
-				if isHighRtpRange {
+				if isSpecialRtp15 {
 					if newTotal/totalBet > targetRtpMax {
 						continue
 					}
