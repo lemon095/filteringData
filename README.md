@@ -151,6 +151,54 @@ rsync -avz \
 - **显示进度**: 追加 `--progress` 可查看每个文件的实时进度。
 - **安全性**: 生产环境建议移除 `-o StrictHostKeyChecking=no`，并在已知主机中预先加入主机指纹。
 
+### 全量同步整个项目目录到远端
+
+将本地整个项目目录内容同步到远端目录（不做 include/exclude 过滤）：
+
+```bash
+rsync -av \
+  -e "ssh -i /Users/wangfukang/Desktop/mpgKey/ec2-server-ape.pem -o StrictHostKeyChecking=no" \
+  /Users/wangfukang/Desktop/project-go/filteringData/ \
+  ec2-user@43.198.187.137:/home/ec2-user/filteringData/
+```
+
+参数与路径语义说明：
+
+- **-a (archive)**: 归档模式，包含递归、保留时间戳权限等（等价于 `-rlptgoD`）。
+- **-v (verbose)**: 详细输出，便于排错与确认同步范围。
+- **-e "ssh ..."**: 指定传输通道为 SSH 并附带选项。
+  - **-i /path/to/key.pem**: 使用指定私钥免密登录远端。
+  - **-o StrictHostKeyChecking=no**: 自动接受主机指纹（便捷但降低安全性，生产建议去掉）。
+- **源路径以斜杠结尾 `/.../filteringData/`**: 表示“同步该目录的内容”。
+  - 若去掉尾部斜杠（`/.../filteringData`），则会在目标目录下创建一层 `filteringData` 子目录。
+- **目标路径 `/home/ec2-user/filteringData/`**: 表示把内容放入该目录内；建议先确保该目录存在（如：`ssh -i <key> ec2-user@<ip> 'mkdir -p /home/ec2-user/filteringData'`）。
+
+重要提示：
+
+- 该命令会把“整个项目目录”同步过去。rsync 默认不会参考 `.gitignore`，因此 `.git/`、`output/`、本地构建产物等也会被传输，除非显式排除。
+- 若你不希望传输输出大文件或版本目录，建议添加排除规则：
+
+```bash
+rsync -av \
+  -e "ssh -i /Users/wangfukang/Desktop/mpgKey/ec2-server-ape.pem -o StrictHostKeyChecking=no" \
+  --exclude '.git/' --exclude 'output/' --exclude 'filteringData' \
+  /Users/wangfukang/Desktop/project-go/filteringData/ \
+  ec2-user@43.198.187.137:/home/ec2-user/filteringData/
+```
+
+常用可选项：
+
+- **--progress**: 显示每个文件的实时进度。
+- **--dry-run**: 试运行（不实际传输），用于先检查会同步/删除哪些文件。
+- **--delete**: 让目标与源完全镜像（删除目标端“源中不存在”的文件）。谨慎使用，建议先配合 `--dry-run`。
+- **--chmod**: 统一设置权限（如 `--chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r`）。
+- **--chown**: 设置目标端所有者（如 `--chown=ec2-user:ec2-user`，需要目标端权限支持）。
+
+小贴士：
+
+- 路径中若包含空格，请使用引号包裹。
+- `-a` 会尝试保留所有者/用户组；非 root 账号可能无法在目标端保留 owner/group（出现提示属正常，不影响文件内容）。
+
 ## 开发环境
 
 - Go 1.21+
