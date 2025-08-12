@@ -59,6 +59,57 @@ go build -o bin/filteringData main.go
 ./bin/filteringData
 ```
 
+### 查看磁盘空间（df -h）
+
+```bash
+df -h
+```
+
+输出字段含义（macOS 常见格式）：
+
+- **Filesystem**: 文件系统设备或卷名（例如 `/dev/disk3s1`）
+- **Size**: 总容量（人类可读单位，如 Gi）
+- **Used**: 已使用容量
+- **Avail**: 可用容量
+- **Capacity/Use%**: 使用率百分比（已用/总量）
+- **iused/ifree/%iused**: 已用/可用 inode 以及 inode 使用率（inode 数量表示可创建的文件/目录个数）
+- **Mounted on**: 挂载点（该卷挂载到的目录）
+
+说明：
+
+- Linux 发行版通常显示 `Use%` 而非 `Capacity`，并且可能不显示 inode 列；核心含义相同。
+- 当 `Use%` 或 `Capacity` 接近 100% 时，写入/构建可能失败；若 `%iused` 100%，表示 inode 用尽，即使容量未满也无法新建文件。
+
+## 运行方式（main.go）
+
+当前可执行支持以下子命令：
+
+```bash
+# 1) 生成普通流程 JSON（输出到 output/<gameId>）
+./filteringData generate
+
+# 2) 从 output/<gameId> 导入到数据库（全量）
+./filteringData import
+
+# 3) 仅导入指定 rtpLevel 的文件（例如 93）
+./filteringData import 93
+
+# 4) 生成“购买夺宝”模式 JSON（输出到 output/<gameId>_fb）
+./filteringData generateFb
+
+# 5) 从 output/<gameId>_fb 导入到数据库
+./filteringData importFb
+
+# 6) 仅导入指定 rtpLevel 的“购买夺宝”文件
+./filteringData importFb 93
+```
+
+补充说明：
+
+- 运行前需配置 `config.yaml`，其中 `game.id` 用于确定读写子目录；`game.isFb=true` 时可使用购买模式。
+- 普通导入与购买导入默认写入同一张目标表：`"<output_table_prefix><gameId>"`（例如 `"GameResults_93"`）。购买导入会将 `rtpLevel` 写成数值型（如 `13.1`）。
+- 生成的 JSON 文件命名形如：`GameResults_<rtpLevel>_<srNumber>.json`。
+
 ## 开发环境
 
 - Go 1.21+

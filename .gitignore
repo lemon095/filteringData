@@ -41,5 +41,4 @@ Thumbs.db
 # config.yaml
 # config.yml
 
-output/*
 outcsv/*
