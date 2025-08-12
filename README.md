@@ -122,6 +122,14 @@ rsync -avz \
   ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93/
 ```
 
+```bash
+rsync -avz \
+  -e "ssh -i /Users/shihao/Desktop/shihao/hk.pem -o StrictHostKeyChecking=no" \
+  --include 'GameResults_1*' --exclude '*' \
+  /Users/shihao/Desktop/lemon/filteringData/output/93/ \
+  ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93/
+```
+
 参数说明：
 
 - **-a (archive)**: 归档模式，递归复制，并尽量保留权限、时间戳、符号链接等元数据。
@@ -177,6 +185,14 @@ rsync -av \
 
 - 该命令会把“整个项目目录”同步过去。rsync 默认不会参考 `.gitignore`，因此 `.git/`、`output/`、本地构建产物等也会被传输，除非显式排除。
 - 若你不希望传输输出大文件或版本目录，建议添加排除规则：
+
+```bash
+rsync -av \
+  -e "ssh -i /Users/wangfukang/Desktop/mpgKey/ec2-server-ape.pem -o StrictHostKeyChecking=no" \
+  --exclude '.git/' --exclude 'output/' --exclude 'filteringData' \
+  /Users/wangfukang/Desktop/project-go/filteringData/ \
+  ec2-user@43.198.187.137:/home/ec2-user/filteringData/
+```
 
 ```bash
 rsync -av \
