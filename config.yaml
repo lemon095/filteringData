@@ -5,14 +5,14 @@ database:
     port: 5432
     sslmode: "disable"
     timezone: "Asia/Shanghai"
-    host: "127.0.0.1"
-    username: "postgres"
-    password: "123666"
-    database: "postgres"
-    # host: "mpg-rds-aurora-ae.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com"
-    # username: "devadmin"
-    # password: "*ztnEY8n12"
-    # database: "mpgdb"
+    # host: "127.0.0.1"
+    # username: "postgres"
+    # password: "123666"
+    # database: "postgres"
+    host: "mpg-rds-aurora-ae.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com"
+    username: "devadmin"
+    password: "*ztnEY8n12"
+    database: "mpgdb"
 
 # Game Configuration
 game:
