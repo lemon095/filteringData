@@ -15,11 +15,12 @@ rsync -avz \
 ```
 
 ###使用压缩上传
-````
+```bash
 rsync -azvh --progress \
   -e "ssh -i /Users/wangfukang/Desktop/mpgKey/ec2-server-ape.pem -o StrictHostKeyChecking=no" \
   /Users/wangfukang/Desktop/project-go/filteringData/output/93_fb/ \
-  ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93_fb/```
+  ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93_fb/
+```
 
 
 
