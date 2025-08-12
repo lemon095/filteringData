@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -61,10 +63,47 @@ func (d *Database) GetWinData() ([]GameResultData, error) {
 		SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
 		FROM %s 
 		WHERE aw > 0 AND aw < tb * 100
+		And fb !=2
 		ORDER BY id
 	`, tableName)
 
 	rows, err := d.DB.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var data []GameResultData
+	for rows.Next() {
+		var item GameResultData
+		err := rows.Scan(
+			&item.ID, &item.TB, &item.AW, &item.GWT,
+			&item.SP, &item.FB, &item.GD,
+			&item.CreatedAt, &item.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		data = append(data, item)
+	}
+
+	return data, nil
+}
+
+// GetWinDataFb 获取购买模式的中奖数据 (aw > 0, gwt <= 1, fb = 2, sp = true, aw < tb*100)
+func (d *Database) GetWinDataFb() ([]GameResultData, error) {
+	tableName := d.GetTableName()
+	query := fmt.Sprintf(`
+        SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
+        FROM %s 
+        WHERE aw > 0 AND aw < tb * 100 AND gwt <= 1 AND fb = 2 AND sp = true
+        ORDER BY id
+        LIMIT 40000
+    `, tableName)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
+	defer cancel()
+	rows, err := d.DB.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -94,10 +133,47 @@ func (d *Database) GetNoWinData() ([]GameResultData, error) {
 		SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
 		FROM %s 
 		WHERE aw = 0 And sp != true
+		And fb !=2
 		ORDER BY id
 	`, tableName)
 
 	rows, err := d.DB.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var data []GameResultData
+	for rows.Next() {
+		var item GameResultData
+		err := rows.Scan(
+			&item.ID, &item.TB, &item.AW, &item.GWT,
+			&item.SP, &item.FB, &item.GD,
+			&item.CreatedAt, &item.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		data = append(data, item)
+	}
+
+	return data, nil
+}
+
+// GetNoWinDataFb 获取购买模式的不中奖数据 (aw = 0, fb = 2, sp = true)
+func (d *Database) GetNoWinDataFb() ([]GameResultData, error) {
+	tableName := d.GetTableName()
+	query := fmt.Sprintf(`
+        SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
+        FROM %s 
+        WHERE aw = 0 AND sp = true AND fb = 2
+        ORDER BY id
+        LIMIT 40000
+    `, tableName)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
+	defer cancel()
+	rows, err := d.DB.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -152,6 +228,7 @@ func (d *Database) GetWinDataForFilling(remainingWin float64, excludeIds []int, 
         SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
         FROM %s 
         WHERE aw > 0 
+				And fb != 2
         AND aw < tb * 100
         AND aw <= $%d
         %s
@@ -164,6 +241,67 @@ func (d *Database) GetWinDataForFilling(remainingWin float64, excludeIds []int, 
 	rows, err := d.DB.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("查询填充数据失败: %v", err)
+	}
+	defer rows.Close()
+
+	var data []GameResultData
+	for rows.Next() {
+		var item GameResultData
+		err := rows.Scan(
+			&item.ID, &item.TB, &item.AW, &item.GWT,
+			&item.SP, &item.FB, &item.GD,
+			&item.CreatedAt, &item.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		data = append(data, item)
+	}
+
+	return data, nil
+}
+
+// GetWinDataForFillingFb 获取用于填充的购买模式中奖数据
+// 条件：aw > 0 且 aw < tb*100 且 aw <= remainingWin，gwt <= 1，fb = 2，sp = true
+// 排除 excludeIds，按金额从大到小排序，限制返回条数
+func (d *Database) GetWinDataForFillingFb(remainingWin float64, excludeIds []int, limit int) ([]GameResultData, error) {
+	tableName := d.GetTableName()
+
+	var excludeCondition string
+	var args []interface{}
+	argIndex := 1
+
+	if len(excludeIds) > 0 {
+		placeholders := make([]string, len(excludeIds))
+		for i := range excludeIds {
+			placeholders[i] = fmt.Sprintf("$%d", argIndex)
+			args = append(args, excludeIds[i])
+			argIndex++
+		}
+		excludeCondition = fmt.Sprintf("AND id NOT IN (%s)", strings.Join(placeholders, ","))
+	}
+
+	query := fmt.Sprintf(`
+        SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
+        FROM %s 
+        WHERE aw > 0 
+        AND aw < tb * 100
+        AND aw <= $%d
+        AND gwt <= 1
+        AND fb = 2
+        AND sp = true
+        %s
+        ORDER BY aw DESC
+        LIMIT $%d
+    `, tableName, argIndex, excludeCondition, argIndex+1)
+
+	args = append(args, remainingWin, limit)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
+	defer cancel()
+	rows, err := d.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("查询购买模式填充数据失败: %v", err)
 	}
 	defer rows.Close()
 
@@ -214,7 +352,8 @@ func (d *Database) GetBestSingleMatch(targetWin float64, excludeIds []int, maxDe
 	query := fmt.Sprintf(`
 		SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
 		FROM %s 
-		WHERE aw > 0 
+		WHERE aw > 0
+		And fb != 2
 		AND aw < tb * 100
 		AND aw >= $%d * (1 - $%d)
 		AND aw <= $%d * (1 + $%d)

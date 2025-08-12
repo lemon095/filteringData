@@ -7,7 +7,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-
 // Config 配置结构体
 type Config struct {
 	Database struct {
@@ -23,19 +22,24 @@ type Config struct {
 	} `yaml:"database"`
 
 	Game struct {
-		ID int `yaml:"id"`
+		ID   int  `yaml:"id"`
+		IsFb bool `yaml:"isFb"`
 	} `yaml:"game"`
 
 	Tables struct {
 		SourceTablePrefix string `yaml:"source_table_prefix"`
 		OutputTablePrefix string `yaml:"output_table_prefix"`
 		DataNum           int    `yaml:"data_num"`
+		DataTableNum      int    `yaml:"data_table_num"`
+		DataNumFb         int    `yaml:"data_num_fb"`
+		DataTableNumFb    int    `yaml:"data_table_num_fb"`
 	} `yaml:"tables"`
 
 	Bet struct {
 		CS float64 `yaml:"cs"` // 投注额基数 (coin size)
 		ML float64 `yaml:"ml"` // 投注倍数 (multiplier)
 		BL float64 `yaml:"bl"` // 投注线数 (bet lines)
+		FB float64 `yaml:"fb"` // 购买夺宝的倍数
 	} `yaml:"bet"`
 
 	PrizeRatios struct {

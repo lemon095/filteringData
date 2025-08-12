@@ -17,18 +17,23 @@ database:
 # Game Configuration
 game:
   id: 93
+  isFb: true
 
 # Table Configuration
 tables:
   source_table_prefix: "GameResultData_" # 读取数据的表前缀
   output_table_prefix: "GameResults_" # 写入数据的表前缀
-  data_num: 10000
+  data_num: 10000 #普通流程
+  data_table_num: 10 #普通流程表的数量
+  data_num_fb: 5000 #购买夺宝模式
+  data_table_num_fb: 1 #购买夺宝的表数量
 
 # Bet Configuration (投注配置)
 bet:
   cs: 1 # 投注额基数 (coin size)
   ml: 1 # 投注倍数 (multiplier)
   bl: 20 # 投注线数 (bet lines)
+  fb: 75 # 购买夺宝的倍数
   # 实际投注额 = cs * ml * bl
 
 # Prize Ratios (小数形式)
