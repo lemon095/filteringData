@@ -657,6 +657,393 @@ func runImportMode(fileLevelId string) {
 }
 
 // runGenerateFbMode 运行购买夺宝生成模式
+// func runGenerateFbMode() {
+// 	// 加载配置
+// 	config, err := LoadConfig("config.yaml")
+// 	if err != nil {
+// 		log.Fatalf("加载配置文件失败: %v", err)
+// 	}
+// 	if !config.Game.IsFb {
+// 		fmt.Println("⚠️ 当前游戏未启用购买夺宝 (game.is_fb=false)，退出。")
+// 		return
+// 	}
+// 	fmt.Println("▶️ [generateFb] 购买夺宝生成模式启动")
+
+// 	// 连接数据库
+// 	db, err := NewDatabase(config)
+// 	if err != nil {
+// 		log.Fatalf("数据库连接失败: %v", err)
+// 	}
+// 	defer db.Close()
+
+// 	// 计算总投注：cs * ml * bl * bet.fb * 数据条数
+// 	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB * float64(config.Tables.DataNumFb)
+
+// 	// 预取共享只读数据（购买模式）
+// 	fmt.Println("🔄 [generateFb] 正在获取购买模式中奖数据...")
+// 	winDataAll, err := db.GetWinDataFb()
+// 	if err != nil {
+// 		log.Fatalf("获取购买模式中奖数据失败: %v", err)
+// 	}
+// 	if len(winDataAll) == 0 {
+// 		return
+// 	}
+// 	fmt.Printf("✅ [generateFb] 购买模式中奖数据条数: %d\n", len(winDataAll))
+
+// 	fmt.Println("🔄 [generateFb] 正在获取购买模式不中奖数据...")
+// 	noWinDataAll, err := db.GetNoWinDataFb()
+// 	if err != nil {
+// 		log.Fatalf("获取购买模式不中奖数据失败: %v", err)
+// 	}
+// 	fmt.Printf("✅ [generateFb] 购买模式不中奖数据条数: %d\n", len(noWinDataAll))
+
+// 	if len(winDataAll) == 0 {
+// 		fmt.Println("⚠️ [generateFb] 未获取到购买模式中奖数据，无法继续。请检查数据条件 (aw>0, gwt<=1, fb=2, sp=true)。")
+// 		return
+// 	}
+// 	if len(noWinDataAll) == 0 {
+// 		fmt.Println("⚠️ [generateFb] 未获取到购买模式不中奖数据，后续将无法补全至目标条数。")
+// 	}
+
+// 	// 遍历 RTP 档位，每档位执行多次，并统计耗时
+// 	fbStartTime := time.Now()
+// 	worker := runtime.NumCPU()
+// 	sem := make(chan struct{}, worker)
+
+// 	for rtpNum := 0; rtpNum < len(FbRtpLevels); rtpNum++ {
+// 		levelStart := time.Now()
+// 		levelNo := FbRtpLevels[rtpNum].RtpNo
+// 		levelVal := FbRtpLevels[rtpNum].Rtp
+
+// 		var wgLevel sync.WaitGroup
+// 		for t := 0; t < config.Tables.DataTableNumFb; t++ {
+// 			sem <- struct{}{}
+// 			wgLevel.Add(1)
+
+// 			testIndex := t + 1
+// 			rtpNo := levelNo
+// 			rtpVal := levelVal
+
+// 			go func(rtpNo float64, rtpVal float64, testIndex int) {
+// 				defer func() { <-sem; wgLevel.Done() }()
+// 				testStartTime := time.Now()
+// 				fmt.Printf("▶️ [generateFb] 开始生成 | RTP等级 %.0f | 第%d次 | %s\n", rtpNo, testIndex, testStartTime.Format(time.RFC3339))
+// 				fmt.Printf("🔧 [generateFb] totalBet=%.2f allowWin_base=%.2f\n", totalBet, totalBet*rtpVal)
+
+// 				if err := runRtpFbTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll); err != nil {
+// 					log.Printf("[generateFb] RTP测试失败: %v", err)
+// 				}
+
+// 				fmt.Printf("⏱️  [generateFb] RTP等级 %.0f (第%d次生成) 耗时: %v\n", rtpNo, testIndex, time.Since(testStartTime))
+// 			}(rtpNo, rtpVal, testIndex)
+// 		}
+
+// 		wgLevel.Wait()
+// 		fmt.Printf("⏱️  [generateFb] RTP等级 %.0f 总耗时: %v\n", levelNo, time.Since(levelStart))
+// 	}
+
+// 	fmt.Printf("\n🎉 [generateFb] 全部档位生成完成！\n")
+// 	fmt.Printf("⏱️  [generateFb] 整体总耗时: %v\n", time.Since(fbStartTime))
+// }
+
+// // runRtpFbTest 生成购买夺宝 RTP 数据
+// func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData) error {
+// 	var logBuf bytes.Buffer
+// 	printf := func(format string, a ...interface{}) {
+// 		fmt.Fprintf(&logBuf, format, a...)
+// 	}
+
+// 	// 允许中奖金额，额外乘以 FB 倍数（已在 totalBet 包含 FB，此处再次按要求乘以 FB）
+// 	allowWin := totalBet * rtp
+// 	printf("[FB] allowWin=%.4f (cs=%.2f ml=%.2f bl=%.2f rtp=%.4f fb=%.2f)\n", allowWin, config.Bet.CS, config.Bet.ML, config.Bet.BL, rtp, config.Bet.FB)
+
+// 	printf("\n========== [FB TASK BEGIN] RtpNo: %.0f | Test: %d | %s =========\n", rtpLevel, testNumber, time.Now().Format(time.RFC3339))
+// 	printf("获取到中奖数据: %d条, 不中奖数据: %d条\n", len(winDataAll), len(noWinDataAll))
+// 	printf("档位: %.0f, 目标RTP: %.4f, 允许中奖金额: %.2f\n", rtpLevel, rtp, allowWin)
+
+// 	// 其余逻辑与普通模式类似：达标且偏差 <= 0.005；购买模式存在高RTP特殊区间处理
+// 	// 首次筛选优先选择“单条中奖金额”接近购买投入的 0.7-1.5 区间
+// 	seed := time.Now().UnixNano() ^ int64(config.Game.ID)*1_000_003 ^ int64(testNumber)*1_000_033 ^ int64(rtpLevel)*1_000_037
+// 	rng := rand.New(rand.NewSource(seed))
+// 	perSpinBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB
+// 	preferredMin := perSpinBet * 0.7
+// 	preferredMax := perSpinBet * 1.5
+// 	var preferred, nonPreferred []GameResultData
+// 	for _, it := range winDataAll {
+// 		if it.AW >= preferredMin && it.AW <= preferredMax {
+// 			preferred = append(preferred, it)
+// 		} else {
+// 			nonPreferred = append(nonPreferred, it)
+// 		}
+// 	}
+// 	printf("[FB] 优先区间: [%.2f, %.2f], 候选: %d, 其他: %d\n", preferredMin, preferredMax, len(preferred), len(nonPreferred))
+// 	// 按贪心顺序（aw DESC）遍历索引
+// 	permPref := make([]int, len(preferred))
+// 	for i := range permPref {
+// 		permPref[i] = i
+// 	}
+// 	sort.Slice(permPref, func(i, j int) bool { return preferred[permPref[i]].AW > preferred[permPref[j]].AW })
+
+// 	permRest := make([]int, len(nonPreferred))
+// 	for i := range permRest {
+// 		permRest[i] = i
+// 	}
+// 	sort.Slice(permRest, func(i, j int) bool { return nonPreferred[permRest[i]].AW > nonPreferred[permRest[j]].AW })
+
+// 	var data []GameResultData
+// 	var totalWin float64
+
+// 	// 15档位特殊区间：绑定档位编号（rtpLevel == 15），范围改为 [0.8, 0.9]
+// 	isSpecialRtp15 := (rtpLevel == 15)
+// 	var targetRtpMin, targetRtpMax float64
+// 	if isSpecialRtp15 {
+// 		targetRtpMin = 0.8
+// 		targetRtpMax = 0.9
+// 		fmt.Printf("🎯 [FB] 15档位特殊处理: 目标RTP范围 [%.1f, %.1f], 允许偏差 ±0.005\n", targetRtpMin, targetRtpMax)
+// 	}
+
+// 	// 先遍历优先区间，再遍历其余
+// 	for _, idx := range permPref {
+// 		if len(data) >= config.Tables.DataNumFb {
+// 			break
+// 		}
+// 		item := preferred[idx]
+// 		// 过滤大奖、巨奖、超级巨奖
+// 		switch item.GWT {
+// 		case 2:
+// 			continue
+// 		case 3:
+// 			continue
+// 		case 4:
+// 			continue
+// 		}
+
+// 		// 累计并校验上限（允许 0.5% 偏差）
+// 		newTotalWin := totalWin + item.AW
+// 		currentRtp := newTotalWin / totalBet
+// 		if newTotalWin > allowWin*1.005 {
+// 			continue
+// 		}
+
+// 		// 15档位特殊：不超过上限即可；其他档位：需达到 [allowWin, allowWin*1.005] 目标区间
+// 		if isSpecialRtp15 {
+// 			// 先加入再看是否达标区间
+// 			if currentRtp > targetRtpMax {
+// 				continue
+// 			}
+// 		}
+// 		// 若仍未达标，遍历其余数据
+// 		if !(isSpecialRtp15 || (totalWin >= allowWin && totalWin <= allowWin*(1+0.005))) {
+// 			for _, idx := range permRest {
+// 				if len(data) >= config.Tables.DataNumFb {
+// 					break
+// 				}
+// 				item := nonPreferred[idx]
+// 				// 过滤大奖、巨奖、超级巨奖
+// 				switch item.GWT {
+// 				case 2:
+// 					continue
+// 				case 3:
+// 					continue
+// 				case 4:
+// 					continue
+// 				}
+
+// 				newTotalWin := totalWin + item.AW
+// 				currentRtp := newTotalWin / totalBet
+// 				if newTotalWin > allowWin*1.005 {
+// 					continue
+// 				}
+// 				if isSpecialRtp15 {
+// 					if currentRtp > targetRtpMax {
+// 						continue
+// 					}
+// 				}
+// 				if len(data) >= config.Tables.DataNumFb {
+// 					break
+// 				}
+// 				totalWin += item.AW
+// 				data = append(data, item)
+// 				if isSpecialRtp15 {
+// 					if currentRtp >= targetRtpMin && len(data) >= config.Tables.DataNumFb {
+// 						break
+// 					}
+// 				}
+// 				if !isSpecialRtp15 {
+// 					if totalWin >= allowWin && totalWin <= allowWin*(1+0.005) {
+// 						break
+// 					}
+// 				}
+// 			}
+// 		}
+// 		// 加入（受条数上限限制）
+// 		if len(data) >= config.Tables.DataNumFb {
+// 			break
+// 		}
+// 		totalWin += item.AW
+// 		data = append(data, item)
+
+// 		//先判断15档位是否达到下限
+// 		if isSpecialRtp15 {
+// 			if currentRtp >= targetRtpMin && len(data) >= config.Tables.DataNumFb {
+// 				break
+// 			}
+// 		}
+
+// 		if !isSpecialRtp15 {
+// 			if totalWin >= allowWin && totalWin <= allowWin*(1+0.005) {
+// 				break
+// 			}
+// 		}
+// 	}
+// 	//判断当前是否达标
+// 	if totalWin < allowWin {
+// 		//判断是否为普通档位
+// 		if !isSpecialRtp15 {
+// 			//需要继续补全，优先查询符合的
+// 			remainingWin := (allowWin - totalWin) * 1.005
+// 			// 优先从数据库中查询满足条件的购买模式候选，限制 100 条
+// 			// 购买模式允许数据重复，不排除已使用的ID
+// 			fillData, err := db.GetWinDataForFillingFb(remainingWin, nil, 100)
+// 			if err != nil {
+// 				printf("⚠️ [FB] 查询填充数据失败: %v, 回退到原始逻辑\n", err)
+// 			}
+
+// 			if len(fillData) > 0 {
+// 				printf("🔍 [FB] 数据库查询到 %d 条候选填充数据\n", len(fillData))
+// 				for _, item := range fillData {
+// 					if len(data) >= config.Tables.DataNumFb {
+// 						break
+// 					}
+// 					if item.AW <= remainingWin && item.AW > 0 {
+// 						data = append(data, item)
+// 						totalWin += item.AW
+// 						remainingWin -= item.AW
+// 						printf("➕ [FB] 补充数据: AW=%.2f, 剩余需要: %.2f\n", item.AW, remainingWin)
+// 						if totalWin >= allowWin {
+// 							break
+// 						}
+// 					}
+// 				}
+// 			} else {
+// 				// 回退：从预取中奖数据中挑选（已过滤大奖/巨奖/超巨奖），但需满足 fb=2, sp=true, gwt<=1
+// 				for _, item := range winDataAll {
+// 					if len(data) >= config.Tables.DataNumFb {
+// 						break
+// 					}
+// 					if !(item.FB == 2 && item.SP && item.GWT <= 1) {
+// 						continue
+// 					}
+// 					if item.AW <= remainingWin && item.AW > 0 {
+// 						data = append(data, item)
+// 						totalWin += item.AW
+// 						remainingWin -= item.AW
+// 						printf("➕ [FB] 回退补充数据: AW=%.2f, 剩余需要: %.2f\n", item.AW, remainingWin)
+// 						if totalWin >= allowWin {
+// 							break
+// 						}
+// 					}
+// 				}
+// 			}
+// 		}
+// 	}
+
+// 	// 局部贪心优化：1↔1 替换以进一步逼近目标金额/范围
+// 	if len(data) > 0 {
+// 		candidates := make([]GameResultData, 0, len(preferred)+len(nonPreferred))
+// 		candidates = append(candidates, preferred...)
+// 		candidates = append(candidates, nonPreferred...)
+
+// 		targetSum := allowWin
+// 		upperBound := allowWin * (1 + 0.005)
+// 		if isSpecialRtp15 {
+// 			// 15档位瞄准区间中位值，提高命中概率
+// 			targetSum = ((targetRtpMin + targetRtpMax) / 2.0) * totalBet
+// 			upperBound = targetRtpMax * totalBet
+// 		}
+
+// 		bestDev := math.Abs(totalWin - targetSum)
+// 		maxIter := 300
+// 		for iter := 0; iter < maxIter; iter++ {
+// 			idx := rng.Intn(len(data))
+// 			removed := data[idx]
+// 			base := totalWin - removed.AW
+// 			desired := targetSum - base
+
+// 			var best GameResultData
+// 			bestDiff := math.MaxFloat64
+// 			found := false
+// 			for _, cand := range candidates {
+// 				if cand.AW <= 0 {
+// 					continue
+// 				}
+// 				// 购买模式过滤大奖/巨奖/超巨奖
+// 				switch cand.GWT {
+// 				case 2, 3, 4:
+// 					continue
+// 				}
+// 				newTotal := base + cand.AW
+// 				if newTotal > upperBound {
+// 					continue
+// 				}
+// 				if isSpecialRtp15 {
+// 					if newTotal/totalBet > targetRtpMax {
+// 						continue
+// 					}
+// 				}
+// 				diff := math.Abs(cand.AW - desired)
+// 				if diff < bestDiff {
+// 					bestDiff = diff
+// 					best = cand
+// 					found = true
+// 				}
+// 			}
+
+// 			if !found {
+// 				continue
+// 			}
+// 			newTotal := base + best.AW
+// 			newDev := math.Abs(newTotal - targetSum)
+// 			if newDev+1e-9 < bestDev {
+// 				data[idx] = best
+// 				totalWin = newTotal
+// 				bestDev = newDev
+// 			}
+// 		}
+// 	}
+
+// 	// 用不中奖数据补全到 DataNumFb
+// 	needNum := config.Tables.DataNumFb - len(data)
+// 	if needNum > 0 && len(noWinDataAll) > 0 {
+// 		permNo := rng.Perm(len(noWinDataAll))
+// 		for i := 0; i < needNum; i++ {
+// 			data = append(data, noWinDataAll[permNo[i%len(permNo)]])
+// 		}
+// 	}
+
+// 	// 输出最终统计：数量、目标RTP、当前RTP与偏差
+// 	printf("📊 [FB] 最终验证: 期望 %d 条, 实际 %d 条\n", config.Tables.DataNumFb, len(data))
+// 	var finalTotalWin float64
+// 	for _, it := range data {
+// 		finalTotalWin += it.AW
+// 	}
+// 	finalRTP := finalTotalWin / totalBet
+// 	rtpDeviation := math.Abs(finalRTP - rtp)
+// 	printf("✅ [FB] 档位: %.0f, 目标RTP: %.6f, 实际RTP: %.6f, 偏差: %.6f\n", rtpLevel, rtp, finalRTP, rtpDeviation)
+
+// 	var outputDir = filepath.Join("output", fmt.Sprintf("%d_fb", config.Game.ID))
+// 	// 最终保存：沿用普通保存逻辑，但输出仍落在 output/<gameId>，文件名前缀复用
+// 	if err := saveToJSON(data, config, rtpLevel, testNumber, outputDir); err != nil {
+// 		return fmt.Errorf("[FB] 保存JSON失败: %v", err)
+// 	}
+
+// 	outputMu.Lock()
+// 	fmt.Print(logBuf.String())
+// 	outputMu.Unlock()
+// 	return nil
+// }
+
+// runGenerateFbMode 运行购买夺宝生成模式
 func runGenerateFbMode() {
 	// 加载配置
 	config, err := LoadConfig("config.yaml")
@@ -685,10 +1072,17 @@ func runGenerateFbMode() {
 	if err != nil {
 		log.Fatalf("获取购买模式中奖数据失败: %v", err)
 	}
-	if len(winDataAll) == 0 {
+
+	fmt.Printf("✅ [generateFb] 购买模式中奖但是不盈利的数据条数: %d\n", len(winDataAll))
+
+	profitDataAll, err := db.GetProfitDataFb()
+	if err != nil {
+		log.Fatalf("获取购买模式中奖数据失败: %v", err)
+	}
+	if len(profitDataAll) == 0 {
 		return
 	}
-	fmt.Printf("✅ [generateFb] 购买模式中奖数据条数: %d\n", len(winDataAll))
+	fmt.Printf("✅ [generateFb] 购买模式中奖并且盈利的数据条数: %d\n", len(profitDataAll))
 
 	fmt.Println("🔄 [generateFb] 正在获取购买模式不中奖数据...")
 	noWinDataAll, err := db.GetNoWinDataFb()
@@ -730,7 +1124,7 @@ func runGenerateFbMode() {
 				fmt.Printf("▶️ [generateFb] 开始生成 | RTP等级 %.0f | 第%d次 | %s\n", rtpNo, testIndex, testStartTime.Format(time.RFC3339))
 				fmt.Printf("🔧 [generateFb] totalBet=%.2f allowWin_base=%.2f\n", totalBet, totalBet*rtpVal)
 
-				if err := runRtpFbTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll); err != nil {
+				if err := runRtpFbTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, profitDataAll); err != nil {
 					log.Printf("[generateFb] RTP测试失败: %v", err)
 				}
 
@@ -747,293 +1141,199 @@ func runGenerateFbMode() {
 }
 
 // runRtpFbTest 生成购买夺宝 RTP 数据
-func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData) error {
+func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData, profitDataAll []GameResultData) error {
 	var logBuf bytes.Buffer
 	printf := func(format string, a ...interface{}) {
 		fmt.Fprintf(&logBuf, format, a...)
 	}
 
-	// 允许中奖金额，额外乘以 FB 倍数（已在 totalBet 包含 FB，此处再次按要求乘以 FB）
+	//
+	const (
+		upperDeviation    = 0.005 // 允许上偏差
+		stage1MinRatio    = 0.60  // 第一阶段占比下限
+		stage1MaxRatio    = 0.80  // 第一阶段占比上限
+		stage3WinTopRatio = 0.90  // 第三阶段用 winDataAll 大额补齐比例
+	)
+
+	// 目标金额与边界
 	allowWin := totalBet * rtp
-	printf("[FB] allowWin=%.4f (cs=%.2f ml=%.2f bl=%.2f rtp=%.4f fb=%.2f)\n", allowWin, config.Bet.CS, config.Bet.ML, config.Bet.BL, rtp, config.Bet.FB)
+	upperBound := allowWin * (1 + upperDeviation)
+	perSpinBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB
 
 	printf("\n========== [FB TASK BEGIN] RtpNo: %.0f | Test: %d | %s =========\n", rtpLevel, testNumber, time.Now().Format(time.RFC3339))
-	printf("获取到中奖数据: %d条, 不中奖数据: %d条\n", len(winDataAll), len(noWinDataAll))
-	printf("档位: %.0f, 目标RTP: %.4f, 允许中奖金额: %.2f\n", rtpLevel, rtp, allowWin)
+	printf("[FB] allowWin=%.4f (cs=%.2f ml=%.2f bl=%.2f fb=%.2f rtp=%.4f)\n", allowWin, config.Bet.CS, config.Bet.ML, config.Bet.BL, config.Bet.FB, rtp)
+	printf("候选: win(not-profit)=%d, profit=%d, nowin=%d\n", len(winDataAll), len(profitDataAll), len(noWinDataAll))
 
-	// 其余逻辑与普通模式类似：达标且偏差 <= 0.005；购买模式存在高RTP特殊区间处理
-	// 首次筛选优先选择“单条中奖金额”接近购买投入的 0.7-1.5 区间
+	// 随机源
 	seed := time.Now().UnixNano() ^ int64(config.Game.ID)*1_000_003 ^ int64(testNumber)*1_000_033 ^ int64(rtpLevel)*1_000_037
 	rng := rand.New(rand.NewSource(seed))
-	perSpinBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB
-	preferredMin := perSpinBet * 0.7
-	preferredMax := perSpinBet * 1.5
-	var preferred, nonPreferred []GameResultData
-	for _, it := range winDataAll {
-		if it.AW >= preferredMin && it.AW <= preferredMax {
-			preferred = append(preferred, it)
-		} else {
-			nonPreferred = append(nonPreferred, it)
-		}
-	}
-	printf("[FB] 优先区间: [%.2f, %.2f], 候选: %d, 其他: %d\n", preferredMin, preferredMax, len(preferred), len(nonPreferred))
-	// 按贪心顺序（aw DESC）遍历索引
-	permPref := make([]int, len(preferred))
-	for i := range permPref {
-		permPref[i] = i
-	}
-	sort.Slice(permPref, func(i, j int) bool { return preferred[permPref[i]].AW > preferred[permPref[j]].AW })
 
-	permRest := make([]int, len(nonPreferred))
-	for i := range permRest {
-		permRest[i] = i
-	}
-	sort.Slice(permRest, func(i, j int) bool { return nonPreferred[permRest[i]].AW > nonPreferred[permRest[j]].AW })
-
+	// 结果容器
 	var data []GameResultData
 	var totalWin float64
+	targetCount := config.Tables.DataNumFb
+	// 随机化阶段1比例 [60%, 80%]
+	stage1Ratio := stage1MinRatio + rng.Float64()*(stage1MaxRatio-stage1MinRatio)
+	stage1Count := int(math.Round(float64(targetCount) * stage1Ratio))
 
-	// 15档位特殊区间：绑定档位编号（rtpLevel == 15），范围改为 [0.8, 0.9]
-	isSpecialRtp15 := (rtpLevel == 15)
-	var targetRtpMin, targetRtpMax float64
-	if isSpecialRtp15 {
-		targetRtpMin = 0.8
-		targetRtpMax = 0.9
-		fmt.Printf("🎯 [FB] 15档位特殊处理: 目标RTP范围 [%.1f, %.1f], 允许偏差 ±0.005\n", targetRtpMin, targetRtpMax)
-	}
+	// 已使用ID，避免单文件内重复
+	used := make(map[int]struct{}, targetCount)
 
-	// 先遍历优先区间，再遍历其余
-	for _, idx := range permPref {
-		if len(data) >= config.Tables.DataNumFb {
-			break
+	// 辅助函数：尝试加入一条记录（不超过上限，过滤大奖/巨奖/超巨奖，去重）
+	tryAppend := func(item GameResultData) bool {
+		if _, ok := used[item.ID]; ok {
+			return false
 		}
-		item := preferred[idx]
-		// 过滤大奖、巨奖、超级巨奖
 		switch item.GWT {
-		case 2:
-			continue
-		case 3:
-			continue
-		case 4:
-			continue
+		case 2, 3, 4:
+			return false
 		}
-
-		// 累计并校验上限（允许 0.5% 偏差）
-		newTotalWin := totalWin + item.AW
-		currentRtp := newTotalWin / totalBet
-		if newTotalWin > allowWin*1.005 {
-			continue
+		if item.AW <= 0 {
+			return false
 		}
-
-		// 15档位特殊：不超过上限即可；其他档位：需达到 [allowWin, allowWin*1.005] 目标区间
-		if isSpecialRtp15 {
-			// 先加入再看是否达标区间
-			if currentRtp > targetRtpMax {
-				continue
-			}
+		if totalWin+item.AW > upperBound {
+			return false
 		}
-		// 若仍未达标，遍历其余数据
-		if !(isSpecialRtp15 || (totalWin >= allowWin && totalWin <= allowWin*(1+0.005))) {
-			for _, idx := range permRest {
-				if len(data) >= config.Tables.DataNumFb {
-					break
-				}
-				item := nonPreferred[idx]
-				// 过滤大奖、巨奖、超级巨奖
-				switch item.GWT {
-				case 2:
-					continue
-				case 3:
-					continue
-				case 4:
-					continue
-				}
-
-				newTotalWin := totalWin + item.AW
-				currentRtp := newTotalWin / totalBet
-				if newTotalWin > allowWin*1.005 {
-					continue
-				}
-				if isSpecialRtp15 {
-					if currentRtp > targetRtpMax {
-						continue
-					}
-				}
-				if len(data) >= config.Tables.DataNumFb {
-					break
-				}
-				totalWin += item.AW
-				data = append(data, item)
-				if isSpecialRtp15 {
-					if currentRtp >= targetRtpMin && len(data) >= config.Tables.DataNumFb {
-						break
-					}
-				}
-				if !isSpecialRtp15 {
-					if totalWin >= allowWin && totalWin <= allowWin*(1+0.005) {
-						break
-					}
-				}
-			}
-		}
-		// 加入（受条数上限限制）
-		if len(data) >= config.Tables.DataNumFb {
-			break
-		}
-		totalWin += item.AW
 		data = append(data, item)
-
-		//先判断15档位是否达到下限
-		if isSpecialRtp15 {
-			if currentRtp >= targetRtpMin && len(data) >= config.Tables.DataNumFb {
-				break
-			}
-		}
-
-		if !isSpecialRtp15 {
-			if totalWin >= allowWin && totalWin <= allowWin*(1+0.005) {
-				break
-			}
-		}
+		totalWin += item.AW
+		used[item.ID] = struct{}{}
+		return true
 	}
-	//判断当前是否达标
-	if totalWin < allowWin {
-		//判断是否为普通档位
-		if !isSpecialRtp15 {
-			//需要继续补全，优先查询符合的
-			remainingWin := (allowWin - totalWin) * 1.005
-			// 优先从数据库中查询满足条件的购买模式候选，限制 100 条
-			// 购买模式允许数据重复，不排除已使用的ID
-			fillData, err := db.GetWinDataForFillingFb(remainingWin, nil, 100)
-			if err != nil {
-				printf("⚠️ [FB] 查询填充数据失败: %v, 回退到原始逻辑\n", err)
-			}
 
-			if len(fillData) > 0 {
-				printf("🔍 [FB] 数据库查询到 %d 条候选填充数据\n", len(fillData))
-				for _, item := range fillData {
-					if len(data) >= config.Tables.DataNumFb {
+	// 阶段1：打乱 winDataAll，单轮无放回采样至 80%
+	if len(winDataAll) > 0 && stage1Count > 0 {
+		perm := rng.Perm(len(winDataAll))
+		for _, idx := range perm {
+			if len(data) >= stage1Count {
+				break
+			}
+			_ = tryAppend(winDataAll[idx])
+		}
+		printf("[FB] 阶段1：已加入 %d 条（目标 %.0f%%=%d），累计中奖=%.2f\n", len(data), stage1Ratio*100, stage1Count, totalWin)
+	}
+
+	// 阶段2：用 profitDataAll 随机补，直到总中奖达到 allowWin（或达边界/数量上限）
+	if totalWin < allowWin && len(profitDataAll) > 0 && len(data) < targetCount {
+		perm := rng.Perm(len(profitDataAll))
+		for _, idx := range perm {
+			if totalWin >= allowWin || len(data) >= targetCount {
+				break
+			}
+			_ = tryAppend(profitDataAll[idx])
+		}
+		printf("[FB] 阶段2：累计中奖=%.2f, 目标=%.2f, 数量=%d/%d\n", totalWin, allowWin, len(data), targetCount)
+	}
+
+	// 阶段3：若还需要补充（数量未达标），先用 winDataAll 的大额补 90% 的剩余名额
+	if len(data) < targetCount {
+		remainingSlots := targetCount - len(data)
+		stage3aSlots := int(math.Ceil(float64(remainingSlots) * stage3WinTopRatio))
+
+		if stage3aSlots > 0 && len(winDataAll) > 0 {
+			// winDataAll 按 aw DESC
+			winDesc := make([]GameResultData, len(winDataAll))
+			copy(winDesc, winDataAll)
+			sort.Slice(winDesc, func(i, j int) bool { return winDesc[i].AW > winDesc[j].AW })
+			for _, it := range winDesc {
+				if stage3aSlots == 0 || len(data) >= targetCount {
+					break
+				}
+				if tryAppend(it) {
+					stage3aSlots--
+				}
+			}
+		}
+
+		// 阶段3b：剩余名额根据缺口大小，用 profitDataAll 小额或大额补齐
+		if len(data) < targetCount {
+			remainingSlots = targetCount - len(data)
+			remainingWin := allowWin - totalWin
+			gapSmallThreshold := math.Max(perSpinBet, allowWin*0.02) // 小缺口阈值
+
+			// 若金额已足或接近上限，则直接跳过到数量兜底
+			if remainingWin > 0 && len(profitDataAll) > 0 {
+				// 按需选择排序方向
+				profit := make([]GameResultData, len(profitDataAll))
+				copy(profit, profitDataAll)
+				if remainingWin <= gapSmallThreshold {
+					sort.Slice(profit, func(i, j int) bool { return profit[i].AW < profit[j].AW }) // 小额优先
+				} else {
+					sort.Slice(profit, func(i, j int) bool { return profit[i].AW > profit[j].AW }) // 大额优先
+				}
+
+				for _, it := range profit {
+					if remainingSlots == 0 || len(data) >= targetCount {
 						break
 					}
-					if item.AW <= remainingWin && item.AW > 0 {
-						data = append(data, item)
-						totalWin += item.AW
-						remainingWin -= item.AW
-						printf("➕ [FB] 补充数据: AW=%.2f, 剩余需要: %.2f\n", item.AW, remainingWin)
-						if totalWin >= allowWin {
+					// 若已经达到目标金额，仅在不超过上限时允许继续；核心由上限约束
+					if tryAppend(it) {
+						remainingSlots--
+						remainingWin = allowWin - totalWin
+						if remainingWin <= 0 {
+							// 金额已达标，后续数量不足交由阶段4处理
 							break
 						}
 					}
 				}
-			} else {
-				// 回退：从预取中奖数据中挑选（已过滤大奖/巨奖/超巨奖），但需满足 fb=2, sp=true, gwt<=1
-				for _, item := range winDataAll {
-					if len(data) >= config.Tables.DataNumFb {
-						break
-					}
-					if !(item.FB == 2 && item.SP && item.GWT <= 1) {
-						continue
-					}
-					if item.AW <= remainingWin && item.AW > 0 {
-						data = append(data, item)
-						totalWin += item.AW
-						remainingWin -= item.AW
-						printf("➕ [FB] 回退补充数据: AW=%.2f, 剩余需要: %.2f\n", item.AW, remainingWin)
-						if totalWin >= allowWin {
-							break
-						}
-					}
-				}
 			}
 		}
 	}
 
-	// 局部贪心优化：1↔1 替换以进一步逼近目标金额/范围
-	if len(data) > 0 {
-		candidates := make([]GameResultData, 0, len(preferred)+len(nonPreferred))
-		candidates = append(candidates, preferred...)
-		candidates = append(candidates, nonPreferred...)
-
-		targetSum := allowWin
-		upperBound := allowWin * (1 + 0.005)
-		if isSpecialRtp15 {
-			// 15档位瞄准区间中位值，提高命中概率
-			targetSum = ((targetRtpMin + targetRtpMax) / 2.0) * totalBet
-			upperBound = targetRtpMax * totalBet
-		}
-
-		bestDev := math.Abs(totalWin - targetSum)
-		maxIter := 300
-		for iter := 0; iter < maxIter; iter++ {
-			idx := rng.Intn(len(data))
-			removed := data[idx]
-			base := totalWin - removed.AW
-			desired := targetSum - base
-
-			var best GameResultData
-			bestDiff := math.MaxFloat64
-			found := false
-			for _, cand := range candidates {
-				if cand.AW <= 0 {
-					continue
-				}
-				// 购买模式过滤大奖/巨奖/超巨奖
-				switch cand.GWT {
-				case 2, 3, 4:
-					continue
-				}
-				newTotal := base + cand.AW
-				if newTotal > upperBound {
-					continue
-				}
-				if isSpecialRtp15 {
-					if newTotal/totalBet > targetRtpMax {
-						continue
-					}
-				}
-				diff := math.Abs(cand.AW - desired)
-				if diff < bestDiff {
-					bestDiff = diff
-					best = cand
-					found = true
-				}
+	// 阶段4：数量兜底，优先无放回补不中奖；若仍不足，再允许重复不中奖补满
+	if len(data) < targetCount && len(noWinDataAll) > 0 {
+		need := targetCount - len(data)
+		// 先无放回
+		perm := rng.Perm(len(noWinDataAll))
+		for _, idx := range perm {
+			if need == 0 {
+				break
 			}
-
-			if !found {
+			item := noWinDataAll[idx]
+			if _, ok := used[item.ID]; ok {
 				continue
 			}
-			newTotal := base + best.AW
-			newDev := math.Abs(newTotal - targetSum)
-			if newDev+1e-9 < bestDev {
-				data[idx] = best
-				totalWin = newTotal
-				bestDev = newDev
+			data = append(data, item)
+			used[item.ID] = struct{}{}
+			need--
+		}
+		// 再重复补齐（仅对不中奖允许重复，以保证条数）
+		if need > 0 {
+			for i := 0; i < need; i++ {
+				data = append(data, noWinDataAll[i%len(noWinDataAll)])
 			}
 		}
 	}
 
-	// 用不中奖数据补全到 DataNumFb
-	needNum := config.Tables.DataNumFb - len(data)
-	if needNum > 0 && len(noWinDataAll) > 0 {
-		permNo := rng.Perm(len(noWinDataAll))
-		for i := 0; i < needNum; i++ {
-			data = append(data, noWinDataAll[permNo[i%len(permNo)]])
-		}
-	}
-
-	// 输出最终统计：数量、目标RTP、当前RTP与偏差
-	printf("📊 [FB] 最终验证: 期望 %d 条, 实际 %d 条\n", config.Tables.DataNumFb, len(data))
+	// 最终统计与保存
+	printf("📊 [FB] 最终验证: 期望 %d 条, 实际 %d 条\n", targetCount, len(data))
 	var finalTotalWin float64
 	for _, it := range data {
 		finalTotalWin += it.AW
 	}
 	finalRTP := finalTotalWin / totalBet
-	rtpDeviation := math.Abs(finalRTP - rtp)
-	printf("✅ [FB] 档位: %.0f, 目标RTP: %.6f, 实际RTP: %.6f, 偏差: %.6f\n", rtpLevel, rtp, finalRTP, rtpDeviation)
+	printf("✅ [FB] 档位: %.0f, 目标RTP: %.6f, 实际RTP: %.6f, 偏差: %.6f\n", rtpLevel, rtp, finalRTP, math.Abs(finalRTP-rtp))
 
-	var outputDir = filepath.Join("output", fmt.Sprintf("%d_fb", config.Game.ID))
-	// 最终保存：沿用普通保存逻辑，但输出仍落在 output/<gameId>，文件名前缀复用
-	if err := saveToJSON(data, config, rtpLevel, testNumber, outputDir); err != nil {
+	// 重复率统计（按 id 去重）
+	uniq := make(map[int]int, len(data))
+	for _, it := range data {
+		uniq[it.ID]++
+	}
+	dupCount := 0
+	for _, c := range uniq {
+		if c > 1 {
+			dupCount += c - 1
+		}
+	}
+	dupRate := 0.0
+	if n := len(data); n > 0 {
+		dupRate = float64(dupCount) / float64(n)
+	}
+	printf("🔎 [FB] 去重统计: 总数=%d, 唯一=%d, 重复=%d, 重复率=%.4f\n", len(data), len(uniq), dupCount, dupRate)
+
+	// 打乱输出顺序并写文件
+	rand.Shuffle(len(data), func(i, j int) { data[i], data[j] = data[j], data[i] })
+	outDir := filepath.Join("output", fmt.Sprintf("%d_fb", config.Game.ID))
+	if err := saveToJSON(data, config, rtpLevel, testNumber, outDir); err != nil {
 		return fmt.Errorf("[FB] 保存JSON失败: %v", err)
 	}
 
