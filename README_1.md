@@ -14,6 +14,15 @@ rsync -avz \
   ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93/
 ```
 
+###使用压缩上传
+````
+rsync -azvh --progress \
+  -e "ssh -i /Users/wangfukang/Desktop/mpgKey/ec2-server-ape.pem -o StrictHostKeyChecking=no" \
+  /Users/wangfukang/Desktop/project-go/filteringData/output/93_fb/ \
+  ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93_fb/```
+
+
+
 ### 目录上传
 
 ```bash
@@ -21,7 +30,7 @@ rsync -av \
   -e "ssh -i /Users/shihao/Desktop/shihao/hk.pem -o StrictHostKeyChecking=no" \
   /Users/shihao/Desktop/lemon/filteringData/output/93_fb/ \
   ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93_fb/
-```
+````
 
 ```
 ssh -i /Users/shihao/Desktop/shihao/hk.pem ec2-user@43.198.187.137
