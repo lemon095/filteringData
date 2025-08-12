@@ -451,9 +451,9 @@ func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName str
 		} else {
 			winValue = 0.0
 		}
-
+		rtpLevelVal := float64(rtpLevel)
 		_, err := stmt.Exec(
-			rtpLevel,  // rtpLevel
+			rtpLevelVal,  // rtpLevel
 			testNum,   // srNumber
 			i+1,       // srId (从1开始)
 			bet,       // bet
