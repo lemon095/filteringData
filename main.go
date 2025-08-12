@@ -588,7 +588,7 @@ func runGenerateMode() {
 		sem := make(chan struct{}, worker)
 		var wg sync.WaitGroup
 
-		for t := 0; t < config.Tables.DataNum; t++ {
+		for t := 0; t < config.Tables.DataTableNum; t++ {
 			sem <- struct{}{}
 			wg.Add(1)
 
