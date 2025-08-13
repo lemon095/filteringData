@@ -15,15 +15,16 @@ rsync -avz \
 ```
 
 ###使用压缩上传
+
 ```bash
 rsync -azvh --progress \
-  -e "ssh -i /Users/wangfukang/Desktop/mpgKey/ec2-server-ape.pem -o StrictHostKeyChecking=no" \
-  /Users/wangfukang/Desktop/project-go/filteringData/output/93_fb/ \
+  -e "ssh -i /Users/shihao/Desktop/shihao/hk.pem -o StrictHostKeyChecking=no" \
+  /Users/shihao/Desktop/lemon/filteringData/output/93_fb/ \
   ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93_fb/
 ```
 
-
 ###夺宝购买数据验证
+
 ```bash
 SELECT count(1) FROM public."GameResults_93"
 WHERE "rtpLevel" in ('1.1','2.1','3.1','4.1','5.1','6.1','7.1','8.1','9.1','10.1','11.1','12.1','13.1','14.1','15.1');
@@ -31,9 +32,9 @@ WHERE "rtpLevel" in ('1.1','2.1','3.1','4.1','5.1','6.1','7.1','8.1','9.1','10.1
 
 DELETE FROM public."GameResults_93"
 WHERE "rtpLevel" in ('1.1','2.1','3.1','4.1','5.1','6.1','7.1','8.1','9.1','10.1','11.1','12.1','13.1','14.1','15.1');
+
+SELECT sum(win)/sum(bet) as "rtp", count(1), "rtpLevel" FROM public."GameResults_93"  group by "rtpLevel"
 ```
-
-
 
 ### 目录上传
 
@@ -42,7 +43,7 @@ rsync -av \
   -e "ssh -i /Users/shihao/Desktop/shihao/hk.pem -o StrictHostKeyChecking=no" \
   /Users/shihao/Desktop/lemon/filteringData/output/93_fb/ \
   ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93_fb/
-````
+```
 
 ```
 ssh -i /Users/shihao/Desktop/shihao/hk.pem ec2-user@43.198.187.137
