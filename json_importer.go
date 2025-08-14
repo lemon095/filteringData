@@ -99,6 +99,59 @@ func (ji *JSONImporter) ImportAllFiles(fileLevelId string) error {
 	return nil
 }
 
+// ImportAllFilesWithGameId 支持指定 gameId 与 level 过滤
+func (ji *JSONImporter) ImportAllFilesWithGameId(gameId int, levelFilter string) error {
+	outputDir := filepath.Join("output", fmt.Sprintf("%d", gameId))
+	fmt.Printf("📂 导入目录: %s\n", outputDir)
+
+	files, err := ji.getJSONFiles(outputDir)
+	if err != nil {
+		return fmt.Errorf("获取JSON文件失败: %v", err)
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("在 %s 目录下没有找到JSON文件", outputDir)
+	}
+
+	if levelFilter != "" {
+		var filtered []FileInfo
+		prefix := fmt.Sprintf("GameResults_%s_", levelFilter)
+		for _, f := range files {
+			if strings.HasPrefix(f.Name, prefix) {
+				filtered = append(filtered, f)
+			}
+		}
+		if len(filtered) == 0 {
+			fmt.Printf("❌ 未找到fileLevelId为 %s 的JSON文件\n", levelFilter)
+			for _, f := range files {
+				fmt.Printf("   - %s\n", f.Name)
+			}
+			return fmt.Errorf("未找到匹配的文件")
+		}
+		files = filtered
+		fmt.Printf("✅ 过滤后找到 %d 个匹配的文件\n", len(filtered))
+	}
+
+	sort.Slice(files, func(i, j int) bool { return files[i].SortKey < files[j].SortKey })
+	fmt.Printf("📁 找到 %d 个JSON文件，按顺序处理:\n", len(files))
+	for _, f := range files {
+		fmt.Printf("  - %s (排序键: %s)\n", f.Name, f.SortKey)
+	}
+
+	tableName := fmt.Sprintf("%s%d", ji.config.Tables.OutputTablePrefix, gameId)
+	if err := ji.createTargetTable(tableName); err != nil {
+		return fmt.Errorf("创建目标表失败: %v", err)
+	}
+	for _, f := range files {
+		fmt.Printf("\n🔄 正在导入文件: %s\n", f.Name)
+		if err := ji.importFile(f, tableName); err != nil {
+			return fmt.Errorf("导入文件 %s 失败: %v", f.Name, err)
+		}
+		fmt.Printf("✅ 文件 %s 导入完成\n", f.Name)
+	}
+	fmt.Printf("\n🎉 所有文件导入完成！\n")
+	return nil
+}
+
 // filterFilesByFileLevelId 根据fileLevelId过滤文件
 func (ji *JSONImporter) filterFilesByFileLevelId(files []FileInfo, fileLevelId string) []FileInfo {
 	var filteredFiles []FileInfo
@@ -453,12 +506,12 @@ func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName str
 		}
 		rtpLevelVal := float64(rtpLevel)
 		_, err := stmt.Exec(
-			rtpLevelVal,  // rtpLevel
-			testNum,   // srNumber
-			i+1,       // srId (从1开始)
-			bet,       // bet
-			winValue,  // win (精度修正后)
-			detailVal, // detail (JSONB)
+			rtpLevelVal, // rtpLevel
+			testNum,     // srNumber
+			i+1,         // srId (从1开始)
+			bet,         // bet
+			winValue,    // win (精度修正后)
+			detailVal,   // detail (JSONB)
 		)
 		if err != nil {
 			return fmt.Errorf("插入记录 %d 失败: %v", i+1, err)

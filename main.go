@@ -515,29 +515,77 @@ func main() {
 	case "generate":
 		runGenerateMode()
 	case "import":
-		// 检查是否有可选的fileLevelId参数
+		// 新增支持：
+		// 1) ./filteringData import                 → 使用 config.game.id 导入全部
+		// 2) ./filteringData import <gameId>        → 导入 output/<gameId>/ 全部
+		// 3) ./filteringData import <fileLevelId>   → 仅导入 config.game.id 目录下该档位（旧行为）
+		// 4) ./filteringData import <gameId> <level>→ 仅导入 output/<gameId>/ 指定档位
 		if len(os.Args) == 2 {
-			runImportMode("") // 导入所有文件
+			runImportMode("")
 		} else if len(os.Args) == 3 {
-			fileLevelId := os.Args[2]
-			runImportMode(fileLevelId) // 导入指定fileLevelId的文件
+			arg := os.Args[2]
+			// 判断是否为 gameId（目录存在）或当作 levelId（兼容旧版）
+			if gid, err := strconv.Atoi(arg); err == nil {
+				gameDir := filepath.Join("output", fmt.Sprintf("%d", gid))
+				if st, err2 := os.Stat(gameDir); err2 == nil && st.IsDir() {
+					runImportModeWithGameId(gid, "")
+					break
+				}
+			}
+			// 兼容：当作 levelId 过滤当前 config.game.id 目录
+			runImportMode(arg)
+		} else if len(os.Args) == 4 {
+			gidStr := os.Args[2]
+			lvl := strings.TrimPrefix(os.Args[3], "-")
+			gid, err := strconv.Atoi(gidStr)
+			if err != nil {
+				fmt.Printf("❌ 参数错误: gameId 必须为整数\n")
+				os.Exit(1)
+			}
+			runImportModeWithGameId(gid, lvl)
 		} else {
-			fmt.Printf("❌ 参数错误: import命令最多接受1个参数\n")
-
-			fmt.Println("使用方法: ./filteringData import [fileLevelId]")
+			fmt.Printf("❌ 参数错误: import 命令接受 0~2 个参数\n")
+			fmt.Println("用法1: ./filteringData import")
+			fmt.Println("用法2: ./filteringData import <gameId>")
+			fmt.Println("用法3: ./filteringData import <levelId>")
+			fmt.Println("用法4: ./filteringData import <gameId> <levelId>")
 			os.Exit(1)
 		}
 	case "generateFb":
 		runGenerateFbMode()
 	case "importFb":
+		// 新增支持：
+		// 1) ./filteringData importFb                  → 使用 config.game.id 导入全部（_fb目录）
+		// 2) ./filteringData importFb <gameId>         → 导入 output/<gameId>_fb/ 全部
+		// 3) ./filteringData importFb <levelId>        → 仅导入 config.game.id 的该档位（旧行为）
+		// 4) ./filteringData importFb <gameId> <level> → 仅导入 output/<gameId>_fb/ 指定档位
 		if len(os.Args) == 2 {
 			runImportFbMode("")
 		} else if len(os.Args) == 3 {
-			fileLevelId := os.Args[2]
-			runImportFbMode(fileLevelId)
+			arg := os.Args[2]
+			if gid, err := strconv.Atoi(arg); err == nil {
+				gameDir := filepath.Join("output", fmt.Sprintf("%d_fb", gid))
+				if st, err2 := os.Stat(gameDir); err2 == nil && st.IsDir() {
+					runImportFbModeWithGameId(gid, "")
+					break
+				}
+			}
+			runImportFbMode(arg)
+		} else if len(os.Args) == 4 {
+			gidStr := os.Args[2]
+			lvl := strings.TrimPrefix(os.Args[3], "-")
+			gid, err := strconv.Atoi(gidStr)
+			if err != nil {
+				fmt.Printf("❌ 参数错误: gameId 必须为整数\n")
+				os.Exit(1)
+			}
+			runImportFbModeWithGameId(gid, lvl)
 		} else {
-			fmt.Printf("❌ 参数错误: importFb命令最多接受1个参数\n")
-			fmt.Println("使用方法: ./filteringData importFb [fileLevelId]")
+			fmt.Printf("❌ 参数错误: importFb 命令接受 0~2 个参数\n")
+			fmt.Println("用法1: ./filteringData importFb")
+			fmt.Println("用法2: ./filteringData importFb <gameId>")
+			fmt.Println("用法3: ./filteringData importFb <levelId>")
+			fmt.Println("用法4: ./filteringData importFb <gameId> <levelId>")
 			os.Exit(1)
 		}
 	default:
@@ -653,6 +701,32 @@ func runImportMode(fileLevelId string) {
 		log.Fatalf("❌ 导入失败: %v", err)
 	}
 
+	fmt.Println("✅ 导入完成！")
+}
+
+// runImportModeWithGameId 导入指定 gameId 目录；可选 levelId 过滤
+func runImportModeWithGameId(gameId int, levelId string) {
+	if levelId == "" {
+		fmt.Printf("🔄 启动导入模式 (导入 output/%d 所有文件)...\n", gameId)
+	} else {
+		fmt.Printf("🔄 启动导入模式 (只导入 output/%d 下 levelId=%s 的文件)...\n", gameId, levelId)
+	}
+
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("❌ 加载配置失败: %v", err)
+	}
+
+	db, err := NewDatabase(config)
+	if err != nil {
+		log.Fatalf("❌ 连接数据库失败: %v", err)
+	}
+	defer db.Close()
+
+	importer := NewJSONImporter(db, config)
+	if err := importer.ImportAllFilesWithGameId(gameId, levelId); err != nil {
+		log.Fatalf("❌ 导入失败: %v", err)
+	}
 	fmt.Println("✅ 导入完成！")
 }
 
@@ -1642,6 +1716,230 @@ func runImportFbMode(fileLevelId string) {
 			}
 		}
 		// 读取对象结束 '}'
+		if tok, err = dec.Token(); err != nil {
+			return err
+		}
+		if delim, ok := tok.(json.Delim); !ok || delim != '}' {
+			return fmt.Errorf("JSON格式错误: 缺少对象结束")
+		}
+		fmt.Printf("✅ [importFb] 导入完成: %s\n", f.Name)
+		return nil
+	}
+
+	for _, f := range files {
+		if err := importOne(f); err != nil {
+			log.Fatalf("❌ [importFb] 导入文件 %s 失败: %v", f.Name, err)
+		}
+	}
+	fmt.Println("\n🎉 [importFb] 所有文件导入完成！")
+}
+
+// runImportFbModeWithGameId 购买夺宝：导入指定 gameId 的 _fb 目录；可选 levelId 过滤
+func runImportFbModeWithGameId(gameId int, levelId string) {
+	// 加载配置
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("❌ 加载配置失败: %v", err)
+	}
+	if !config.Game.IsFb {
+		fmt.Println("⚠️ 当前游戏未启用购买夺宝 (game.is_fb=false)，退出。")
+		return
+	}
+
+	// 连接数据库
+	db, err := NewDatabase(config)
+	if err != nil {
+		log.Fatalf("❌ 连接数据库失败: %v", err)
+	}
+	defer db.Close()
+
+	// 读取目录：output/<gameId>_fb
+	outputDir := filepath.Join("output", fmt.Sprintf("%d_fb", gameId))
+	fmt.Printf("📂 [importFb] 导入目录: %s\n", outputDir)
+
+	// 目标表仍为不带 _fb 的表名（与现有实现一致）
+	tableName := fmt.Sprintf("%s%d", config.Tables.OutputTablePrefix, gameId)
+	createTable := fmt.Sprintf(`
+        CREATE TABLE IF NOT EXISTS "%s" (
+            "id" SERIAL PRIMARY KEY,
+            "rtpLevel" REAL NOT NULL,
+            "srNumber" INTEGER NOT NULL,
+            "srId" SERIAL NOT NULL,
+            "bet" NUMERIC NOT NULL,
+            "win" NUMERIC NOT NULL,
+            "detail" JSONB,
+            "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    `, tableName)
+	if _, err := db.DB.Exec(createTable); err != nil {
+		log.Fatalf("❌ 创建FB目标表失败: %v", err)
+	}
+	indexQueries := []string{
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_rtpLevel_idx" ON "%s" ("rtpLevel")`, tableName, tableName),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_srNumber_idx" ON "%s" ("srNumber")`, tableName, tableName),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_srId_idx" ON "%s" ("srId")`, tableName, tableName),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_rtpLevel_srNumber_idx" ON "%s" ("rtpLevel", "srNumber")`, tableName, tableName),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_rtpLevel_srNumber_srId_idx" ON "%s" ("rtpLevel", "srNumber", "srId")`, tableName, tableName),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_detail_gin_idx" ON "%s" USING GIN ("detail")`, tableName, tableName),
+	}
+	for _, q := range indexQueries {
+		if _, err := db.DB.Exec(q); err != nil {
+			log.Fatalf("❌ 创建索引失败: %v", err)
+		}
+	}
+
+	// 收集 JSON 文件列表
+	type FileInfo struct {
+		Path     string
+		Name     string
+		RtpLevel int
+		TestNum  int
+	}
+	var files []FileInfo
+	err = filepath.WalkDir(outputDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
+			return nil
+		}
+		re := regexp.MustCompile(`GameResults_(\d+)_(\d+)\.json`)
+		m := re.FindStringSubmatch(d.Name())
+		if len(m) != 3 {
+			return nil
+		}
+		if levelId != "" && m[1] != levelId {
+			return nil
+		}
+		rl, _ := strconv.Atoi(m[1])
+		tn, _ := strconv.Atoi(m[2])
+		files = append(files, FileInfo{Path: path, Name: d.Name(), RtpLevel: rl, TestNum: tn})
+		return nil
+	})
+	if err != nil {
+		log.Fatalf("❌ 遍历目录失败: %v", err)
+	}
+	if len(files) == 0 {
+		log.Fatalf("❌ 在 %s 未找到待导入的JSON文件", outputDir)
+	}
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].RtpLevel == files[j].RtpLevel {
+			return files[i].TestNum < files[j].TestNum
+		}
+		return files[i].RtpLevel < files[j].RtpLevel
+	})
+
+	bet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB
+	importOne := func(f FileInfo) error {
+		fmt.Printf("\n🔄 [importFb] 正在导入: %s\n", f.Name)
+		fh, err := os.Open(f.Path)
+		if err != nil {
+			return fmt.Errorf("打开文件失败: %w", err)
+		}
+		defer fh.Close()
+		dec := json.NewDecoder(fh)
+		var rtpLevelInt int
+		var srNumber int
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+			return fmt.Errorf("JSON格式错误: 缺少对象开始")
+		}
+		for dec.More() {
+			t, _ := dec.Token()
+			key, _ := t.(string)
+			switch key {
+			case "rtpLevel":
+				var v int
+				if err := dec.Decode(&v); err != nil {
+					return err
+				}
+				rtpLevelInt = v
+			case "srNumber":
+				var v int
+				if err := dec.Decode(&v); err != nil {
+					return err
+				}
+				srNumber = v
+			case "data":
+				tok, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				if delim, ok := tok.(json.Delim); !ok || delim != '[' {
+					return fmt.Errorf("JSON格式错误: data应为数组")
+				}
+				tx, err := db.DB.Begin()
+				if err != nil {
+					return fmt.Errorf("开启事务失败: %w", err)
+				}
+				stmt, err := tx.Prepare(fmt.Sprintf(`
+                    INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "bet", "win", "detail")
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                `, tableName))
+				if err != nil {
+					_ = tx.Rollback()
+					return fmt.Errorf("准备语句失败: %w", err)
+				}
+				rtpLevelVal := float64(rtpLevelInt) + 0.1
+				srId := 0
+				for dec.More() {
+					var item map[string]interface{}
+					if err := dec.Decode(&item); err != nil {
+						_ = stmt.Close()
+						_ = tx.Rollback()
+						return fmt.Errorf("解析记录失败: %w", err)
+					}
+					srId++
+					var winValue float64
+					if aw, ok := item["aw"].(float64); ok {
+						winValue = math.Round(aw*100) / 100
+					}
+					var detailVal interface{}
+					if item["gd"] != nil {
+						gdJSON, err := json.Marshal(item["gd"])
+						if err != nil {
+							_ = stmt.Close()
+							_ = tx.Rollback()
+							return fmt.Errorf("序列化gd失败: %w", err)
+						}
+						detailVal = string(gdJSON)
+					}
+					if _, err := stmt.Exec(rtpLevelVal, srNumber, srId, bet, winValue, detailVal); err != nil {
+						_ = stmt.Close()
+						_ = tx.Rollback()
+						return fmt.Errorf("插入失败: %w", err)
+					}
+				}
+				if tok, err = dec.Token(); err != nil {
+					_ = stmt.Close()
+					_ = tx.Rollback()
+					return fmt.Errorf("读取数组结束标记失败: %w", err)
+				}
+				if delim, ok := tok.(json.Delim); !ok || delim != ']' {
+					_ = stmt.Close()
+					_ = tx.Rollback()
+					return fmt.Errorf("JSON格式错误: 缺少数组结束")
+				}
+				if err := stmt.Close(); err != nil {
+					_ = tx.Rollback()
+					return fmt.Errorf("关闭stmt失败: %w", err)
+				}
+				if err := tx.Commit(); err != nil {
+					return fmt.Errorf("提交事务失败: %w", err)
+				}
+			default:
+				var skip interface{}
+				if err := dec.Decode(&skip); err != nil {
+					return err
+				}
+			}
+		}
 		if tok, err = dec.Token(); err != nil {
 			return err
 		}
