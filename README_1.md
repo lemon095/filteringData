@@ -5,13 +5,13 @@ rsync -avz \
   -e "ssh -i /Users/shihao/Desktop/shihao/hk.pem -o StrictHostKeyChecking=no" \
   --include 'GameResults_1*' --exclude '*' \
   /Users/shihao/Desktop/lemon/filteringData/output/93/ \
-  ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93/
+  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/93/
 
   rsync -avz \
   -e "ssh -i /Users/shihao/Desktop/shihao/hk.pem -o StrictHostKeyChecking=no" \
   --include 'GameResults_9*' --exclude '*' \
   /Users/shihao/Desktop/lemon/filteringData/output/93/ \
-  ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93/
+  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/93/
 ```
 
 ###使用压缩上传
@@ -19,8 +19,8 @@ rsync -avz \
 ```bash
 rsync -azvh --progress \
   -e "ssh -i /Users/shihao/Desktop/shihao/hk.pem -o StrictHostKeyChecking=no" \
-  /Users/shihao/Desktop/lemon/filteringData/output/93_fb/ \
-  ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93_fb/
+  /Users/shihao/Desktop/lemon/filteringData/output/92_fb/ \
+  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/92_fb/
 ```
 
 ###夺宝购买数据验证
@@ -37,6 +37,17 @@ SELECT sum(win)/sum(bet) as "rtp", count(1), "rtpLevel" FROM public."GameResults
 
 TRUNCATE TABLE "GameResults_92" ;
 
+
+```
+
+### 表自增 id 从 1 开始
+
+```bash
+# 先删
+DELETE FROM public."GameResults_108"
+
+# 修改索引
+ALTER SEQUENCE "GameResults_108_id_seq" RESTART WITH 1;
 ```
 
 ### 目录上传
@@ -45,11 +56,11 @@ TRUNCATE TABLE "GameResults_92" ;
 rsync -av \
   -e "ssh -i /Users/shihao/Desktop/shihao/hk.pem -o StrictHostKeyChecking=no" \
   /Users/shihao/Desktop/lemon/filteringData/output/93_fb/ \
-  ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93_fb/
+  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/93_fb/
 ```
 
 ```
-ssh -i /Users/shihao/Desktop/shihao/hk.pem ec2-user@43.198.187.137
+ssh -i /Users/shihao/Desktop/shihao/hk.pem ec2-user@18.162.45.129
 ```
 
 ### 查看磁盘空间
