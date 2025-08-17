@@ -19,8 +19,8 @@ rsync -avz \
 ```bash
 rsync -azvh --progress \
   -e "ssh -i /Users/shihao/Desktop/shihao/hk.pem -o StrictHostKeyChecking=no" \
-  /Users/shihao/Desktop/lemon/filteringData/output/92_fb/ \
-  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/92_fb/
+  /Users/shihao/Desktop/lemon/filteringData/output/1601012_fb/ \
+  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/1601012_fb/
 ```
 
 ###夺宝购买数据验证
