@@ -24,19 +24,19 @@ type RtpLevel struct {
 }
 
 var RtpLevels = []RtpLevel{
-	{RtpNo: 1, Rtp: 0.7},
-	{RtpNo: 2, Rtp: 0.7},
-	{RtpNo: 3, Rtp: 0.75},
-	{RtpNo: 4, Rtp: 0.8},
-	{RtpNo: 5, Rtp: 0.85},
-	{RtpNo: 6, Rtp: 0.9},
-	{RtpNo: 7, Rtp: 0.91},
-	{RtpNo: 8, Rtp: 0.92},
-	{RtpNo: 9, Rtp: 0.93},
-	{RtpNo: 10, Rtp: 0.94},
-	{RtpNo: 11, Rtp: 0.95},
-	{RtpNo: 12, Rtp: 0.96},
-	{RtpNo: 13, Rtp: 0.97},
+	// {RtpNo: 1, Rtp: 0.7},
+	// {RtpNo: 2, Rtp: 0.7},
+	// {RtpNo: 3, Rtp: 0.75},
+	// {RtpNo: 4, Rtp: 0.8},
+	// {RtpNo: 5, Rtp: 0.85},
+	// {RtpNo: 6, Rtp: 0.9},
+	// {RtpNo: 7, Rtp: 0.91},
+	// {RtpNo: 8, Rtp: 0.92},
+	// {RtpNo: 9, Rtp: 0.93},
+	// {RtpNo: 10, Rtp: 0.94},
+	// {RtpNo: 11, Rtp: 0.95},
+	// {RtpNo: 12, Rtp: 0.96},
+	// {RtpNo: 13, Rtp: 0.97},
 	{RtpNo: 14, Rtp: 1.5},
 	{RtpNo: 15, Rtp: 2},
 }
@@ -397,12 +397,6 @@ func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, tes
 		}
 	}
 
-	// 最终验证数据量
-	printf("🔍 最终验证: 期望 %d 条, 实际 %d 条\n", config.Tables.DataNum, len(data))
-	if len(data) != config.Tables.DataNum {
-		return fmt.Errorf("❌ 数据量不匹配：期望 %d 条, 实际 %d 条", config.Tables.DataNum, len(data))
-	}
-
 	// 重新计算最终RTP（包含所有数据）
 	var finalTotalWin float64
 	for _, item := range data {
@@ -414,6 +408,11 @@ func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, tes
 	rtpDeviation := math.Abs(finalRTP - rtp)
 	printf("✅ 档位: %.0f,📊 最终统计: 总投注 %.2f, 总中奖 %.2f, 实际RTP %.6f, 目标: %0.6f,实际金额: %.2f,预期金额下限: %.2f,预期金额上限: %.2f, RTP偏差: %.6f \n", rtpLevel, totalBet, finalTotalWin, finalRTP, rtp, finalTotalWin, allowWin, allowWin*(1+0.005), rtpDeviation)
 
+	// 最终验证数据量
+	printf("🔍 最终验证: 期望 %d 条, 实际 %d 条\n", config.Tables.DataNum, len(data))
+	if len(data) != config.Tables.DataNum {
+		return fmt.Errorf("❌ 数据量不匹配：期望 %d 条, 实际 %d 条", config.Tables.DataNum, len(data))
+	}
 	// 特殊处理RtpNo为15：验证RTP是否在允许范围内
 	if isSpecialRtp15 {
 		if finalRTP < targetRtpMin || finalRTP > targetRtpMax {
@@ -435,6 +434,361 @@ func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, tes
 	printf("========== [TASK END]   RtpNo: %.0f | Test: %d =========\n\n", rtpLevel, testNumber)
 	// printf("📊 数据已保存到JSON文件: %s\n", filePath)
 	printf("⏱️  RTP等级 %.0f (第%d次生成) 耗时: %v\n", rtpLevel, testNumber, time.Since(testStartTime))
+	outputMu.Lock()
+	fmt.Print(logBuf.String())
+	outputMu.Unlock()
+	return nil
+}
+
+// runRtpTest2 执行单次RTP测试 - 新的四阶段策略版本
+func runRtpTest2(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData, profitDataAll []GameResultData) error {
+	var logBuf bytes.Buffer
+	printf := func(format string, a ...interface{}) {
+		fmt.Fprintf(&logBuf, format, a...)
+	}
+	testStartTime := time.Now()
+
+	// 任务头分隔线
+	printf("\n========== [TASK BEGIN V2] RtpNo: %.0f | Test: %d | %s =========\n", rtpLevel, testNumber, time.Now().Format(time.RFC3339))
+
+	// 计算允许中奖金额和配置参数
+	allowWin := totalBet * rtp
+	upperBound := allowWin * (1 + config.StageRatios.UpperDeviation)
+	perSpinBet := config.Bet.CS * config.Bet.ML * config.Bet.BL
+
+	// 计算奖项数量限制
+	bigNum := int(float64(config.Tables.DataNum) * config.PrizeRatios.BigPrize)
+	megaNum := int(float64(config.Tables.DataNum) * config.PrizeRatios.MegaPrize)
+	superMegaNum := int(float64(config.Tables.DataNum) * config.PrizeRatios.SuperMegaPrize)
+
+	printf("档位: %.0f, 目标RTP: %.4f, 允许中奖金额: %.2f, 上限: %.2f\n", rtpLevel, rtp, allowWin, upperBound)
+	printf("候选数据: win(not-profit)=%d, profit=%d, nowin=%d\n", len(winDataAll), len(profitDataAll), len(noWinDataAll))
+	printf("奖项限制: 大奖=%d, 巨奖=%d, 超级巨奖=%d\n", bigNum, megaNum, superMegaNum)
+
+	// 随机源
+	seed := time.Now().UnixNano() ^ int64(config.Game.ID)*1_000_003 ^ int64(testNumber)*1_000_033 ^ int64(rtpLevel)*1_000_037
+	rng := rand.New(rand.NewSource(seed))
+
+	// 结果容器和计数器
+	var data []GameResultData
+	var totalWin float64
+	targetCount := config.Tables.DataNum
+	bigCount := 0
+	megaCount := 0
+	superMegaCount := 0
+
+	// 特殊处理RtpNo为15的情况
+	isSpecialRtp15 := rtpLevel == 15
+	var targetRtpMin, targetRtpMax float64
+	if isSpecialRtp15 {
+		targetRtpMin = 1.8
+		targetRtpMax = 2.0
+		printf("🎯 RtpNo为%.0f,特殊处理：目标RTP范围 [%.1f, %.1f], 允许偏差 ±0.005\n", rtpLevel, targetRtpMin, targetRtpMax)
+	}
+
+	// 已使用ID，避免重复
+	used := make(map[int]struct{}, targetCount)
+
+	// 辅助函数：尝试加入一条记录（检查奖项限制、去重、上限）
+	tryAppend := func(item GameResultData) bool {
+		if _, ok := used[item.ID]; ok {
+			return false
+		}
+
+		// 检查奖项数量限制
+		switch item.GWT {
+		case 2: // 大奖
+			if bigCount >= bigNum {
+				return false
+			}
+		case 3: // 巨奖
+			if megaCount >= megaNum {
+				return false
+			}
+		case 4: // 超级巨奖
+			if superMegaCount >= superMegaNum {
+				return false
+			}
+		}
+
+		if item.AW <= 0 {
+			return false
+		}
+
+		// 检查是否超过上限
+		if totalWin+item.AW > upperBound {
+			return false
+		}
+
+		// 特殊处理RtpNo为15：检查RTP是否在允许范围内
+		if isSpecialRtp15 {
+			newRtp := (totalWin + item.AW) / totalBet
+			if newRtp > targetRtpMax {
+				return false
+			}
+		}
+
+		// 添加数据并更新计数
+		data = append(data, item)
+		totalWin += item.AW
+		used[item.ID] = struct{}{}
+
+		// 更新奖项计数
+		switch item.GWT {
+		case 2:
+			bigCount++
+		case 3:
+			megaCount++
+		case 4:
+			superMegaCount++
+		}
+		return true
+	}
+
+	// 随机化阶段1比例
+	stage1Ratio := config.StageRatios.Stage1MinRatio + rng.Float64()*(config.StageRatios.Stage1MaxRatio-config.StageRatios.Stage1MinRatio)
+	stage1Count := int(math.Round(float64(targetCount) * stage1Ratio))
+
+	// 阶段1：打乱 winDataAll，单轮无放回采样
+	if len(winDataAll) > 0 && stage1Count > 0 {
+		perm := rng.Perm(len(winDataAll))
+		for _, idx := range perm {
+			if len(data) >= stage1Count {
+				break
+			}
+			_ = tryAppend(winDataAll[idx])
+		}
+		printf("阶段1：已加入 %d 条（目标 %.1f%%=%d），累计中奖=%.2f\n", len(data), stage1Ratio*100, stage1Count, totalWin)
+	}
+
+	// 阶段2：动态占比（profit vs win），根据缺口/剩余名额决定倾向
+	if totalWin < allowWin && len(data) < targetCount && (len(profitDataAll) > 0 || len(winDataAll) > 0) {
+		permProfit := rng.Perm(len(profitDataAll))
+		permWin2 := rng.Perm(len(winDataAll))
+		pi, wi := 0, 0
+
+		// 估算初始倾向
+		remainingSlots := targetCount - len(data)
+		remainingWin := allowWin - totalWin
+		needFactor := 0.0
+		if remainingSlots > 0 {
+			needFactor = remainingWin / (perSpinBet * float64(remainingSlots))
+		}
+		basePProfit := needFactor
+		if basePProfit < 0.2 {
+			basePProfit = 0.2
+		}
+		if basePProfit > 0.8 {
+			basePProfit = 0.8
+		}
+		printf("阶段2：动态占比起始 pProfit=%.3f (needFactor=%.3f)\n", basePProfit, needFactor)
+
+		maxOuter := len(profitDataAll) + len(winDataAll) + 1024
+		for outer := 0; outer < maxOuter; outer++ {
+			if totalWin >= allowWin || len(data) >= targetCount {
+				break
+			}
+
+			// 实时更新占比
+			remainingSlots = targetCount - len(data)
+			remainingWin = allowWin - totalWin
+			if remainingSlots <= 0 || remainingWin <= 0 {
+				break
+			}
+			needFactor = remainingWin / (perSpinBet * float64(remainingSlots))
+			pProfit := needFactor
+			if pProfit < 0.2 {
+				pProfit = 0.2
+			}
+			if pProfit > 0.8 {
+				pProfit = 0.8
+			}
+
+			chooseProfit := rng.Float64() < pProfit
+			appended := false
+
+			if chooseProfit && pi < len(permProfit) {
+				for pi < len(permProfit) {
+					cand := profitDataAll[permProfit[pi]]
+					pi++
+					if tryAppend(cand) {
+						appended = true
+						break
+					}
+				}
+			}
+
+			// 若未能加入或无可用 profit，则尝试 win
+			if !appended && wi < len(permWin2) {
+				for wi < len(permWin2) {
+					cand := winDataAll[permWin2[wi]]
+					wi++
+					if tryAppend(cand) {
+						appended = true
+						break
+					}
+				}
+			}
+
+			// 若先选 win 失败，再尝试 profit 兜底
+			if !appended && !chooseProfit && pi < len(permProfit) {
+				for pi < len(permProfit) {
+					cand := profitDataAll[permProfit[pi]]
+					pi++
+					if tryAppend(cand) {
+						appended = true
+						break
+					}
+				}
+			}
+
+			// 两边都无法加入，提前退出
+			if !appended {
+				break
+			}
+		}
+		printf("阶段2完成：累计中奖=%.2f, 目标=%.2f, 数量=%d/%d\n", totalWin, allowWin, len(data), targetCount)
+	}
+
+	// 阶段3：若还需要补充（数量未达标），先用 winDataAll 的大额补充
+	if len(data) < targetCount {
+		remainingSlots := targetCount - len(data)
+		stage3aSlots := int(math.Ceil(float64(remainingSlots) * config.StageRatios.Stage3WinTopRatio))
+
+		if stage3aSlots > 0 && len(winDataAll) > 0 {
+			// winDataAll 按 aw DESC
+			winDesc := make([]GameResultData, len(winDataAll))
+			copy(winDesc, winDataAll)
+			sort.Slice(winDesc, func(i, j int) bool { return winDesc[i].AW > winDesc[j].AW })
+			for _, it := range winDesc {
+				if stage3aSlots == 0 || len(data) >= targetCount {
+					break
+				}
+				if tryAppend(it) {
+					stage3aSlots--
+				}
+			}
+		}
+
+		// 阶段3b：剩余名额根据缺口大小，用 profitDataAll 小额或大额补齐
+		if len(data) < targetCount {
+			remainingSlots = targetCount - len(data)
+			remainingWin := allowWin - totalWin
+			gapSmallThreshold := math.Max(perSpinBet, allowWin*0.02) // 小缺口阈值
+
+			// 若金额已足或接近上限，则直接跳过到数量兜底
+			if remainingWin > 0 && len(profitDataAll) > 0 {
+				// 按需选择排序方向
+				profit := make([]GameResultData, len(profitDataAll))
+				copy(profit, profitDataAll)
+				if remainingWin <= gapSmallThreshold {
+					sort.Slice(profit, func(i, j int) bool { return profit[i].AW < profit[j].AW }) // 小额优先
+				} else {
+					sort.Slice(profit, func(i, j int) bool { return profit[i].AW > profit[j].AW }) // 大额优先
+				}
+
+				for _, it := range profit {
+					if remainingSlots == 0 || len(data) >= targetCount {
+						break
+					}
+					// 若已经达到目标金额，仅在不超过上限时允许继续；核心由上限约束
+					if tryAppend(it) {
+						remainingSlots--
+						remainingWin = allowWin - totalWin
+						if remainingWin <= 0 {
+							// 金额已达标，后续数量不足交由阶段4处理
+							break
+						}
+					}
+				}
+			}
+		}
+		printf("阶段3完成：累计中奖=%.2f, 数量=%d/%d\n", totalWin, len(data), targetCount)
+	}
+
+	// 阶段4：数量兜底，优先无放回补不中奖；若仍不足，再允许重复不中奖补满
+	if len(data) < targetCount && len(noWinDataAll) > 0 {
+		need := targetCount - len(data)
+		// 先无放回
+		perm := rng.Perm(len(noWinDataAll))
+		for _, idx := range perm {
+			if need == 0 {
+				break
+			}
+			item := noWinDataAll[idx]
+			if _, ok := used[item.ID]; ok {
+				continue
+			}
+			data = append(data, item)
+			used[item.ID] = struct{}{}
+			need--
+		}
+		// 再重复补齐（仅对不中奖允许重复，以保证条数）
+		if need > 0 {
+			for i := 0; i < need; i++ {
+				data = append(data, noWinDataAll[i%len(noWinDataAll)])
+			}
+		}
+		printf("阶段4完成：补充不中奖数据，最终数量=%d/%d\n", len(data), targetCount)
+	}
+
+	// 重新计算最终RTP（包含所有数据）
+	var finalTotalWin float64
+	for _, item := range data {
+		finalTotalWin += item.AW
+	}
+	finalRTP := finalTotalWin / totalBet
+
+	// 计算RTP偏差
+	rtpDeviation := math.Abs(finalRTP - rtp)
+	printf("✅ 档位: %.0f,📊 最终统计: 总投注 %.2f, 总中奖 %.2f, 实际RTP %.6f, 目标: %0.6f, RTP偏差: %.6f\n", rtpLevel, totalBet, finalTotalWin, finalRTP, rtp, rtpDeviation)
+	printf("🔍 奖项统计: 大奖: %d/%d, 巨奖: %d/%d, 超级巨奖: %d/%d\n", bigCount, bigNum, megaCount, megaNum, superMegaCount, superMegaNum)
+
+	// 最终验证数据量
+	printf("🔍 最终验证: 期望 %d 条, 实际 %d 条\n", targetCount, len(data))
+	if len(data) != targetCount {
+		return fmt.Errorf("❌ 数据量不匹配：期望 %d 条, 实际 %d 条", targetCount, len(data))
+	}
+
+	// 特殊处理RtpNo为15：验证RTP是否在允许范围内
+	if isSpecialRtp15 {
+		if finalRTP < targetRtpMin || finalRTP > targetRtpMax {
+			return fmt.Errorf("❌ RtpNo为15的RTP验证失败: 当前RTP %.4f 不在允许范围 [%.1f, %.1f] 内", finalRTP, targetRtpMin, targetRtpMax)
+		}
+		printf("🎯 RtpNo为15 RTP验证通过: %.4f 在范围 [%.1f, %.1f] 内\n", finalRTP, targetRtpMin, targetRtpMax)
+	}
+
+	// 重复率统计（按 id 去重）
+	uniq := make(map[int]int, len(data))
+	for _, it := range data {
+		uniq[it.ID]++
+	}
+	dupCount := 0
+	for _, c := range uniq {
+		if c > 1 {
+			dupCount += c - 1
+		}
+	}
+	dupRate := 0.0
+	if n := len(data); n > 0 {
+		dupRate = float64(dupCount) / float64(n)
+	}
+	printf("🔎 去重统计: 总数=%d, 唯一=%d, 重复=%d, 重复率=%.4f\n", len(data), len(uniq), dupCount, dupRate)
+
+	// 打乱输出顺序
+	rand.Shuffle(len(data), func(i, j int) {
+		data[i], data[j] = data[j], data[i]
+	})
+
+	var outputDir string = filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
+	if err := saveToJSON(data, config, rtpLevel, testNumber, outputDir); err != nil {
+		return fmt.Errorf("保存JSON文件失败: %v", err)
+	}
+
+	// 任务尾分隔线
+	printf("========== [TASK END V2]   RtpNo: %.0f | Test: %d =========\n\n", rtpLevel, testNumber)
+	printf("⏱️  RTP等级 %.0f (第%d次生成V2) 耗时: %v\n", rtpLevel, testNumber, time.Since(testStartTime))
+
 	outputMu.Lock()
 	fmt.Print(logBuf.String())
 	outputMu.Unlock()
@@ -499,6 +853,7 @@ func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("使用方法:")
 		fmt.Println("  ./filteringData generate                    # 生成RTP测试数据并保存到JSON文件")
+		fmt.Println("  ./filteringData generate2                   # 生成RTP测试数据V2（四阶段策略）")
 		fmt.Println("  ./filteringData import                     # 导入output目录下的所有JSON文件到数据库")
 		fmt.Println("  ./filteringData import [fileLevelId]       # 只导入指定fileLevelId的JSON文件")
 		fmt.Println("")
@@ -514,6 +869,8 @@ func main() {
 	switch command {
 	case "generate":
 		runGenerateMode()
+	case "generate2":
+		runGenerateMode2()
 	case "import":
 		// 新增支持：
 		// 1) ./filteringData import                 → 使用 config.game.id 导入全部
@@ -590,7 +947,7 @@ func main() {
 		}
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate, import, generateFb, importFb")
+		fmt.Println("支持的命令: generate, generate2, import, generateFb, importFb")
 		os.Exit(1)
 	}
 }
@@ -670,6 +1027,106 @@ func runGenerateMode() {
 	totalDuration := time.Since(startTime)
 	fmt.Printf("\n🎉 RTP数据筛选和保存完成！\n")
 	fmt.Printf("⏱️  整个程序总耗时: %v\n", totalDuration)
+}
+
+// runGenerateMode2 运行生成模式V2 - 使用新的四阶段策略
+func runGenerateMode2() {
+	// 记录程序开始时间
+	startTime := time.Now()
+
+	// 初始化随机数种子
+	rand.Seed(time.Now().UnixNano())
+
+	// 加载配置文件
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("加载配置文件失败: %v", err)
+	}
+	fmt.Printf("配置加载成功V2 - 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNum)
+	fmt.Printf("阶段策略配置: 阶段1比例[%.1f%%-%.1f%%], 阶段3比例%.1f%%, 上偏差%.3f\n",
+		config.StageRatios.Stage1MinRatio*100, config.StageRatios.Stage1MaxRatio*100,
+		config.StageRatios.Stage3WinTopRatio*100, config.StageRatios.UpperDeviation)
+
+	// 连接数据库
+	db, err := NewDatabase(config)
+	if err != nil {
+		log.Fatalf("数据库连接失败: %v", err)
+	}
+	defer db.Close()
+
+	//计算总投注
+	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNum)
+
+	// 预取共享只读数据（使用三种数据源）
+	fmt.Println("🔄 正在获取中奖但不盈利数据...")
+	winDataAll, err := db.GetWinData()
+	if err != nil {
+		log.Fatalf("获取中奖但不盈利数据失败: %v", err)
+	}
+	fmt.Printf("✅ 中奖但不盈利数据条数: %d\n", len(winDataAll))
+
+	fmt.Println("🔄 正在获取中奖且盈利数据...")
+	profitDataAll, err := db.GetProfitData()
+	if err != nil {
+		log.Fatalf("获取中奖且盈利数据失败: %v", err)
+	}
+	fmt.Printf("✅ 中奖且盈利数据条数: %d\n", len(profitDataAll))
+
+	fmt.Println("🔄 正在获取不中奖数据...")
+	noWinDataAll, err := db.GetNoWinData()
+	if err != nil {
+		log.Fatalf("获取不中奖数据失败: %v", err)
+	}
+	fmt.Printf("✅ 不中奖数据条数: %d\n", len(noWinDataAll))
+
+	if len(winDataAll) == 0 {
+		fmt.Println("⚠️ 未获取到中奖但不盈利数据，无法继续。")
+		return
+	}
+	if len(noWinDataAll) == 0 {
+		fmt.Println("⚠️ 未获取到不中奖数据，后续将无法补全至目标条数。")
+	}
+
+	for rtpNum := 0; rtpNum < len(RtpLevels); rtpNum++ {
+		// 并发度：CPU 核数
+		worker := runtime.NumCPU()
+		sem := make(chan struct{}, worker)
+		var wg sync.WaitGroup
+
+		for t := 0; t < config.Tables.DataTableNum; t++ {
+			sem <- struct{}{}
+			wg.Add(1)
+
+			// 捕获当前循环变量
+			rtpNo := RtpLevels[rtpNum].RtpNo
+			rtpVal := RtpLevels[rtpNum].Rtp
+			testIndex := t + 1
+
+			go func(rtpNo float64, rtpVal float64, testIndex int) {
+				defer func() { <-sem; wg.Done() }()
+
+				// 记录单次测试开始时间
+				testStartTime := time.Now()
+				// 即时输出单次任务开始，便于观察进度
+				fmt.Printf("▶️ 开始生成V2 | RTP等级 %.0f | 第%d次 | %s\n", rtpNo, testIndex, testStartTime.Format(time.RFC3339))
+
+				if err := runRtpTest2(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, profitDataAll); err != nil {
+					log.Printf("RTP测试V2失败: %v", err)
+				}
+
+				// 计算并输出单次测试耗时
+				testDuration := time.Since(testStartTime)
+				fmt.Printf("⏱️  RTP等级 %.0f (第%d次生成V2) 耗时: %v\n", rtpNo, testIndex, testDuration)
+			}(rtpNo, rtpVal, testIndex)
+		}
+
+		wg.Wait()
+	}
+
+	// 计算并输出整个程序的总耗时
+	totalDuration := time.Since(startTime)
+	fmt.Printf("\n🎉 RTP数据筛选和保存完成V2！\n")
+	fmt.Printf("⏱️  整个程序总耗时V2: %v\n", totalDuration)
 }
 
 // runImportMode 运行导入模式

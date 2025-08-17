@@ -58,6 +58,13 @@ type Config struct {
 		SpecialGameplay float64 `yaml:"special_gameplay"`
 	} `yaml:"rtp"`
 
+	StageRatios struct {
+		Stage1MinRatio    float64 `yaml:"stage1_min_ratio"`
+		Stage1MaxRatio    float64 `yaml:"stage1_max_ratio"`
+		Stage3WinTopRatio float64 `yaml:"stage3_win_top_ratio"`
+		UpperDeviation    float64 `yaml:"upper_deviation"`
+	} `yaml:"stage_ratios"`
+
 	Settings struct {
 		LogLevel  string `yaml:"log_level"`
 		BatchSize int    `yaml:"batch_size"`
