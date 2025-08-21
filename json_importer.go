@@ -481,7 +481,7 @@ func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName str
 	defer stmt.Close()
 
 	// 计算投注金额
-	bet := ji.config.Bet.CS * ji.config.Bet.ML * ji.config.Bet.BL
+	// bet := ji.config.Bet.CS * ji.config.Bet.ML * ji.config.Bet.BL
 
 	// 批量插入数据
 	for i, item := range data {
@@ -504,12 +504,20 @@ func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName str
 		} else {
 			winValue = 0.0
 		}
+
+		var totalBet float64
+		if aw, ok := item["tb"].(float64); ok {
+			// 四舍五入到2位小数，避免浮点数精度问题
+			totalBet = math.Round(aw*100) / 100
+		} else {
+			totalBet = 0.0
+		}
 		rtpLevelVal := float64(rtpLevel)
 		_, err := stmt.Exec(
 			rtpLevelVal, // rtpLevel
 			testNum,     // srNumber
 			i+1,         // srId (从1开始)
-			bet,         // bet
+			totalBet,         // bet
 			winValue,    // win (精度修正后)
 			detailVal,   // detail (JSONB)
 		)
