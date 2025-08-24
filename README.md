@@ -128,6 +128,19 @@ rsync -avz \
   --include 'GameResults_1*' --exclude '*' \
   /Users/shihao/Desktop/lemon/filteringData/output/93/ \
   ec2-user@43.198.187.137:/home/ec2-user/filteringData/output/93/
+
+  #压缩
+  rsync -avzz \
+  -e "ssh -i /Users/wangfukang/Desktop/mpgKey/ec2-server-ape.pem -o StrictHostKeyChecking=no" \
+  --include 'GameResults_1*' --exclude '*' \
+  /Users/wangfukang/Desktop/project-go/filteringData/output/112/ \
+  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/112/
+
+
+  rsync -azvh --progress \
+  -e "ssh -i /Users/wangfukang/Desktop/mpgKey/ec2-server-ape.pem -o StrictHostKeyChecking=no" \
+  /Users/wangfukang/Desktop/project-go/filteringData/output/105/ \
+  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/105/
 ```
 
 参数说明：
