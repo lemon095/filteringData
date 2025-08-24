@@ -99,7 +99,7 @@ func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, tes
 	isSpecialRtp15 := rtpLevel == 15
 	var targetRtpMin, targetRtpMax float64
 	if isSpecialRtp15 {
-		targetRtpMin = 1.8
+		targetRtpMin = 1.9
 		targetRtpMax = 2.0
 		fmt.Printf("🎯 RtpNo为%.0f,特殊处理：目标RTP范围 [%.1f, %.1f], 允许偏差 ±0.005\n", rtpLevel, targetRtpMin, targetRtpMax)
 	}
@@ -481,7 +481,7 @@ func runRtpTest2(db *Database, config *Config, rtpLevel float64, rtp float64, te
 	isSpecialRtp15 := rtpLevel == 15
 	var targetRtpMin, targetRtpMax float64
 	if isSpecialRtp15 {
-		targetRtpMin = 1.8
+		targetRtpMin = 1.9
 		targetRtpMax = 2.0
 		printf("🎯 RtpNo为%.0f,特殊处理：目标RTP范围 [%.1f, %.1f], 允许偏差 ±0.005\n", rtpLevel, targetRtpMin, targetRtpMax)
 	}
