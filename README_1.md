@@ -19,8 +19,8 @@ rsync -avz \
 ```bash
 rsync -azvh --progress \
   -e "ssh -i /Users/shihao/Desktop/shihao/hk.pem -o StrictHostKeyChecking=no" \
-  /Users/shihao/Desktop/lemon/filteringData/output/1601012_fb/ \
-  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/1601012_fb/
+  /Users/shihao/Desktop/lemon/filteringData/output/1881268/ \
+  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/1881268/
 ```
 
 ###夺宝购买数据验证
@@ -89,4 +89,13 @@ df -h
 
 # 6) 仅导入指定 rtpLevel 的“购买夺宝”文件
 ./filteringData importFb 93
+```
+
+### 根据 psid 查记录
+
+```base
+SELECT DISTINCT t.*
+FROM "GameResults_108" t,
+     jsonb_array_elements(t.detail) AS elem  -- 展开detail数组为单行元素
+WHERE elem->>'psid' = '215656635046687212';  -- 提取psid并比较
 ```
