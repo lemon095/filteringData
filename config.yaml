@@ -1,18 +1,69 @@
 # 数据过滤项目配置文件
-# Database Configuration
-database:
-  postgres:
+
+# 默认环境（本地环境）
+default_env: "local"
+
+# 多环境数据库配置
+environments:
+  # 本地环境（默认）
+  local:
+    host: "127.0.0.1"
     port: 5432
+    username: "postgres"
+    password: "123666"
+    database: "postgres"
     sslmode: "disable"
     timezone: "Asia/Shanghai"
-    # host: "127.0.0.1"
-    # username: "postgres"
-    # password: "123666"
-    # database: "postgres"
+
+  # 香港测试环境
+  hk-test:
     host: "mpg-rds-aurora-ae.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com"
+    port: 5432
     username: "devadmin"
     password: "*ztnEY8n12"
     database: "mpgdb"
+    sslmode: "require"
+    timezone: "Asia/Shanghai"
+
+  # 巴西测试环境
+  br-test:
+    host: "mpg-db-test.cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com"
+    port: 5432
+    username: "devadmin"
+    password: "*ztnEY8n12"
+    database: "mpgdb"
+    sslmode: "require"
+    timezone: "Asia/Shanghai"
+
+  # 巴西正式环境
+  br-prod:
+    host: "mpg-db-cluster.cluster-cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com"
+    port: 5432
+    username: "devadmin"
+    password: "*ztnEY8n12"
+    database: "mpgdb"
+    sslmode: "require"
+    timezone: "Asia/Shanghai"
+
+  # 美国正式环境
+  us-prod:
+    host: "mpg-db-cluster.cluster-cvwq2uy263dd.us-east-1.rds.amazonaws.com"
+    port: 5432
+    username: "devadmin"
+    password: "*ztnEY8n12"
+    database: "mpgdb"
+    sslmode: "require"
+    timezone: "Asia/Shanghai"
+
+  # 香港正式环境
+  hk-prod:
+    host: "mpgdb.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com"
+    port: 5432
+    username: "devadmin"
+    password: "*ztnEY8n12"
+    database: "mpgdb"
+    sslmode: "require"
+    timezone: "Asia/Shanghai"
 
 # Game Configuration
 game:
