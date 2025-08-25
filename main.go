@@ -18,6 +18,28 @@ import (
 	"time"
 )
 
+// isGameId 检查参数是否为gameId（对应目录存在）
+func isGameId(arg string) bool {
+	if gid, err := strconv.Atoi(arg); err == nil {
+		gameDir := filepath.Join("output", fmt.Sprintf("%d", gid))
+		if st, err2 := os.Stat(gameDir); err2 == nil && st.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// isGameIdFb 检查参数是否为gameId（对应_fb目录存在）
+func isGameIdFb(arg string) bool {
+	if gid, err := strconv.Atoi(arg); err == nil {
+		gameDir := filepath.Join("output", fmt.Sprintf("%d_fb", gid))
+		if st, err2 := os.Stat(gameDir); err2 == nil && st.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
 type RtpLevel struct {
 	RtpNo float64 `json:"rtpNo"`
 	Rtp   float64 `json:"rtp"`
@@ -872,77 +894,128 @@ func main() {
 	case "generate2":
 		runGenerateMode2()
 	case "import":
-		// 新增支持：
-		// 1) ./filteringData import                 → 使用 config.game.id 导入全部
-		// 2) ./filteringData import <gameId>        → 导入 output/<gameId>/ 全部
-		// 3) ./filteringData import <fileLevelId>   → 仅导入 config.game.id 目录下该档位（旧行为）
-		// 4) ./filteringData import <gameId> <level>→ 仅导入 output/<gameId>/ 指定档位
+		// 支持多环境导入：
+		// 1) ./filteringData import                      → 使用默认环境导入全部
+		// 2) ./filteringData import <gameId>             → 使用默认环境导入 output/<gameId>/
+		// 3) ./filteringData import <levelId>            → 使用默认环境导入指定level
+		// 4) ./filteringData import <gameId> <env>       → 使用指定环境导入 output/<gameId>/
+		// 5) ./filteringData import <levelId> <env>      → 使用指定环境导入指定level
+		// 6) ./filteringData import <gameId> <level> <env> → 使用指定环境导入指定gameId和level
 		if len(os.Args) == 2 {
-			runImportMode("")
+			// ./filteringData import
+			runImportMode("", "")
 		} else if len(os.Args) == 3 {
 			arg := os.Args[2]
-			// 判断是否为 gameId（目录存在）或当作 levelId（兼容旧版）
-			if gid, err := strconv.Atoi(arg); err == nil {
-				gameDir := filepath.Join("output", fmt.Sprintf("%d", gid))
-				if st, err2 := os.Stat(gameDir); err2 == nil && st.IsDir() {
-					runImportModeWithGameId(gid, "")
-					break
-				}
+			if isGameId(arg) {
+				// ./filteringData import <gameId> - 目录存在，当作gameId处理
+				gid, _ := strconv.Atoi(arg)
+				runImportModeWithGameId(gid, "", "")
+			} else {
+				// ./filteringData import <levelId> - 目录不存在，当作levelId处理
+				// 将在 output/<config.Game.ID>/ 目录下查找包含该levelId的文件
+				runImportMode(arg, "")
 			}
-			// 兼容：当作 levelId 过滤当前 config.game.id 目录
-			runImportMode(arg)
 		} else if len(os.Args) == 4 {
-			gidStr := os.Args[2]
-			lvl := strings.TrimPrefix(os.Args[3], "-")
+			arg1, arg2 := os.Args[2], os.Args[3]
+			if isGameId(arg1) && IsEnv(arg2) {
+				// ./filteringData import <gameId> <env>
+				gid, _ := strconv.Atoi(arg1)
+				env := ResolveEnv(arg2)
+				runImportModeWithGameId(gid, "", env)
+			} else if IsEnv(arg2) {
+				// ./filteringData import <levelId> <env>
+				env := ResolveEnv(arg2)
+				runImportMode(arg1, env)
+			} else if isGameId(arg1) {
+				// ./filteringData import <gameId> <level>
+				gid, _ := strconv.Atoi(arg1)
+				runImportModeWithGameId(gid, arg2, "")
+			} else {
+				fmt.Printf("❌ 参数错误: 无法识别参数组合\n")
+				os.Exit(1)
+			}
+		} else if len(os.Args) == 5 {
+			// ./filteringData import <gameId> <level> <env>
+			gidStr, lvl, envStr := os.Args[2], os.Args[3], os.Args[4]
 			gid, err := strconv.Atoi(gidStr)
 			if err != nil {
 				fmt.Printf("❌ 参数错误: gameId 必须为整数\n")
 				os.Exit(1)
 			}
-			runImportModeWithGameId(gid, lvl)
+			env := ResolveEnv(envStr)
+			runImportModeWithGameId(gid, lvl, env)
 		} else {
-			fmt.Printf("❌ 参数错误: import 命令接受 0~2 个参数\n")
+			fmt.Printf("❌ 参数错误: import 命令参数过多\n")
 			fmt.Println("用法1: ./filteringData import")
 			fmt.Println("用法2: ./filteringData import <gameId>")
 			fmt.Println("用法3: ./filteringData import <levelId>")
-			fmt.Println("用法4: ./filteringData import <gameId> <levelId>")
+			fmt.Println("用法4: ./filteringData import <gameId> <env>")
+			fmt.Println("用法5: ./filteringData import <levelId> <env>")
+			fmt.Println("用法6: ./filteringData import <gameId> <level> <env>")
+			fmt.Println("\n环境代码: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp")
 			os.Exit(1)
 		}
 	case "generateFb":
 		runGenerateFbMode()
 	case "importFb":
-		// 新增支持：
-		// 1) ./filteringData importFb                  → 使用 config.game.id 导入全部（_fb目录）
-		// 2) ./filteringData importFb <gameId>         → 导入 output/<gameId>_fb/ 全部
-		// 3) ./filteringData importFb <levelId>        → 仅导入 config.game.id 的该档位（旧行为）
-		// 4) ./filteringData importFb <gameId> <level> → 仅导入 output/<gameId>_fb/ 指定档位
+		// 支持多环境购买夺宝导入：
+		// 1) ./filteringData importFb                      → 使用默认环境导入全部_fb
+		// 2) ./filteringData importFb <gameId>             → 使用默认环境导入 output/<gameId>_fb/
+		// 3) ./filteringData importFb <levelId>            → 使用默认环境导入指定level
+		// 4) ./filteringData importFb <gameId> <env>       → 使用指定环境导入 output/<gameId>_fb/
+		// 5) ./filteringData importFb <levelId> <env>      → 使用指定环境导入指定level
+		// 6) ./filteringData importFb <gameId> <level> <env> → 使用指定环境导入指定gameId和level
 		if len(os.Args) == 2 {
-			runImportFbMode("")
+			// ./filteringData importFb
+			runImportFbMode("", "")
 		} else if len(os.Args) == 3 {
 			arg := os.Args[2]
-			if gid, err := strconv.Atoi(arg); err == nil {
-				gameDir := filepath.Join("output", fmt.Sprintf("%d_fb", gid))
-				if st, err2 := os.Stat(gameDir); err2 == nil && st.IsDir() {
-					runImportFbModeWithGameId(gid, "")
-					break
-				}
+			if isGameIdFb(arg) {
+				// ./filteringData importFb <gameId>
+				gid, _ := strconv.Atoi(arg)
+				runImportFbModeWithGameId(gid, "", "")
+			} else {
+				// ./filteringData importFb <levelId>
+				runImportFbMode(arg, "")
 			}
-			runImportFbMode(arg)
 		} else if len(os.Args) == 4 {
-			gidStr := os.Args[2]
-			lvl := strings.TrimPrefix(os.Args[3], "-")
+			arg1, arg2 := os.Args[2], os.Args[3]
+			if isGameIdFb(arg1) && IsEnv(arg2) {
+				// ./filteringData importFb <gameId> <env>
+				gid, _ := strconv.Atoi(arg1)
+				env := ResolveEnv(arg2)
+				runImportFbModeWithGameId(gid, "", env)
+			} else if IsEnv(arg2) {
+				// ./filteringData importFb <levelId> <env>
+				env := ResolveEnv(arg2)
+				runImportFbMode(arg1, env)
+			} else if isGameIdFb(arg1) {
+				// ./filteringData importFb <gameId> <level>
+				gid, _ := strconv.Atoi(arg1)
+				runImportFbModeWithGameId(gid, arg2, "")
+			} else {
+				fmt.Printf("❌ 参数错误: 无法识别参数组合\n")
+				os.Exit(1)
+			}
+		} else if len(os.Args) == 5 {
+			// ./filteringData importFb <gameId> <level> <env>
+			gidStr, lvl, envStr := os.Args[2], os.Args[3], os.Args[4]
 			gid, err := strconv.Atoi(gidStr)
 			if err != nil {
 				fmt.Printf("❌ 参数错误: gameId 必须为整数\n")
 				os.Exit(1)
 			}
-			runImportFbModeWithGameId(gid, lvl)
+			env := ResolveEnv(envStr)
+			runImportFbModeWithGameId(gid, lvl, env)
 		} else {
-			fmt.Printf("❌ 参数错误: importFb 命令接受 0~2 个参数\n")
+			fmt.Printf("❌ 参数错误: importFb 命令参数过多\n")
 			fmt.Println("用法1: ./filteringData importFb")
 			fmt.Println("用法2: ./filteringData importFb <gameId>")
 			fmt.Println("用法3: ./filteringData importFb <levelId>")
-			fmt.Println("用法4: ./filteringData importFb <gameId> <levelId>")
+			fmt.Println("用法4: ./filteringData importFb <gameId> <env>")
+			fmt.Println("用法5: ./filteringData importFb <levelId> <env>")
+			fmt.Println("用法6: ./filteringData importFb <gameId> <level> <env>")
+			fmt.Println("\n环境代码: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp")
 			os.Exit(1)
 		}
 	default:
@@ -968,7 +1041,7 @@ func runGenerateMode() {
 	fmt.Printf("配置加载成功 - 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNum)
 
 	// 连接数据库
-	db, err := NewDatabase(config)
+	db, err := NewDatabase(config, "")
 	if err != nil {
 		log.Fatalf("数据库连接失败: %v", err)
 	}
@@ -1048,7 +1121,7 @@ func runGenerateMode2() {
 		config.StageRatios.Stage3WinTopRatio*100, config.StageRatios.UpperDeviation)
 
 	// 连接数据库
-	db, err := NewDatabase(config)
+	db, err := NewDatabase(config, "")
 	if err != nil {
 		log.Fatalf("数据库连接失败: %v", err)
 	}
@@ -1130,11 +1203,16 @@ func runGenerateMode2() {
 }
 
 // runImportMode 运行导入模式
-func runImportMode(fileLevelId string) {
+func runImportMode(fileLevelId string, env string) {
+	envDisplay := ""
+	if env != "" {
+		envDisplay = fmt.Sprintf(" [环境: %s]", env)
+	}
+
 	if fileLevelId == "" {
-		fmt.Println("🔄 启动导入模式 (导入所有文件)...")
+		fmt.Printf("🔄 启动导入模式 (导入所有文件)%s...\n", envDisplay)
 	} else {
-		fmt.Printf("🔄 启动导入模式 (只导入fileLevelId=%s的文件)...\n", fileLevelId)
+		fmt.Printf("🔄 启动导入模式 (只导入fileLevelId=%s的文件)%s...\n", fileLevelId, envDisplay)
 	}
 
 	// 加载配置
@@ -1144,7 +1222,7 @@ func runImportMode(fileLevelId string) {
 	}
 
 	// 连接数据库
-	db, err := NewDatabase(config)
+	db, err := NewDatabase(config, env)
 	if err != nil {
 		log.Fatalf("❌ 连接数据库失败: %v", err)
 	}
@@ -1162,11 +1240,16 @@ func runImportMode(fileLevelId string) {
 }
 
 // runImportModeWithGameId 导入指定 gameId 目录；可选 levelId 过滤
-func runImportModeWithGameId(gameId int, levelId string) {
+func runImportModeWithGameId(gameId int, levelId string, env string) {
+	envDisplay := ""
+	if env != "" {
+		envDisplay = fmt.Sprintf(" [环境: %s]", env)
+	}
+
 	if levelId == "" {
-		fmt.Printf("🔄 启动导入模式 (导入 output/%d 所有文件)...\n", gameId)
+		fmt.Printf("🔄 启动导入模式 (导入 output/%d 所有文件)%s...\n", gameId, envDisplay)
 	} else {
-		fmt.Printf("🔄 启动导入模式 (只导入 output/%d 下 levelId=%s 的文件)...\n", gameId, levelId)
+		fmt.Printf("🔄 启动导入模式 (只导入 output/%d 下 levelId=%s 的文件)%s...\n", gameId, levelId, envDisplay)
 	}
 
 	config, err := LoadConfig("config.yaml")
@@ -1174,7 +1257,7 @@ func runImportModeWithGameId(gameId int, levelId string) {
 		log.Fatalf("❌ 加载配置失败: %v", err)
 	}
 
-	db, err := NewDatabase(config)
+	db, err := NewDatabase(config, env)
 	if err != nil {
 		log.Fatalf("❌ 连接数据库失败: %v", err)
 	}
@@ -1588,7 +1671,7 @@ func runGenerateFbMode() {
 	fmt.Println("▶️ [generateFb] 购买夺宝生成模式启动")
 
 	// 连接数据库
-	db, err := NewDatabase(config)
+	db, err := NewDatabase(config, "")
 	if err != nil {
 		log.Fatalf("数据库连接失败: %v", err)
 	}
@@ -1948,7 +2031,7 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 }
 
 // runImportFbMode 运行购买夺宝导入模式
-func runImportFbMode(fileLevelId string) {
+func runImportFbMode(fileLevelId string, env string) {
 	// 加载配置
 	config, err := LoadConfig("config.yaml")
 	if err != nil {
@@ -1960,7 +2043,7 @@ func runImportFbMode(fileLevelId string) {
 	}
 
 	// 连接数据库
-	db, err := NewDatabase(config)
+	db, err := NewDatabase(config, env)
 	if err != nil {
 		log.Fatalf("❌ 连接数据库失败: %v", err)
 	}
@@ -1968,7 +2051,11 @@ func runImportFbMode(fileLevelId string) {
 
 	// 读取目录：output/<gameId>_fb
 	outputDir := filepath.Join("output", fmt.Sprintf("%d_fb", config.Game.ID))
-	fmt.Printf("📂 [importFb] 导入目录: %s\n", outputDir)
+	envDisplay := ""
+	if env != "" {
+		envDisplay = fmt.Sprintf(" [环境: %s]", env)
+	}
+	fmt.Printf("📂 [importFb] 导入目录: %s%s\n", outputDir, envDisplay)
 
 	// 构建目标表（与普通导入相同：rtpLevel 为 NUMERIC，表名不带 _fb）
 	tableName := fmt.Sprintf("%s%d", config.Tables.OutputTablePrefix, config.Game.ID)
@@ -2192,7 +2279,7 @@ func runImportFbMode(fileLevelId string) {
 }
 
 // runImportFbModeWithGameId 购买夺宝：导入指定 gameId 的 _fb 目录；可选 levelId 过滤
-func runImportFbModeWithGameId(gameId int, levelId string) {
+func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 	// 加载配置
 	config, err := LoadConfig("config.yaml")
 	if err != nil {
@@ -2204,7 +2291,7 @@ func runImportFbModeWithGameId(gameId int, levelId string) {
 	}
 
 	// 连接数据库
-	db, err := NewDatabase(config)
+	db, err := NewDatabase(config, env)
 	if err != nil {
 		log.Fatalf("❌ 连接数据库失败: %v", err)
 	}
@@ -2212,7 +2299,11 @@ func runImportFbModeWithGameId(gameId int, levelId string) {
 
 	// 读取目录：output/<gameId>_fb
 	outputDir := filepath.Join("output", fmt.Sprintf("%d_fb", gameId))
-	fmt.Printf("📂 [importFb] 导入目录: %s\n", outputDir)
+	envDisplay := ""
+	if env != "" {
+		envDisplay = fmt.Sprintf(" [环境: %s]", env)
+	}
+	fmt.Printf("📂 [importFb] 导入目录: %s%s\n", outputDir, envDisplay)
 
 	// 目标表仍为不带 _fb 的表名（与现有实现一致）
 	tableName := fmt.Sprintf("%s%d", config.Tables.OutputTablePrefix, gameId)

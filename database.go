@@ -18,15 +18,20 @@ type Database struct {
 }
 
 // NewDatabase 创建数据库连接
-func NewDatabase(config *Config) (*Database, error) {
+func NewDatabase(config *Config, env string) (*Database, error) {
+	dbConfig, err := config.GetDatabaseConfig(env)
+	if err != nil {
+		return nil, err
+	}
+	
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s TimeZone=%s",
-		config.Database.Postgres.Host,
-		config.Database.Postgres.Port,
-		config.Database.Postgres.Username,
-		config.Database.Postgres.Password,
-		config.Database.Postgres.Database,
-		config.Database.Postgres.SSLMode,
-		config.Database.Postgres.Timezone,
+		dbConfig.Host,
+		dbConfig.Port,
+		dbConfig.Username,
+		dbConfig.Password,
+		dbConfig.Database,
+		dbConfig.SSLMode,
+		dbConfig.Timezone,
 	)
 
 	db, err := sql.Open("postgres", dsn)
@@ -39,7 +44,11 @@ func NewDatabase(config *Config) (*Database, error) {
 		return nil, fmt.Errorf("数据库连接测试失败: %v", err)
 	}
 
-	log.Println("数据库连接成功")
+	envDisplay := env
+	if env == "" {
+		envDisplay = config.DefaultEnv
+	}
+	log.Printf("数据库连接成功 [环境: %s, 主机: %s]", envDisplay, dbConfig.Host)
 	return &Database{DB: db, Config: config}, nil
 }
 
