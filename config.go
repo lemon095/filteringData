@@ -7,18 +7,45 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// 环境映射表
+var envMapping = map[string]string{
+	// 完整名称
+	"local":   "local",
+	"hk-test": "hk-test",
+	"br-test": "br-test",
+	"br-prod": "br-prod",
+	"us-prod": "us-prod",
+	"hk-prod": "hk-prod",
+
+	// 简短别名
+	"l":  "local",
+	"ht": "hk-test",
+	"bt": "br-test",
+	"bp": "br-prod",
+	"up": "us-prod",
+	"hp": "hk-prod",
+}
+
+// DatabaseConfig 数据库配置结构体
+type DatabaseConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	Database string `yaml:"database"`
+	SSLMode  string `yaml:"sslmode"`
+	Timezone string `yaml:"timezone"`
+}
+
 // Config 配置结构体
 type Config struct {
+	// 多环境数据库配置
+	Environments map[string]DatabaseConfig `yaml:"environments"`
+	DefaultEnv   string                    `yaml:"default_env"`
+
+	// 保持向后兼容的单一数据库配置（可选）
 	Database struct {
-		Postgres struct {
-			Host     string `yaml:"host"`
-			Port     int    `yaml:"port"`
-			Username string `yaml:"username"`
-			Password string `yaml:"password"`
-			Database string `yaml:"database"`
-			SSLMode  string `yaml:"sslmode"`
-			Timezone string `yaml:"timezone"`
-		} `yaml:"postgres"`
+		Postgres DatabaseConfig `yaml:"postgres"`
 	} `yaml:"database"`
 
 	Game struct {
@@ -72,6 +99,39 @@ type Config struct {
 	} `yaml:"settings"`
 }
 
+// ResolveEnv 解析环境参数
+func ResolveEnv(envArg string) string {
+	if fullEnv, exists := envMapping[envArg]; exists {
+		return fullEnv
+	}
+	return envArg // 如果不在映射表中，直接返回原值
+}
+
+// IsEnv 检查参数是否为环境代码
+func IsEnv(arg string) bool {
+	_, exists := envMapping[arg]
+	return exists
+}
+
+// GetDatabaseConfig 根据环境获取数据库配置
+func (c *Config) GetDatabaseConfig(env string) (*DatabaseConfig, error) {
+	if env == "" {
+		env = c.DefaultEnv
+	}
+
+	// 首先尝试从environments中获取
+	if dbConfig, exists := c.Environments[env]; exists {
+		return &dbConfig, nil
+	}
+
+	// 向后兼容：如果environments为空，使用传统的database配置
+	if len(c.Environments) == 0 {
+		return &c.Database.Postgres, nil
+	}
+
+	return nil, fmt.Errorf("环境 '%s' 不存在", env)
+}
+
 // LoadConfig 加载配置文件
 func LoadConfig(filename string) (*Config, error) {
 	data, err := ioutil.ReadFile(filename)
@@ -83,6 +143,11 @@ func LoadConfig(filename string) (*Config, error) {
 	err = yaml.Unmarshal(data, &config)
 	if err != nil {
 		return nil, fmt.Errorf("解析配置文件失败: %v", err)
+	}
+
+	// 如果没有设置默认环境，设置为local
+	if config.DefaultEnv == "" {
+		config.DefaultEnv = "local"
 	}
 
 	return &config, nil
