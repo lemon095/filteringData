@@ -11,21 +11,18 @@ database:
     # database: "postgres"
     #香港测试
     host: "mpg-rds-aurora-ae.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com"
-    username: "devadmin"
-    password: "*ztnEY8n12"
-    database: "mpgdb"
     # 巴西测试
     # host: "mpg-db-test.cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com"
     # 巴西正式
     # host: mpg-db-cluster.cluster-cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com"
     #美国正式
     # host: "mpg-db-cluster.cluster-cvwq2uy263dd.us-east-1.rds.amazonaws.com"
-     #香港正式
+    #香港正式
     # host: "mpgdb.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com"
     #下方为服务器数据库配置-所有环境都一样，只改host
-    # username: "devadmin"
-    # password: "*ztnEY8n12"
-    # database: "mpgdb"
+    username: "devadmin"
+    password: "*ztnEY8n12"
+    database: "mpgdb"
 
 # Game Configuration
 game:
