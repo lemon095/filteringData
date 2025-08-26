@@ -32,12 +32,57 @@ cp config.example.yaml config.yaml
 ```
 
 2. 编辑 `config.yaml` 文件，修改以下配置：
-   - **数据库配置**: PostgreSQL 连接信息
-   - **游戏 ID**: 您的游戏标识符
-   - **CSV 表前缀**: 数据表前缀
-   - **奖项比例**: 大奖、巨奖、超巨奖、夺宝比例
-   - **玩法比例**: 普通玩法和特殊玩法比例
-   - **RTP 配置**: 各玩法的返奖率
+
+#### 多环境数据库配置
+
+项目支持多环境数据库配置，可以轻松切换不同的数据库环境：
+
+```yaml
+# 默认环境（不指定环境时使用）
+default_env: "local"
+
+# 多环境数据库配置
+environments:
+  # 本地环境（默认）
+  local:
+    host: "127.0.0.1"
+    port: 5432
+    username: "postgres"
+    password: "123666"
+    database: "postgres"
+    sslmode: "disable"
+    timezone: "Asia/Shanghai"
+
+  # 香港测试环境
+  hk-test:
+    host: "mpg-rds-aurora-ae.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com"
+    port: 5432
+    username: "devadmin"
+    password: "*ztnEY8n12"
+    database: "mpgdb"
+    sslmode: "require"
+    timezone: "Asia/Shanghai"
+
+  # 巴西测试环境
+  br-test:
+    host: "mpg-db-test.cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com"
+    port: 5432
+    username: "devadmin"
+    password: "*ztnEY8n12"
+    database: "mpgdb"
+    sslmode: "require"
+    timezone: "Asia/Shanghai"
+
+  # 更多环境...
+```
+
+#### 其他配置项
+
+- **游戏 ID**: 您的游戏标识符
+- **CSV 表前缀**: 数据表前缀
+- **奖项比例**: 大奖、巨奖、超巨奖、夺宝比例
+- **玩法比例**: 普通玩法和特殊玩法比例
+- **RTP 配置**: 各玩法的返奖率
 
 ## 快速开始
 
@@ -84,25 +129,98 @@ df -h
 
 当前可执行支持以下子命令：
 
+### 基础命令
+
 ```bash
 # 1) 生成普通流程 JSON（输出到 output/<gameId>）
 ./filteringData generate
 
-# 2) 从 output/<gameId> 导入到数据库（全量）
+# 2) 生成"购买夺宝"模式 JSON（输出到 output/<gameId>_fb）
+./filteringData generateFb
+```
+
+### 多环境导入命令
+
+支持多环境数据库连接，可以将数据导入到不同的数据库环境中。
+
+#### 普通模式导入 (import)
+
+```bash
+# 导入所有文件（使用默认环境：本地）
 ./filteringData import
 
-# 3) 仅导入指定 rtpLevel 的文件（例如 93）
-./filteringData import 93
+# 按档位导入（在 output/<config.Game.ID>/ 目录下查找指定档位文件）
+./filteringData import 103                    # 导入档位103，使用默认环境
+./filteringData import 103 bt                 # 导入档位103，使用巴西测试环境
 
-# 4) 生成“购买夺宝”模式 JSON（输出到 output/<gameId>_fb）
-./filteringData generateFb
+# 按游戏ID导入（导入整个 output/<gameId>/ 目录）
+./filteringData import 93                     # 如果output/93/目录存在，导入所有文件
+./filteringData import 93 bt                  # 导入output/93/，使用巴西测试环境
 
-# 5) 从 output/<gameId>_fb 导入到数据库
+# 完整参数导入
+./filteringData import 93 level1 bt           # 导入output/93/中level1档位，使用巴西测试环境
+```
+
+#### 购买夺宝模式导入 (importFb)
+
+```bash
+# 导入所有FB文件（使用默认环境）
 ./filteringData importFb
 
-# 6) 仅导入指定 rtpLevel 的“购买夺宝”文件
-./filteringData importFb 93
+# 按档位导入FB文件
+./filteringData importFb 103                  # 导入档位103，使用默认环境
+./filteringData importFb 103 bt               # 导入档位103，使用巴西测试环境
+
+# 按游戏ID导入FB文件（导入整个 output/<gameId>_fb/ 目录）
+./filteringData importFb 93                   # 如果output/93_fb/目录存在，导入所有文件
+./filteringData importFb 93 bt                # 导入output/93_fb/，使用巴西测试环境
+
+# 完整参数导入
+./filteringData importFb 93 level1 bt         # 导入output/93_fb/中level1档位，使用巴西测试环境
 ```
+
+### 环境代码说明
+
+支持以下环境代码（支持完整名称和简短别名）：
+
+| 环境名称  | 简短代码 | 说明             | 数据库主机                                                         |
+| --------- | -------- | ---------------- | ------------------------------------------------------------------ |
+| `local`   | `l`      | 本地环境（默认） | 127.0.0.1                                                          |
+| `hk-test` | `ht`     | 香港测试环境     | mpg-rds-aurora-ae.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com |
+| `br-test` | `bt`     | 巴西测试环境     | mpg-db-test.cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com               |
+| `br-prod` | `bp`     | 巴西正式环境     | mpg-db-cluster.cluster-cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com    |
+| `us-prod` | `up`     | 美国正式环境     | mpg-db-cluster.cluster-cvwq2uy263dd.us-east-1.rds.amazonaws.com    |
+| `hk-prod` | `hp`     | 香港正式环境     | mpgdb.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com             |
+
+### 使用示例
+
+```bash
+# 常用命令示例
+./filteringData importFb 103 bt               # 导入103_fb到巴西测试环境
+./filteringData import 105 bp                 # 导入档位105到巴西正式环境
+./filteringData importFb 93 us-prod           # 导入93_fb到美国正式环境（完整环境名）
+./filteringData import local                  # 导入所有文件到本地环境
+
+# 错误处理示例
+./filteringData import 103                    # 如果output/103不存在但output/103_fb存在
+                                             # 会提示使用: ./filteringData importFb 103
+```
+
+### 命令逻辑说明
+
+1. **目录检测逻辑**：
+   - `import <number>`：先检查 `output/<number>/` 是否存在
+     - 存在：当作 gameId，导入整个目录
+     - 不存在：当作档位 ID，在 `output/<config.Game.ID>/` 下查找对应文件
+2. **文件过滤规则**：
+
+   - 档位过滤：查找 `GameResults_<档位>_*.json` 格式的文件
+   - 例如：档位 103 会匹配 `GameResults_103_1.json`, `GameResults_103_2.json` 等
+
+3. **环境配置**：
+   - 不指定环境时使用默认环境（local）
+   - 环境配置在 `config.yaml` 的 `environments` 部分
+   - 每个环境有独立的数据库连接配置
 
 补充说明：
 
@@ -135,6 +253,14 @@ rsync -avz \
   --include 'GameResults_1*' --exclude '*' \
   /Users/wangfukang/Desktop/project-go/filteringData/output/112/ \
   ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/112/
+
+
+  #压缩
+  rsync -avzz \
+  -e "ssh -i /Users/wangfukang/Desktop/mpgKey/巴西.pem -o StrictHostKeyChecking=no" \
+  --include 'GameResults_1*' --exclude '*' \
+  /Users/wangfukang/Desktop/project-go/filteringData/output/112/ \
+  ec2-user@18.229.148.69:/home/ec2-user/filteringData/output/112/
 
 
   rsync -azvh --progress \
@@ -301,6 +427,120 @@ rsync -av \
 - `gd`: 原数据 (jsonb)
 - `createdAt`: 创建时间 (timestamp)
 - `updatedAt`: 更新时间 (timestamp)
+
+## 多环境功能详解
+
+### 功能特性
+
+- **多环境支持**: 支持本地、测试、正式等多个数据库环境
+- **环境隔离**: 每个环境使用独立的数据库连接配置
+- **简化命令**: 支持环境代码简写，提高操作效率
+- **智能检测**: 自动检测目录结构，提供友好的错误提示
+- **向后兼容**: 保持与旧版本命令的兼容性
+
+### 环境配置管理
+
+#### 添加新环境
+
+在 `config.yaml` 的 `environments` 部分添加新环境：
+
+```yaml
+environments:
+  # 添加新的测试环境
+  new-test:
+    host: "your-new-test-host.com"
+    port: 5432
+    username: "testuser"
+    password: "testpass"
+    database: "testdb"
+    sslmode: "require"
+    timezone: "Asia/Shanghai"
+```
+
+同时在 `config.go` 的环境映射表中添加对应的简短代码：
+
+```go
+var envMapping = map[string]string{
+    // 现有环境...
+    "new-test": "new-test",
+    "nt":       "new-test",  // 简短代码
+}
+```
+
+#### 环境连接验证
+
+程序启动时会显示连接的环境信息：
+
+```
+数据库连接成功 [环境: br-test, 主机: mpg-db-test.cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com]
+```
+
+### 最佳实践
+
+1. **开发环境**: 使用 `local` 环境进行本地开发和测试
+2. **测试环境**: 使用 `*-test` 环境进行功能验证
+3. **生产环境**: 使用 `*-prod` 环境进行正式部署
+4. **环境隔离**: 不同环境的数据完全隔离，避免误操作
+5. **权限管理**: 生产环境建议使用只读用户进行数据查询
+
+### 故障排除
+
+#### 常见问题
+
+1. **连接超时**:
+
+   ```
+   数据库连接测试失败: context deadline exceeded
+   ```
+
+   - 检查网络连接和防火墙设置
+   - 确认数据库服务器地址和端口正确
+
+2. **认证失败**:
+
+   ```
+   数据库连接测试失败: password authentication failed
+   ```
+
+   - 检查用户名和密码是否正确
+   - 确认用户是否有访问权限
+
+3. **SSL 连接问题**:
+
+   ```
+   数据库连接测试失败: SSL connection error
+   ```
+
+   - 检查 `sslmode` 配置是否正确
+   - 本地环境通常使用 `disable`，云环境使用 `require`
+
+4. **环境不存在**:
+   ```
+   环境 'unknown-env' 不存在
+   ```
+   - 检查环境代码是否正确
+   - 查看支持的环境列表：`./filteringData import --help`
+
+### 安全注意事项
+
+1. **配置文件安全**:
+
+   - `config.yaml` 包含敏感信息，不要提交到版本控制
+   - 使用 `.gitignore` 排除配置文件
+
+2. **密码管理**:
+
+   - 定期更换数据库密码
+   - 使用强密码策略
+
+3. **网络安全**:
+
+   - 生产环境建议使用 VPN 或专网连接
+   - 限制数据库访问 IP 白名单
+
+4. **权限控制**:
+   - 不同环境使用不同的数据库用户
+   - 最小权限原则，只授予必要的权限
 
 ## 贡献
 

@@ -2133,7 +2133,7 @@ func runImportFbMode(fileLevelId string, env string) {
 	})
 
 	// 每行常量：FB 模式下注额（包含FB）
-	bet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB
+	// bet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB
 
 	// 导入一个文件（流式）
 	importOne := func(f FileInfo) error {
@@ -2214,6 +2214,12 @@ func runImportFbMode(fileLevelId string, env string) {
 						winValue = math.Round(aw*100) / 100
 					}
 
+					// win 精度修正
+					var totalBet float64
+					if tb, ok := item["tb"].(float64); ok {
+						totalBet = math.Round(tb*100) / 100
+					}
+
 					// detail 序列化 gd
 					var detailVal interface{}
 					if item["gd"] != nil {
@@ -2226,7 +2232,7 @@ func runImportFbMode(fileLevelId string, env string) {
 						detailVal = string(gdJSON)
 					}
 
-					if _, err := stmt.Exec(rtpLevelVal, srNumber, srId, bet, winValue, detailVal); err != nil {
+					if _, err := stmt.Exec(rtpLevelVal, srNumber, srId, totalBet, winValue, detailVal); err != nil {
 						_ = stmt.Close()
 						_ = tx.Rollback()
 						return fmt.Errorf("插入失败: %w", err)
