@@ -89,6 +89,9 @@ df -h
 
 # 6) 仅导入指定 rtpLevel 的“购买夺宝”文件
 ./filteringData importFb 93
+
+# 不同环境导表
+go run *.go import 103 ht
 ```
 
 ### 根据 psid 查记录
