@@ -19,8 +19,13 @@ rsync -avz \
 ```bash
 rsync -azvh --progress \
   -e "ssh -i /Users/shihao/Desktop/shihao/hk.pem -o StrictHostKeyChecking=no" \
-  /Users/shihao/Desktop/lemon/filteringData/output/1881268/ \
-  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/1881268/
+  /Users/shihao/Desktop/lemon/filteringData/output/1755623/ \
+  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/1755623/
+
+rsync -azvh --progress \
+  -e "ssh -i /Users/shihao/Desktop/shihao/bx.pem -o StrictHostKeyChecking=no" \
+  /Users/shihao/Desktop/lemon/filteringData/output/128/ \
+  ec2-user@18.229.148.69:/home/ec2-user/filteringData/output/128/
 ```
 
 ###夺宝购买数据验证
@@ -61,6 +66,7 @@ rsync -av \
 
 ```
 ssh -i /Users/shihao/Desktop/shihao/hk.pem ec2-user@18.162.45.129
+ssh -i /Users/shihao/Desktop/shihao/bx.pem ec2-user@18.229.148.69
 ```
 
 ### 查看磁盘空间
