@@ -61,19 +61,15 @@ var RtpLevels = []RtpLevel{
 	{RtpNo: 13, Rtp: 0.97},
 	{RtpNo: 14, Rtp: 1.5},
 	{RtpNo: 15, Rtp: 2},
-	{RtpNo: 16, Rtp: 3.5},
-	{RtpNo: 17, Rtp: 5},
 	{RtpNo: 20, Rtp: 0.2},
 	{RtpNo: 30, Rtp: 0.3},
 	{RtpNo: 40, Rtp: 0.4},
 	{RtpNo: 50, Rtp: 0.5},
+	{RtpNo: 120, Rtp: 1.2},
+	{RtpNo: 150, Rtp: 1.5},
 }
 
 var RtpLevelsTest = []RtpLevel{
-	{RtpNo: 16, Rtp: 3.5},
-	{RtpNo: 17, Rtp: 5},
-	{RtpNo: 120, Rtp: 1.2},
-	{RtpNo: 150, Rtp: 1.5},
 	{RtpNo: 200, Rtp: 2.0},
 	{RtpNo: 300, Rtp: 3.0},
 	{RtpNo: 500, Rtp: 5.0},
@@ -95,13 +91,15 @@ var FbRtpLevels = []RtpLevel{
 	{RtpNo: 13, Rtp: 0.8},
 	{RtpNo: 14, Rtp: 0.8},
 	{RtpNo: 15, Rtp: 0.8},
+	{RtpNo: 20, Rtp: 0.2},
+	{RtpNo: 30, Rtp: 0.3},
+	{RtpNo: 40, Rtp: 0.4},
+	{RtpNo: 50, Rtp: 0.5},
+	{RtpNo: 120, Rtp: 1.2},
+	{RtpNo: 150, Rtp: 1.5},
 }
 
 var RtpLevelsTestFb = []RtpLevel{
-	{RtpNo: 16, Rtp: 1.0},
-	{RtpNo: 17, Rtp: 2.0},
-	{RtpNo: 120, Rtp: 1.2},
-	{RtpNo: 150, Rtp: 1.5},
 	{RtpNo: 200, Rtp: 2.0},
 	{RtpNo: 300, Rtp: 2.5},
 	{RtpNo: 500, Rtp: 4.0},
