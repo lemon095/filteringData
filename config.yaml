@@ -67,7 +67,7 @@ environments:
 
 # Game Configuration
 game:
-  id: 1601012
+  id: 112
   isFb: true
 
 # Table Configuration
@@ -76,6 +76,7 @@ tables:
   output_table_prefix: "GameResults_" # 写入数据的表前缀
   data_num: 10000 #普通流程
   data_table_num: 10 #普通流程表的数量
+  data_table_num_3: 5 #测试档位流程表的数量
   data_num_fb: 5000 #购买夺宝模式
   data_table_num_fb: 1 #购买夺宝的表数量
 
