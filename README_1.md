@@ -19,13 +19,18 @@ rsync -avz \
 ```bash
 rsync -azvh --progress \
   -e "ssh -i /Users/shihao/Desktop/shihao/hk.pem -o StrictHostKeyChecking=no" \
-  /Users/shihao/Desktop/lemon/filteringData/output/1755623/ \
-  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/1755623/
+  /Users/shihao/Desktop/lemon/filteringData/output/1799745/ \
+  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/1799745/
 
 rsync -azvh --progress \
   -e "ssh -i /Users/shihao/Desktop/shihao/bx.pem -o StrictHostKeyChecking=no" \
-  /Users/shihao/Desktop/lemon/filteringData/output/128/ \
-  ec2-user@18.229.148.69:/home/ec2-user/filteringData/output/128/
+  /Users/shihao/Desktop/lemon/filteringData/output/7/ \
+  ec2-user@18.229.148.69:/home/ec2-user/filteringData/output/7/
+
+rsync -azvh --progress \
+  -e "ssh -i /Users/shihao/Desktop/shihao/us.pem -o StrictHostKeyChecking=no" \
+  /Users/shihao/Desktop/lemon/filteringData/output/1489936/ \
+  ec2-user@54.88.164.42:/home/ec2-user/filteringData/output/1489936/
 ```
 
 ###夺宝购买数据验证
@@ -60,13 +65,14 @@ ALTER SEQUENCE "GameResults_108_id_seq" RESTART WITH 1;
 ```bash
 rsync -av \
   -e "ssh -i /Users/shihao/Desktop/shihao/hk.pem -o StrictHostKeyChecking=no" \
-  /Users/shihao/Desktop/lemon/filteringData/output/93_fb/ \
-  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/93_fb/
+  /Users/shihao/Desktop/lemon/filteringData/output/108/ \
+  ec2-user@18.162.45.129:/home/ec2-user/filteringData/output/108/
 ```
 
 ```
 ssh -i /Users/shihao/Desktop/shihao/hk.pem ec2-user@18.162.45.129
 ssh -i /Users/shihao/Desktop/shihao/bx.pem ec2-user@18.229.148.69
+ssh -i /Users/shihao/Desktop/shihao/us.pem ec2-user@54.88.164.42
 ```
 
 ### 查看磁盘空间
@@ -98,6 +104,9 @@ df -h
 
 # 不同环境导表
 go run *.go import 103 ht
+
+# 测试档位数据生成
+go run *.go generateTest
 ```
 
 ### 根据 psid 查记录
