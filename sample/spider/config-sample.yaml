@@ -1,0 +1,102 @@
+# id: 132
+# genRtp: false
+# maxUserNum: 10
+# cs: 0.05
+# ml: 1
+# fb: 2
+# spinAction: false
+# spin: "spin"
+
+
+# 1418544	烘焙总动员 bakery bonanza   
+# 1615454	Werewolf's Hunt
+# 86	Galactic Gems 星旅淘金 1
+# 1804577	graffiti rush
+# 1702123	Geisha's Revenge 1
+# 1432733	mystical spirits
+# 70	Candy Burst 糖果连连爆 1
+# 107	Monkey King 美猴王传奇 1
+# 64	拳霸 1
+
+batchSpider:
+  # - gameId: 33
+  #   cs: 0.03
+  #   ml: 1
+  #   fb: 0
+  #   # line 20
+  #   userNum: 10
+  #   fbUserNum: 0
+  #   spin: "spin"
+  #   spinStatus: true
+  #   fbStatus: false
+  # - gameId: 1418544
+  #   cs: 0.05
+  #   ml: 1
+  #   fb: 2
+  #   # line 20
+  #   userNum: 10
+  #   fbUserNum: 7
+  #   spin: "Spin"
+  #   spinStatus: false
+  #   fbStatus: false
+  # - gameId: 1615454
+  #   cs: 0.05
+  #   ml: 1
+  #   fb: 2
+  #   # line 20
+  #   userNum: 10
+  #   fbUserNum: 7
+  #   spin: "Spin"
+  #   spinStatus: false
+  #   fbStatus: false
+  # - gameId: 86
+  #   cs: 0.04
+  #   ml: 1
+  #   fb: 0
+  #   spin: "Spin"
+  #   # line 25
+  #   userNum: 10
+  #   fbUserNum: 7
+  #   spinStatus: false
+  #   fbStatus: false
+  - gameId: 1804577
+    cs: 0.2
+    ml: 1
+    fb: 2
+    spin: "Spin"
+    # line 10
+    userNum: 10
+    fbUserNum: 7
+    spinStatus: false
+    fbStatus: true
+  # - gameId: 1702123
+  #   cs: 0.05
+  #   ml: 1
+  #   fb: 0
+  #   spin: "Spin"
+  #   # line 20
+  #   userNum: 10
+  #   fbUserNum: 7
+  #   spinStatus: false
+  #   fbStatus: false
+  # - gameId: 1432733
+  #   cs: 0.05
+  #   ml: 1
+  #   fb: 2
+  #   spin: "Spin"
+  #   # line 20
+  #   userNum: 10
+  #   fbUserNum: 7
+  #   spinStatus: false
+  #   fbStatus: true
+  # - gameId: 70
+  #   cs: 0.05
+  #   ml: 1
+  #   fb: 0
+  #   spin: "Spin"
+  #   # line 20
+  #   userNum: 10
+  #   fbUserNum: 7
+  #   spinStatus: false
+  #   fbStatus: false
+

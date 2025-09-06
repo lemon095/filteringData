@@ -1,0 +1,96 @@
+# dsn: "postgres://postgres:123666@129.146.63.143:5432/postgres?sslmode=disable"
+dsn: "postgres://postgres:123666@192.168.8.208:5432/postgres?sslmode=disable"
+# dsn: "postgres://devadmin:*ztnEY8n12@mpg-db-cluster.cluster-cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com:5432/mpgdb"
+
+# bx prod
+# dsn: "postgres://devadmin:*ztnEY8n12@mpg-db-cluster.cluster-cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com:5432/mpgdb"
+# bx pre
+# dsn: "postgres://devadmin:*ztnEY8n12@mpg-db-test.cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com:5432/mpgdb"
+
+srCount: 3
+batchInsert:
+  - gameId: 64
+    csvName: "game_64.csv"
+    csvFbName: ""
+    spPercent: 0.01
+  - gameId: 70
+    csvName: "game_70.csv"
+    csvFbName: ""
+    spPercent: 0.01
+  - gameId: 86
+    csvName: "game_86.csv"
+    csvFbName: ""
+    spPercent: 0.01
+  - gameId: 107
+    csvName: "game_107.csv"
+    spPercent: 0.01
+  - gameId: 1702123
+    csvName: "game_1702123.csv"
+    csvFbName: ""
+    spPercent: 0.01
+  - gameId: 1418544
+    csvName: "game_1418544.csv"
+    csvFbName: "game_1418544_fb.csv"
+    spPercent: 0.01
+  - gameId: 1615454
+    csvName: "game_1615454.csv"
+    csvFbName: "game_1615454_fb.csv"
+    spPercent: 0.01
+  - gameId: 1432733
+    csvName: "game_1432733.csv"
+    csvFbName: "game_1432733_fb.csv"
+    spPercent: 0.01
+  - gameId: 1804577
+    csvName: "game_1804577.csv"
+    csvFbName: ""
+    spPercent: 0.01
+rtpLevels:
+  - rtpNo: 20
+    rtp: 0.2
+  - rtpNo: 30
+    rtp: 0.3
+  - rtpNo: 40
+    rtp: 0.4
+  - rtpNo: 50
+    rtp: 0.5
+  - rtpNo: 120
+    rtp: 1.2
+  - rtpNo: 150
+    rtp: 1.5
+  - rtpNo: 200
+    rtp: 2.0
+  - rtpNo: 300
+    rtp: 3.0
+  - rtpNo: 500
+    rtp: 5.0
+  # - rtpNo: 1
+  #   rtp: 0.6
+  # - rtpNo: 2
+  #   rtp: 0.7
+  # - rtpNo: 3
+  #   rtp: 0.75
+  # - rtpNo: 4
+  #   rtp: 0.8
+  # - rtpNo: 5
+  #   rtp: 0.85
+  # - rtpNo: 6
+  #   rtp: 0.9
+  # - rtpNo: 7
+  #   rtp: 0.91
+  # - rtpNo: 8
+  #   rtp: 0.92
+  # - rtpNo: 9
+  #   rtp: 0.93
+  # - rtpNo: 10
+  #   rtp: 0.94
+  # - rtpNo: 11
+  #   rtp: 0.95
+  # - rtpNo: 12
+  #   rtp: 0.96
+  # - rtpNo: 13
+  #   rtp: 0.97
+  # - rtpNo: 14
+  #   rtp: 1.5
+  # - rtpNo: 15
+  #   rtp: 2
+
