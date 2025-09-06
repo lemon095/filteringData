@@ -1,0 +1,11 @@
+delete from "GameResults_64" where "rtpLevel" BETWEEN 16 AND 21 and "createdAt" < '2025-09-06 00:10:00.863' 
+delete from "GameResults_86" where "rtpLevel" BETWEEN 16 AND 21 and "createdAt" < '2025-09-06 00:10:00.863' 
+delete from "GameResults_107" where "rtpLevel" BETWEEN 16 AND 21 and "createdAt" < '2025-09-06 00:10:00.863' 
+delete from "GameResults_1702123" where "rtpLevel" BETWEEN 16 AND 21 and "createdAt" < '2025-09-06 00:10:00.863' 
+delete from "GameResults_1418544" where "rtpLevel" BETWEEN 16 AND 21 and "createdAt" < '2025-09-06 00:10:00.863' 
+delete from "GameResults_1615454" where "rtpLevel" BETWEEN 16 AND 21 and "createdAt" < '2025-09-06 00:10:00.863' 
+delete from "GameResults_1432733" where "rtpLevel" BETWEEN 16 AND 21 and "createdAt" < '2025-09-06 00:10:00.863' 
+delete from "GameResults_1804577" where "rtpLevel" BETWEEN 16 AND 21 and "createdAt" < '2025-09-06 00:10:00.863' 
+
+
+
