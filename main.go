@@ -49,7 +49,7 @@ func runMultiGameMode(mode string) {
 	rand.Seed(time.Now().UnixNano())
 
 	// 加载配置文件
-	config, err := LoadConfig("config.yaml")
+	config, err := LoadConfig("buconfig.yaml")
 	if err != nil {
 		log.Fatalf("加载配置文件失败: %v", err)
 	}

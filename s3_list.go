@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 
@@ -37,11 +38,23 @@ func NewS3Client(config *Config) (*S3Client, error) {
 	}
 
 	// 配置AWS客户端
+	// 优先使用环境变量，如果没有则使用配置文件
+	accessKeyID := config.S3.AccessKeyID
+	secretAccessKey := config.S3.SecretAccessKey
+	
+	// 检查环境变量
+	if envAccessKey := os.Getenv("AWS_ACCESS_KEY_ID"); envAccessKey != "" {
+		accessKeyID = envAccessKey
+	}
+	if envSecretKey := os.Getenv("AWS_SECRET_ACCESS_KEY"); envSecretKey != "" {
+		secretAccessKey = envSecretKey
+	}
+	
 	cfg, err := awsconfig.LoadDefaultConfig(context.TODO(),
 		awsconfig.WithRegion(config.S3.Region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			config.S3.AccessKeyID,
-			config.S3.SecretAccessKey,
+			accessKeyID,
+			secretAccessKey,
 			"", // 非临时凭证无需会话令牌
 		)),
 	)
