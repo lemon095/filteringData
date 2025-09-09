@@ -1,0 +1,78 @@
+# 数据库配置
+database:
+  local:
+    host: "localhost"
+    port: 5432
+    user: "postgres"
+    password: "123456"
+    dbname: "filtering_data"
+    sslmode: "disable"
+  hk-test:
+    host: "hk-test-db.example.com"
+    port: 5432
+    user: "postgres"
+    password: "test_password"
+    dbname: "filtering_data"
+    sslmode: "require"
+  br-test:
+    host: "br-test-db.example.com"
+    port: 5432
+    user: "postgres"
+    password: "test_password"
+    dbname: "filtering_data"
+    sslmode: "require"
+  br-prod:
+    host: "br-prod-db.example.com"
+    port: 5432
+    user: "postgres"
+    password: "prod_password"
+    dbname: "filtering_data"
+    sslmode: "require"
+  us-prod:
+    host: "us-prod-db.example.com"
+    port: 5432
+    user: "postgres"
+    password: "prod_password"
+    dbname: "filtering_data"
+    sslmode: "require"
+  hk-prod:
+    host: "hk-prod-db.example.com"
+    port: 5432
+    user: "postgres"
+    password: "prod_password"
+    dbname: "filtering_data"
+    sslmode: "require"
+
+# 表配置
+tables:
+  output_table_prefix: "game_results_"
+
+# 游戏配置
+game:
+  id: 112
+  bl: 20.0
+  isFb: true
+
+# Multi-Game Configuration (多游戏配置)
+multi_game:
+  enabled: false # 是否启用多游戏模式
+  games:
+    - id: 112
+      bl: 20
+      isFb: true
+    - id: 103
+      bl: 50
+      isFb: false
+    - id: 105
+      bl: 30
+      isFb: true
+
+# S3 Configuration (S3配置)
+s3:
+  enabled: false # 是否启用S3导入功能
+  bucket: "mpg-rtp-data"
+  region: "ap-east-1"
+  access_key_id: "YOUR_AWS_ACCESS_KEY_ID"
+  secret_access_key: "YOUR_AWS_SECRET_ACCESS_KEY"
+  normal_prefix: "mpg-slot-data" # 普通模式路径前缀
+  fb_prefix: "mpg-slot-data" # 购买夺宝模式路径前缀
