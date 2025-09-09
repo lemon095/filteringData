@@ -37,6 +37,13 @@ type DatabaseConfig struct {
 	Timezone string `yaml:"timezone"`
 }
 
+// GameConfig 单个游戏配置结构体
+type GameConfig struct {
+	ID   int     `yaml:"id"`   // 游戏ID
+	BL   float64 `yaml:"bl"`   // 投注线数
+	IsFb bool    `yaml:"isFb"` // 是否启用购买夺宝
+}
+
 // Config 配置结构体
 type Config struct {
 	// 多环境数据库配置
@@ -52,6 +59,12 @@ type Config struct {
 		ID   int  `yaml:"id"`
 		IsFb bool `yaml:"isFb"`
 	} `yaml:"game"`
+
+	// 多游戏配置
+	MultiGame struct {
+		Enabled bool         `yaml:"enabled"`
+		Games   []GameConfig `yaml:"games"`
+	} `yaml:"multi_game"`
 
 	Tables struct {
 		SourceTablePrefix string `yaml:"source_table_prefix"`
@@ -98,6 +111,17 @@ type Config struct {
 		BatchSize int    `yaml:"batch_size"`
 		Timeout   int    `yaml:"timeout"`
 	} `yaml:"settings"`
+
+	// S3配置
+	S3 struct {
+		Enabled         bool   `yaml:"enabled"`
+		Bucket          string `yaml:"bucket"`
+		Region          string `yaml:"region"`
+		AccessKeyID     string `yaml:"access_key_id"`
+		SecretAccessKey string `yaml:"secret_access_key"`
+		NormalPrefix    string `yaml:"normal_prefix"` // 普通模式路径前缀
+		FbPrefix        string `yaml:"fb_prefix"`     // 购买夺宝模式路径前缀
+	} `yaml:"s3"`
 }
 
 // ResolveEnv 解析环境参数

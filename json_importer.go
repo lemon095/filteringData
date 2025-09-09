@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // JSONImporter JSON文件导入器
@@ -22,12 +24,33 @@ type JSONImporter struct {
 	config *Config
 }
 
+// S3Importer S3文件导入器
+type S3Importer struct {
+	db       *Database
+	config   *Config
+	s3Client *S3Client
+}
+
 // NewJSONImporter 创建新的JSON导入器
 func NewJSONImporter(db *Database, config *Config) *JSONImporter {
 	return &JSONImporter{
 		db:     db,
 		config: config,
 	}
+}
+
+// NewS3Importer 创建新的S3导入器
+func NewS3Importer(db *Database, config *Config) (*S3Importer, error) {
+	s3Client, err := NewS3Client(config)
+	if err != nil {
+		return nil, err
+	}
+
+	return &S3Importer{
+		db:       db,
+		config:   config,
+		s3Client: s3Client,
+	}, nil
 }
 
 // FileInfo 文件信息结构
@@ -517,7 +540,7 @@ func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName str
 			rtpLevelVal, // rtpLevel
 			testNum,     // srNumber
 			i+1,         // srId (从1开始)
-			totalBet,         // bet
+			totalBet,    // bet
 			winValue,    // win (精度修正后)
 			detailVal,   // detail (JSONB)
 		)
@@ -532,5 +555,368 @@ func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName str
 	}
 
 	fmt.Printf("    ✅ 第 %d 批数据处理完成\n", batchNum)
+	return nil
+}
+
+// ImportS3Files 从S3导入多个游戏的文件
+func (si *S3Importer) ImportS3Files(gameIDs []int, mode string, levelFilter string) error {
+	fmt.Printf("🔄 启动S3导入模式 (游戏IDs: %v, 模式: %s)\n", gameIDs, mode)
+
+	// 列出S3文件
+	files, err := si.s3Client.ListS3Files(gameIDs, mode)
+	if err != nil {
+		return fmt.Errorf("列出S3文件失败: %v", err)
+	}
+
+	if len(files) == 0 {
+		return fmt.Errorf("在S3中未找到匹配的文件")
+	}
+
+	// 如果指定了levelFilter，则过滤文件
+	if levelFilter != "" {
+		filteredFiles := si.filterS3FilesByLevel(files, levelFilter)
+		if len(filteredFiles) == 0 {
+			fmt.Printf("❌ 未找到level为 %s 的S3文件\n", levelFilter)
+			fmt.Printf("💡 当前S3包含以下文件:\n")
+			for _, file := range files {
+				fmt.Printf("   - %s (RTP等级: %d)\n", file.Key, file.RtpLevel)
+			}
+			return fmt.Errorf("未找到匹配的文件")
+		}
+		files = filteredFiles
+		fmt.Printf("✅ 过滤后找到 %d 个匹配的S3文件\n", len(filteredFiles))
+	}
+
+	// 按游戏ID和RTP等级排序
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].GameID != files[j].GameID {
+			return files[i].GameID < files[j].GameID
+		}
+		if files[i].RtpLevel != files[j].RtpLevel {
+			return files[i].RtpLevel < files[j].RtpLevel
+		}
+		return files[i].TestNum < files[j].TestNum
+	})
+
+	fmt.Printf("📁 找到 %d 个S3文件，按顺序处理:\n", len(files))
+	for _, file := range files {
+		fmt.Printf("  - 游戏%d | %s | RTP等级: %d | 测试: %d\n",
+			file.GameID, file.Key, file.RtpLevel, file.TestNum)
+	}
+
+	// 按游戏ID分组处理
+	gameGroups := make(map[int][]S3FileInfo)
+	for _, file := range files {
+		gameGroups[file.GameID] = append(gameGroups[file.GameID], file)
+	}
+
+	// 为每个游戏创建表并导入文件
+	for gameID, gameFiles := range gameGroups {
+		fmt.Printf("\n🎯 开始处理游戏 %d，共 %d 个文件\n", gameID, len(gameFiles))
+
+		// 创建目标表
+		tableName := fmt.Sprintf("%s%d", si.config.Tables.OutputTablePrefix, gameID)
+		if err := si.createS3TargetTable(tableName); err != nil {
+			return fmt.Errorf("创建目标表失败: %v", err)
+		}
+
+		// 使用并发流式处理导入文件
+		if err := si.importS3FilesConcurrentStream(gameFiles, tableName); err != nil {
+			return fmt.Errorf("游戏 %d 文件导入失败: %v", gameID, err)
+		}
+
+		fmt.Printf("✅ 游戏 %d 所有文件导入完成！\n", gameID)
+	}
+
+	fmt.Printf("\n🎉 所有S3文件导入完成！\n")
+	return nil
+}
+
+// filterS3FilesByLevel 根据level过滤S3文件
+func (si *S3Importer) filterS3FilesByLevel(files []S3FileInfo, levelFilter string) []S3FileInfo {
+	var filteredFiles []S3FileInfo
+	level, err := strconv.Atoi(levelFilter)
+	if err != nil {
+		return filteredFiles
+	}
+
+	for _, file := range files {
+		if file.RtpLevel == level {
+			filteredFiles = append(filteredFiles, file)
+		}
+	}
+
+	return filteredFiles
+}
+
+// importS3File 导入单个S3文件
+func (si *S3Importer) importS3File(file S3FileInfo, tableName string) error {
+	// 下载S3文件内容
+	content, err := si.s3Client.DownloadS3File(file.Key)
+	if err != nil {
+		return fmt.Errorf("下载S3文件失败: %v", err)
+	}
+
+	// 解析JSON数据
+	var gameData []GameResultData
+	if err := json.Unmarshal(content, &gameData); err != nil {
+		return fmt.Errorf("解析JSON数据失败: %v", err)
+	}
+
+	// 批量插入数据库
+	return si.batchInsertS3Data(gameData, tableName, file.RtpLevel, file.TestNum)
+}
+
+// importS3FileStream 流式导入单个S3文件
+func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) error {
+	// 获取S3对象流
+	result, err := si.s3Client.GetObjectStream(file.Key)
+	if err != nil {
+		return fmt.Errorf("获取S3对象流失败: %v", err)
+	}
+	defer result.Body.Close()
+
+	// 流式JSON解析
+	decoder := json.NewDecoder(result.Body)
+
+	// 分批处理，控制内存占用
+	batch := make([]GameResultData, 0, 1000)
+	batchCount := 0
+
+	for decoder.More() {
+		var item GameResultData
+		if err := decoder.Decode(&item); err != nil {
+			return fmt.Errorf("解析JSON数据失败: %v", err)
+		}
+
+		batch = append(batch, item)
+		batchCount++
+
+		// 达到批次大小时插入数据库
+		if len(batch) >= 1000 {
+			if err := si.insertBatch(batch, tableName, file.RtpLevel, file.TestNum); err != nil {
+				return fmt.Errorf("批量插入失败: %v", err)
+			}
+			batch = batch[:0] // 清空批次
+		}
+	}
+
+	// 插入剩余数据
+	if len(batch) > 0 {
+		if err := si.insertBatch(batch, tableName, file.RtpLevel, file.TestNum); err != nil {
+			return fmt.Errorf("批量插入剩余数据失败: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// batchInsertS3Data 批量插入S3数据到数据库
+func (si *S3Importer) batchInsertS3Data(data []GameResultData, tableName string, rtpLevel int, testNum int) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	// 准备批量插入SQL
+	query := fmt.Sprintf(`
+		INSERT INTO "%s" (rtpLevel, srNumber, srId, bet, win, detail) 
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, tableName)
+
+	// 开始事务
+	tx, err := si.db.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("开始事务失败: %v", err)
+	}
+	defer tx.Rollback()
+
+	// 准备语句
+	stmt, err := tx.Prepare(query)
+	if err != nil {
+		return fmt.Errorf("准备语句失败: %v", err)
+	}
+	defer stmt.Close()
+
+	// 批量插入
+	for i, item := range data {
+		// 构建detail JSON
+		detail := map[string]interface{}{
+			"id":  item.ID,
+			"aw":  item.AW,
+			"gwt": item.GWT,
+			"fb":  item.FB,
+			"sp":  item.SP,
+		}
+		detailJSON, _ := json.Marshal(detail)
+
+		_, err := stmt.Exec(
+			rtpLevel,   // rtpLevel
+			testNum,    // srNumber (测试编号)
+			i+1,        // srId (序列号)
+			item.TB,    // bet (使用TB字段作为投注额)
+			item.AW,    // win
+			detailJSON, // detail
+		)
+		if err != nil {
+			return fmt.Errorf("插入数据失败: %v", err)
+		}
+	}
+
+	// 提交事务
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交事务失败: %v", err)
+	}
+
+	fmt.Printf("✅ 成功插入 %d 条数据到表 %s\n", len(data), tableName)
+	return nil
+}
+
+// insertBatch 批量插入数据到数据库
+func (si *S3Importer) insertBatch(data []GameResultData, tableName string, rtpLevel int, testNum int) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	// 准备批量插入SQL
+	query := fmt.Sprintf(`
+		INSERT INTO "%s" (rtpLevel, srNumber, srId, bet, win, detail) 
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, tableName)
+
+	// 开始事务
+	tx, err := si.db.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("开始事务失败: %v", err)
+	}
+	defer tx.Rollback()
+
+	// 准备语句
+	stmt, err := tx.Prepare(query)
+	if err != nil {
+		return fmt.Errorf("准备语句失败: %v", err)
+	}
+	defer stmt.Close()
+
+	// 批量插入
+	for _, item := range data {
+		// 将GameResultData映射到表字段：bet=TB, win=AW, detail=GD
+		_, err := stmt.Exec(rtpLevel, testNum, item.ID, item.TB, item.AW, item.GD)
+		if err != nil {
+			return fmt.Errorf("插入数据失败: %v", err)
+		}
+	}
+
+	// 提交事务
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交事务失败: %v", err)
+	}
+
+	return nil
+}
+
+// importS3FilesConcurrentStream 并发流式导入S3文件
+func (si *S3Importer) importS3FilesConcurrentStream(files []S3FileInfo, tableName string) error {
+	// 动态调整并发数量
+	maxConcurrency := 3
+	if len(files) < 3 {
+		maxConcurrency = len(files)
+	}
+
+	// 创建信号量控制并发
+	semaphore := make(chan struct{}, maxConcurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errors []error
+	var successCount int
+
+	fmt.Printf("🚀 开始并发流式处理 %d 个文件，最大并发数: %d\n", len(files), maxConcurrency)
+
+	for i, file := range files {
+		wg.Add(1)
+		go func(index int, f S3FileInfo) {
+			defer wg.Done()
+
+			// 获取信号量
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			fmt.Printf("🔄 [%d/%d] 开始处理文件: %s\n", index+1, len(files), f.Key)
+			startTime := time.Now()
+
+			// 流式处理单个文件
+			if err := si.importS3FileStream(f, tableName); err != nil {
+				mu.Lock()
+				errors = append(errors, fmt.Errorf("文件 %s 处理失败: %v", f.Key, err))
+				mu.Unlock()
+				fmt.Printf("❌ [%d/%d] 文件处理失败: %s - %v\n", index+1, len(files), f.Key, err)
+			} else {
+				mu.Lock()
+				successCount++
+				mu.Unlock()
+				duration := time.Since(startTime)
+				fmt.Printf("✅ [%d/%d] 文件处理完成: %s (耗时: %v)\n", index+1, len(files), f.Key, duration)
+			}
+		}(i, file)
+	}
+
+	wg.Wait()
+
+	// 输出处理结果
+	fmt.Printf("\n📊 处理结果统计:\n")
+	fmt.Printf("  - 总文件数: %d\n", len(files))
+	fmt.Printf("  - 成功处理: %d\n", successCount)
+	fmt.Printf("  - 处理失败: %d\n", len(errors))
+
+	if len(errors) > 0 {
+		fmt.Printf("\n❌ 错误详情:\n")
+		for i, err := range errors {
+			fmt.Printf("  %d. %v\n", i+1, err)
+		}
+		return fmt.Errorf("处理过程中出现 %d 个错误", len(errors))
+	}
+
+	fmt.Printf("🎉 所有文件处理完成！\n")
+	return nil
+}
+
+// createS3TargetTable 创建S3导入的目标数据表
+func (si *S3Importer) createS3TargetTable(tableName string) error {
+	query := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS "%s" (
+			"id" SERIAL PRIMARY KEY,
+			"rtpLevel" REAL NOT NULL,
+			"srNumber" INTEGER NOT NULL,
+			"srId" SERIAL NOT NULL,
+			"bet" NUMERIC NOT NULL,
+			"win" NUMERIC NOT NULL,
+			"detail" JSONB,
+			"created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+	`, tableName)
+
+	// 执行创建表语句
+	_, err := si.db.DB.Exec(query)
+	if err != nil {
+		return fmt.Errorf("创建表失败: %v", err)
+	}
+
+	// 创建索引
+	indexQueries := []string{
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_rtpLevel_idx" ON "%s" ("rtpLevel")`, tableName, tableName),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_srNumber_idx" ON "%s" ("srNumber")`, tableName, tableName),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_srId_idx" ON "%s" ("srId")`, tableName, tableName),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_rtpLevel_srNumber_idx" ON "%s" ("rtpLevel", "srNumber")`, tableName, tableName),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_rtpLevel_srNumber_srId_idx" ON "%s" ("rtpLevel", "srNumber", "srId")`, tableName, tableName),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s_detail_gin_idx" ON "%s" USING GIN ("detail")`, tableName, tableName),
+	}
+
+	for _, indexSQL := range indexQueries {
+		_, err := si.db.DB.Exec(indexSQL)
+		if err != nil {
+			return fmt.Errorf("创建索引失败: %v", err)
+		}
+	}
+
+	fmt.Printf("✅ 成功创建S3目标表: %s", tableName)
 	return nil
 }
