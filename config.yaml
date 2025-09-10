@@ -1,12 +1,15 @@
+default_env: "local"
+
 # 数据库配置
-database:
+environments:
   local:
     host: "localhost"
     port: 5432
     user: "postgres"
-    password: "123456"
-    dbname: "filtering_data"
+    password: "123666"
+    dbname: "postgres"
     sslmode: "disable"
+    timezone: "UTC"
   hk-test:
     host: "hk-test-db.example.com"
     port: 5432
@@ -46,6 +49,7 @@ database:
 # 表配置
 tables:
   output_table_prefix: "game_results_"
+  source_table_prefix: "GameResultData_"
 
 # 性能优化配置
 settings:
@@ -65,7 +69,7 @@ settings:
 
 # 游戏配置
 game:
-  id: 112
+  id: 1513328
   bl: 20.0
   isFb: true
 
@@ -73,15 +77,15 @@ game:
 multi_game:
   enabled: false # 是否启用多游戏模式
   games:
-    - id: 112
+    - id: 1513328
       bl: 20
       isFb: true
-    - id: 103
-      bl: 50
-      isFb: false
-    - id: 105
-      bl: 30
-      isFb: true
+    # - id: 103
+    #   bl: 50
+    #   isFb: false
+    # - id: 105
+    #   bl: 30
+    #   isFb: true
 
 # S3 Configuration (S3配置)
 s3:

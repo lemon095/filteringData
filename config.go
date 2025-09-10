@@ -30,9 +30,9 @@ var envMapping = map[string]string{
 type DatabaseConfig struct {
 	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"`
-	Username string `yaml:"username"`
+	User 		 string `yaml:"user"`
 	Password string `yaml:"password"`
-	Database string `yaml:"database"`
+	Dbname 	 string `yaml:"dbname"`
 	SSLMode  string `yaml:"sslmode"`
 	Timezone string `yaml:"timezone"`
 }

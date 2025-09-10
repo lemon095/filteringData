@@ -30,9 +30,9 @@ func NewDatabase(config *Config, env string) (*Database, error) {
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s TimeZone=%s",
 		dbConfig.Host,
 		dbConfig.Port,
-		dbConfig.Username,
+		dbConfig.User,
 		dbConfig.Password,
-		dbConfig.Database,
+		dbConfig.Dbname,
 		dbConfig.SSLMode,
 		dbConfig.Timezone,
 	)
