@@ -52,7 +52,8 @@ type Config struct {
 
 	// 保持向后兼容的单一数据库配置（可选）
 	Database struct {
-		Postgres DatabaseConfig `yaml:"postgres"`
+		Postgres     DatabaseConfig            `yaml:"postgres"`
+		Environments map[string]DatabaseConfig `yaml:",inline"`
 	} `yaml:"database"`
 
 	Game struct {
@@ -158,8 +159,16 @@ func (c *Config) GetDatabaseConfig(env string) (*DatabaseConfig, error) {
 		env = c.DefaultEnv
 	}
 
+	// 解析环境参数（支持简写）
+	env = ResolveEnv(env)
+
 	// 首先尝试从environments中获取
 	if dbConfig, exists := c.Environments[env]; exists {
+		return &dbConfig, nil
+	}
+
+	// 尝试从database配置中获取
+	if dbConfig, exists := c.Database.Environments[env]; exists {
 		return &dbConfig, nil
 	}
 
