@@ -681,26 +681,38 @@ func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) erro
 
 	// 优化批处理大小 - 根据文件大小动态调整
 	batchSize := si.calculateOptimalBatchSize(file.Size)
-	batch := make([]GameResultData, 0, batchSize)
+	batch := make([]map[string]interface{}, 0, batchSize)
 	batchCount := 0
 	totalRecords := 0
 
 	fmt.Printf("📊 文件 %s: 大小=%.2fMB, 批次大小=%d\n",
 		file.Key, float64(file.Size)/(1024*1024), batchSize)
 
-	for decoder.More() {
-		var item GameResultData
-		if err := decoder.Decode(&item); err != nil {
-			return fmt.Errorf("解析JSON数据失败: %v", err)
-		}
+	// 解析JSON文件结构：{"rtpLevel": 200, "srNumber": 1, "data": [...]}
+	var fileHeader struct {
+		RtpLevel int                      `json:"rtpLevel"`
+		SrNumber int                      `json:"srNumber"`
+		Data     []map[string]interface{} `json:"data"`
+	}
 
+	// 解析整个文件结构
+	if err := decoder.Decode(&fileHeader); err != nil {
+		return fmt.Errorf("解析S3文件结构失败: %v", err)
+	}
+
+	fmt.Printf("📊 S3文件信息: RTP等级=%d, 测试编号=%d, 数据条数=%d\n",
+		fileHeader.RtpLevel, fileHeader.SrNumber, len(fileHeader.Data))
+
+	// 处理数据数组
+	for _, item := range fileHeader.Data {
 		batch = append(batch, item)
-		batchCount++
 		totalRecords++
 
 		// 达到批次大小时插入数据库
 		if len(batch) >= batchSize {
-			if err := si.insertBatch(batch, tableName, file.RtpLevel, file.TestNum); err != nil {
+			batchCount++
+			fmt.Printf("  🔄 处理批次 %d (记录 %d-%d)\n", batchCount, totalRecords-len(batch)+1, totalRecords)
+			if err := si.insertS3Batch(batch, tableName, fileHeader.RtpLevel, fileHeader.SrNumber, batchCount); err != nil {
 				return fmt.Errorf("批量插入失败: %v", err)
 			}
 			batch = batch[:0] // 清空批次
@@ -709,11 +721,14 @@ func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) erro
 
 	// 插入剩余数据
 	if len(batch) > 0 {
-		if err := si.insertBatch(batch, tableName, file.RtpLevel, file.TestNum); err != nil {
+		batchCount++
+		fmt.Printf("  🔄 处理最后批次 %d (记录 %d-%d)\n", batchCount, totalRecords-len(batch)+1, totalRecords)
+		if err := si.insertS3Batch(batch, tableName, fileHeader.RtpLevel, fileHeader.SrNumber, batchCount); err != nil {
 			return fmt.Errorf("批量插入剩余数据失败: %v", err)
 		}
 	}
 
+	fmt.Printf("  ✅ 总共处理 %d 条记录，分 %d 批次\n", totalRecords, batchCount)
 	return nil
 }
 
@@ -753,6 +768,86 @@ func (si *S3Importer) insertBatch(data []GameResultData, tableName string, rtpLe
 		return fmt.Errorf("提交事务失败: %v", err)
 	}
 
+	return nil
+}
+
+// insertS3Batch 批量插入S3数据到数据库
+func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName string, rtpLevel int, testNum int, batchNum int) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	// 显示当前批次进度
+	fmt.Printf("    🔄 正在处理第 %d 批数据 (%d 条记录)...\n", batchNum, len(data))
+
+	// 开始事务
+	tx, err := si.db.BeginWithRetry()
+	if err != nil {
+		return fmt.Errorf("开始事务失败: %v", err)
+	}
+	defer tx.Rollback()
+
+	// 准备插入语句
+	query := fmt.Sprintf(`
+		INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "bet", "win", "detail")
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, tableName)
+
+	stmt, err := tx.Prepare(query)
+	if err != nil {
+		return fmt.Errorf("准备语句失败: %v", err)
+	}
+	defer stmt.Close()
+
+	// 批量插入数据
+	for i, item := range data {
+		// 将gd字段转换为JSON字符串以适配JSONB类型
+		var detailVal interface{}
+		if item["gd"] != nil {
+			// 将gd字段转换为JSON字符串
+			gdJSON, err := json.Marshal(item["gd"])
+			if err != nil {
+				return fmt.Errorf("序列化gd字段失败: %v", err)
+			}
+			detailVal = string(gdJSON)
+		}
+
+		// 精度修正：将win字段四舍五入到2位小数
+		var winValue float64
+		if aw, ok := item["aw"].(float64); ok {
+			// 四舍五入到2位小数，避免浮点数精度问题
+			winValue = math.Round(aw*100) / 100
+		} else {
+			winValue = 0.0
+		}
+
+		var totalBet float64
+		if tb, ok := item["tb"].(float64); ok {
+			// 四舍五入到2位小数，避免浮点数精度问题
+			totalBet = math.Round(tb*100) / 100
+		} else {
+			totalBet = 0.0
+		}
+		rtpLevelVal := float64(rtpLevel)
+		_, err := stmt.Exec(
+			rtpLevelVal, // rtpLevel
+			testNum,     // srNumber
+			i+1,         // srId (从1开始)
+			totalBet,    // bet
+			winValue,    // win (精度修正后)
+			detailVal,   // detail (JSONB)
+		)
+		if err != nil {
+			return fmt.Errorf("插入记录 %d 失败: %v", i+1, err)
+		}
+	}
+
+	// 提交事务
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交事务失败: %v", err)
+	}
+
+	fmt.Printf("    ✅ 第 %d 批数据处理完成\n", batchNum)
 	return nil
 }
 
