@@ -560,6 +560,8 @@ func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName str
 
 // ImportS3Files 从S3导入多个游戏的文件
 func (si *S3Importer) ImportS3Files(gameIDs []int, mode string, levelFilter string) error {
+	// 记录总开始时间
+	totalStartTime := time.Now()
 	fmt.Printf("🔄 启动S3导入模式 (游戏IDs: %v, 模式: %s)\n", gameIDs, mode)
 
 	// 列出S3文件
@@ -612,6 +614,7 @@ func (si *S3Importer) ImportS3Files(gameIDs []int, mode string, levelFilter stri
 
 	// 为每个游戏创建表并导入文件
 	for gameID, gameFiles := range gameGroups {
+		gameStartTime := time.Now()
 		fmt.Printf("\n🎯 开始处理游戏 %d，共 %d 个文件\n", gameID, len(gameFiles))
 
 		// 创建目标表
@@ -625,10 +628,14 @@ func (si *S3Importer) ImportS3Files(gameIDs []int, mode string, levelFilter stri
 			return fmt.Errorf("游戏 %d 文件导入失败: %v", gameID, err)
 		}
 
-		fmt.Printf("✅ 游戏 %d 所有文件导入完成！\n", gameID)
+		gameDuration := time.Since(gameStartTime)
+		fmt.Printf("✅ 游戏 %d 所有文件导入完成！(耗时: %v)\n", gameID, gameDuration)
 	}
 
+	// 计算并显示总耗时
+	totalDuration := time.Since(totalStartTime)
 	fmt.Printf("\n🎉 所有S3文件导入完成！\n")
+	fmt.Printf("⏱️  S3导入总耗时: %v\n", totalDuration)
 	return nil
 }
 
