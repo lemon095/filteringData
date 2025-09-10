@@ -1363,100 +1363,12 @@ func main() {
 			os.Exit(1)
 		}
 	case "import-s3":
-		// S3普通模式导入命令：./filteringData import-s3 <gameIds> [level] [env]
-		if len(os.Args) < 3 {
-			fmt.Println("❌ 缺少游戏ID参数")
-			fmt.Println("用法: ./filteringData import-s3 <gameIds> [level] [env]")
-			fmt.Println("示例: ./filteringData import-s3 112,103,105")
-			fmt.Println("示例: ./filteringData import-s3 112,103 50")
-			fmt.Println("示例: ./filteringData import-s3 112,103 50 hp")
-			os.Exit(1)
-		}
-
-		// 解析游戏ID列表
-		gameIdsStr := os.Args[2]
-		gameIds, err := parseGameIds(gameIdsStr)
-		if err != nil {
-			fmt.Printf("❌ 解析游戏ID失败: %v\n", err)
-			os.Exit(1)
-		}
-
-		// 解析等级过滤参数和环境参数
-		levelFilter := ""
-		env := "" // 默认环境
-
-		if len(os.Args) > 3 {
-			arg3 := os.Args[3]
-			// 检查第三个参数是环境还是等级
-			if IsEnv(arg3) {
-				// 第三个参数是环境
-				env = ResolveEnv(arg3)
-			} else {
-				// 第三个参数是等级
-				levelFilter = arg3
-				// 检查第四个参数是否是环境
-				if len(os.Args) > 4 {
-					arg4 := os.Args[4]
-					if IsEnv(arg4) {
-						env = ResolveEnv(arg4)
-					} else {
-						fmt.Printf("❌ 无效的环境: %s，支持的环境: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp\n", arg4)
-						os.Exit(1)
-					}
-				}
-			}
-		}
-
-		runS3ImportMode(gameIds, "normal", levelFilter, env)
-	case "importFb-s3":
-		// S3购买夺宝模式导入命令：./filteringData importFb-s3 <gameIds> [level] [env]
-		if len(os.Args) < 3 {
-			fmt.Println("❌ 缺少游戏ID参数")
-			fmt.Println("用法: ./filteringData importFb-s3 <gameIds> [level] [env]")
-			fmt.Println("示例: ./filteringData importFb-s3 112,103,105")
-			fmt.Println("示例: ./filteringData importFb-s3 112,103 50")
-			fmt.Println("示例: ./filteringData importFb-s3 112,103 50 hp")
-			os.Exit(1)
-		}
-
-		// 解析游戏ID列表
-		gameIdsStr := os.Args[2]
-		gameIds, err := parseGameIds(gameIdsStr)
-		if err != nil {
-			fmt.Printf("❌ 解析游戏ID失败: %v\n", err)
-			os.Exit(1)
-		}
-
-		// 解析等级过滤参数和环境参数
-		levelFilter := ""
-		env := "" // 默认环境
-
-		if len(os.Args) > 3 {
-			arg3 := os.Args[3]
-			// 检查第三个参数是环境还是等级
-			if IsEnv(arg3) {
-				// 第三个参数是环境
-				env = ResolveEnv(arg3)
-			} else {
-				// 第三个参数是等级
-				levelFilter = arg3
-				// 检查第四个参数是否是环境
-				if len(os.Args) > 4 {
-					arg4 := os.Args[4]
-					if IsEnv(arg4) {
-						env = ResolveEnv(arg4)
-					} else {
-						fmt.Printf("❌ 无效的环境: %s，支持的环境: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp\n", arg4)
-						os.Exit(1)
-					}
-				}
-			}
-		}
-
-		runS3ImportMode(gameIds, "fb", levelFilter, env)
+		// S3智能导入命令：./filteringData import-s3 <gameIds> [level] [env]
+		// 自动检测游戏ID下的normal和fb模式，先导入normal再导入fb
+		handleS3ImportCommand("auto")
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate, generate2, generate3, multi-game, import, importFb, import-s3, importFb-s3")
+		fmt.Println("支持的命令: generate, generate2, generate3, multi-game, import, importFb, import-s3")
 		os.Exit(1)
 	}
 }
@@ -3111,6 +3023,59 @@ func parseGameIds(gameIdsStr string) ([]int, error) {
 	return gameIds, nil
 }
 
+// handleS3ImportCommand 处理S3导入命令的统一函数
+func handleS3ImportCommand(mode string) {
+	commandName := "import-s3"
+
+	if len(os.Args) < 3 {
+		fmt.Println("❌ 缺少游戏ID参数")
+		fmt.Printf("用法: ./filteringData %s <gameIds> [level] [env]\n", commandName)
+		fmt.Printf("示例: ./filteringData %s 112,103,105\n", commandName)
+		fmt.Printf("示例: ./filteringData %s 112,103 50\n", commandName)
+		fmt.Printf("示例: ./filteringData %s 112,103 50 hp\n", commandName)
+		fmt.Println("\n💡 智能模式：自动检测游戏ID下的normal和fb模式文件")
+		fmt.Println("   - 如果同时存在normal和fb文件，先导入normal再导入fb")
+		fmt.Println("   - 如果只存在一种模式，只导入该模式的文件")
+		os.Exit(1)
+	}
+
+	// 解析游戏ID列表
+	gameIdsStr := os.Args[2]
+	gameIds, err := parseGameIds(gameIdsStr)
+	if err != nil {
+		fmt.Printf("❌ 解析游戏ID失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 解析等级过滤参数和环境参数
+	levelFilter := ""
+	env := "" // 默认环境
+
+	if len(os.Args) > 3 {
+		arg3 := os.Args[3]
+		// 检查第三个参数是环境还是等级
+		if IsEnv(arg3) {
+			// 第三个参数是环境
+			env = ResolveEnv(arg3)
+		} else {
+			// 第三个参数是等级
+			levelFilter = arg3
+			// 检查第四个参数是否是环境
+			if len(os.Args) > 4 {
+				arg4 := os.Args[4]
+				if IsEnv(arg4) {
+					env = ResolveEnv(arg4)
+				} else {
+					fmt.Printf("❌ 无效的环境: %s，支持的环境: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp\n", arg4)
+					os.Exit(1)
+				}
+			}
+		}
+	}
+
+	runS3ImportMode(gameIds, mode, levelFilter, env)
+}
+
 // runS3ImportMode 运行S3导入模式
 func runS3ImportMode(gameIds []int, mode string, levelFilter string, env string) {
 	envDisplay := ""
@@ -3121,6 +3086,8 @@ func runS3ImportMode(gameIds []int, mode string, levelFilter string, env string)
 	modeDisplay := "普通模式"
 	if mode == "fb" {
 		modeDisplay = "购买夺宝模式"
+	} else if mode == "auto" {
+		modeDisplay = "智能模式"
 	}
 
 	fmt.Printf("🔄 启动S3导入模式 (游戏IDs: %v, 模式: %s", gameIds, modeDisplay)

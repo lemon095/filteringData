@@ -564,72 +564,111 @@ func (si *S3Importer) ImportS3Files(gameIDs []int, mode string, levelFilter stri
 	totalStartTime := time.Now()
 	fmt.Printf("🔄 启动S3导入模式 (游戏IDs: %v, 模式: %s)\n", gameIDs, mode)
 
-	// 列出S3文件
-	files, err := si.s3Client.ListS3Files(gameIDs, mode)
-	if err != nil {
-		return fmt.Errorf("列出S3文件失败: %v", err)
+	var allFiles []S3FileInfo
+	var err error
+
+	if mode == "auto" {
+		// 智能模式：自动检测每个游戏的模式
+		allFiles, err = si.importS3FilesAutoMode(gameIDs, levelFilter)
+		if err != nil {
+			return err
+		}
+	} else {
+		// 传统模式：指定模式
+		allFiles, err = si.s3Client.ListS3Files(gameIDs, mode)
+		if err != nil {
+			return fmt.Errorf("列出S3文件失败: %v", err)
+		}
 	}
 
-	if len(files) == 0 {
+	if len(allFiles) == 0 {
 		return fmt.Errorf("在S3中未找到匹配的文件")
 	}
 
 	// 如果指定了levelFilter，则过滤文件
 	if levelFilter != "" {
-		filteredFiles := si.filterS3FilesByLevel(files, levelFilter)
+		filteredFiles := si.filterS3FilesByLevel(allFiles, levelFilter)
 		if len(filteredFiles) == 0 {
 			fmt.Printf("❌ 未找到level为 %s 的S3文件\n", levelFilter)
 			fmt.Printf("💡 当前S3包含以下文件:\n")
-			for _, file := range files {
+			for _, file := range allFiles {
 				fmt.Printf("   - %s (RTP等级: %d)\n", file.Key, file.RtpLevel)
 			}
 			return fmt.Errorf("未找到匹配的文件")
 		}
-		files = filteredFiles
+		allFiles = filteredFiles
 		fmt.Printf("✅ 过滤后找到 %d 个匹配的S3文件\n", len(filteredFiles))
 	}
 
 	// 按游戏ID和RTP等级排序
-	sort.Slice(files, func(i, j int) bool {
-		if files[i].GameID != files[j].GameID {
-			return files[i].GameID < files[j].GameID
+	sort.Slice(allFiles, func(i, j int) bool {
+		if allFiles[i].GameID != allFiles[j].GameID {
+			return allFiles[i].GameID < allFiles[j].GameID
 		}
-		if files[i].RtpLevel != files[j].RtpLevel {
-			return files[i].RtpLevel < files[j].RtpLevel
+		if allFiles[i].RtpLevel != allFiles[j].RtpLevel {
+			return allFiles[i].RtpLevel < allFiles[j].RtpLevel
 		}
-		return files[i].TestNum < files[j].TestNum
+		return allFiles[i].TestNum < allFiles[j].TestNum
 	})
 
-	fmt.Printf("📁 找到 %d 个S3文件，按顺序处理:\n", len(files))
-	for _, file := range files {
+	fmt.Printf("📁 找到 %d 个S3文件，按顺序处理:\n", len(allFiles))
+	for _, file := range allFiles {
 		fmt.Printf("  - 游戏%d | %s | RTP等级: %d | 测试: %d\n",
 			file.GameID, file.Key, file.RtpLevel, file.TestNum)
 	}
 
 	// 按游戏ID分组处理
 	gameGroups := make(map[int][]S3FileInfo)
-	for _, file := range files {
+	for _, file := range allFiles {
 		gameGroups[file.GameID] = append(gameGroups[file.GameID], file)
 	}
 
-	// 为每个游戏创建表并导入文件
+	// 并行处理不同游戏，但同一游戏内部串行
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errors []error
+	gameCount := len(gameGroups)
+
+	fmt.Printf("🚀 开始并行处理 %d 个游戏\n", gameCount)
+
 	for gameID, gameFiles := range gameGroups {
-		gameStartTime := time.Now()
-		fmt.Printf("\n🎯 开始处理游戏 %d，共 %d 个文件\n", gameID, len(gameFiles))
+		wg.Add(1)
+		go func(gid int, files []S3FileInfo) {
+			defer wg.Done()
 
-		// 创建目标表
-		tableName := fmt.Sprintf("%s%d", si.config.Tables.OutputTablePrefix, gameID)
-		if err := si.createS3TargetTable(tableName); err != nil {
-			return fmt.Errorf("创建目标表失败: %v", err)
-		}
+			gameStartTime := time.Now()
+			fmt.Printf("\n🎯 [游戏%d] 开始处理，共 %d 个文件\n", gid, len(files))
 
-		// 使用串行流式处理导入文件（避免同一游戏文件的数据库锁冲突）
-		if err := si.importS3FilesSequentialStream(gameFiles, tableName); err != nil {
-			return fmt.Errorf("游戏 %d 文件导入失败: %v", gameID, err)
-		}
+			// 创建目标表
+			tableName := fmt.Sprintf("%s%d", si.config.Tables.OutputTablePrefix, gid)
+			if err := si.createS3TargetTable(tableName); err != nil {
+				mu.Lock()
+				errors = append(errors, fmt.Errorf("游戏 %d 创建目标表失败: %v", gid, err))
+				mu.Unlock()
+				fmt.Printf("❌ [游戏%d] 创建目标表失败: %v\n", gid, err)
+				return
+			}
 
-		gameDuration := time.Since(gameStartTime)
-		fmt.Printf("✅ 游戏 %d 所有文件导入完成！(耗时: %v)\n", gameID, gameDuration)
+			// 使用串行流式处理导入文件（避免同一游戏文件的数据库锁冲突）
+			if err := si.importS3FilesSequentialStream(files, tableName); err != nil {
+				mu.Lock()
+				errors = append(errors, fmt.Errorf("游戏 %d 文件导入失败: %v", gid, err))
+				mu.Unlock()
+				fmt.Printf("❌ [游戏%d] 文件导入失败: %v\n", gid, err)
+				return
+			}
+
+			gameDuration := time.Since(gameStartTime)
+			fmt.Printf("✅ [游戏%d] 所有文件导入完成！(耗时: %v)\n", gid, gameDuration)
+		}(gameID, gameFiles)
+	}
+
+	// 等待所有游戏处理完成
+	wg.Wait()
+
+	// 检查是否有错误
+	if len(errors) > 0 {
+		return fmt.Errorf("部分游戏导入失败: %v", errors)
 	}
 
 	// 计算并显示总耗时
@@ -637,6 +676,57 @@ func (si *S3Importer) ImportS3Files(gameIDs []int, mode string, levelFilter stri
 	fmt.Printf("\n🎉 所有S3文件导入完成！\n")
 	fmt.Printf("⏱️  S3导入总耗时: %v\n", totalDuration)
 	return nil
+}
+
+// importS3FilesAutoMode 智能模式：自动检测每个游戏的模式并导入
+func (si *S3Importer) importS3FilesAutoMode(gameIDs []int, levelFilter string) ([]S3FileInfo, error) {
+	var allFiles []S3FileInfo
+
+	for _, gameID := range gameIDs {
+		fmt.Printf("🔍 检查游戏 %d 的模式...\n", gameID)
+
+		// 检查游戏有哪些模式
+		hasNormal, hasFb, err := si.s3Client.CheckGameModes(gameID)
+		if err != nil {
+			return nil, fmt.Errorf("检查游戏 %d 模式失败: %v", gameID, err)
+		}
+
+		if !hasNormal && !hasFb {
+			fmt.Printf("⚠️  游戏 %d 没有找到任何模式的文件\n", gameID)
+			continue
+		}
+
+		// 先导入normal模式（如果存在）
+		if hasNormal {
+			fmt.Printf("📁 游戏 %d 发现 normal 模式文件，开始导入...\n", gameID)
+			normalFiles, err := si.s3Client.ListS3Files([]int{gameID}, "normal")
+			if err != nil {
+				return nil, fmt.Errorf("列出游戏 %d normal模式文件失败: %v", gameID, err)
+			}
+			allFiles = append(allFiles, normalFiles...)
+		}
+
+		// 再导入fb模式（如果存在）
+		if hasFb {
+			fmt.Printf("📁 游戏 %d 发现 fb 模式文件，开始导入...\n", gameID)
+			fbFiles, err := si.s3Client.ListS3Files([]int{gameID}, "fb")
+			if err != nil {
+				return nil, fmt.Errorf("列出游戏 %d fb模式文件失败: %v", gameID, err)
+			}
+			allFiles = append(allFiles, fbFiles...)
+		}
+
+		// 显示游戏模式总结
+		if hasNormal && hasFb {
+			fmt.Printf("✅ 游戏 %d 完成：normal + fb 模式\n", gameID)
+		} else if hasNormal {
+			fmt.Printf("✅ 游戏 %d 完成：normal 模式\n", gameID)
+		} else {
+			fmt.Printf("✅ 游戏 %d 完成：fb 模式\n", gameID)
+		}
+	}
+
+	return allFiles, nil
 }
 
 // filterS3FilesByLevel 根据level过滤S3文件
@@ -719,7 +809,7 @@ func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) erro
 		if len(batch) >= batchSize {
 			batchCount++
 			fmt.Printf("  🔄 处理批次 %d (记录 %d-%d)\n", batchCount, totalRecords-len(batch)+1, totalRecords)
-			if err := si.insertS3Batch(batch, tableName, fileHeader.RtpLevel, fileHeader.SrNumber, batchCount); err != nil {
+			if err := si.insertS3Batch(batch, tableName, fileHeader.RtpLevel, fileHeader.SrNumber, batchCount, file.Mode); err != nil {
 				return fmt.Errorf("批量插入失败: %v", err)
 			}
 			batch = batch[:0] // 清空批次
@@ -730,7 +820,7 @@ func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) erro
 	if len(batch) > 0 {
 		batchCount++
 		fmt.Printf("  🔄 处理最后批次 %d (记录 %d-%d)\n", batchCount, totalRecords-len(batch)+1, totalRecords)
-		if err := si.insertS3Batch(batch, tableName, fileHeader.RtpLevel, fileHeader.SrNumber, batchCount); err != nil {
+		if err := si.insertS3Batch(batch, tableName, fileHeader.RtpLevel, fileHeader.SrNumber, batchCount, file.Mode); err != nil {
 			return fmt.Errorf("批量插入剩余数据失败: %v", err)
 		}
 	}
@@ -779,7 +869,7 @@ func (si *S3Importer) insertBatch(data []GameResultData, tableName string, rtpLe
 }
 
 // insertS3Batch 批量插入S3数据到数据库
-func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName string, rtpLevel int, testNum int, batchNum int) error {
+func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName string, rtpLevel int, testNum int, batchNum int, mode string) error {
 	if len(data) == 0 {
 		return nil
 	}
@@ -835,7 +925,13 @@ func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName str
 		} else {
 			totalBet = 0.0
 		}
+
+		// 根据模式处理rtpLevel：fb模式需要+0.1
 		rtpLevelVal := float64(rtpLevel)
+		if mode == "fb" {
+			rtpLevelVal = float64(rtpLevel) + 0.1
+		}
+
 		_, err := stmt.Exec(
 			rtpLevelVal, // rtpLevel
 			testNum,     // srNumber
@@ -1078,21 +1174,21 @@ func (si *S3Importer) importS3FilesSequentialStream(files []S3FileInfo, tableNam
 	fmt.Printf("🚀 开始串行流式处理 %d 个文件（避免数据库锁冲突）\n", len(files))
 
 	for i, file := range files {
-		fmt.Printf("🔄 [%d/%d] 开始处理文件: %s (大小: %.2fMB)\n",
-			i+1, len(files), file.Key, float64(file.Size)/(1024*1024))
+		fmt.Printf("🔄 [游戏%d-%s: %d/%d] 开始处理文件: %s (大小: %.2fMB)\n",
+			file.GameID, file.Mode, i+1, len(files), file.Key, float64(file.Size)/(1024*1024))
 		fileStartTime := time.Now()
 
 		// 流式处理单个文件
 		if err := si.importS3FileStream(file, tableName); err != nil {
 			errors = append(errors, fmt.Errorf("文件 %s 处理失败: %v", file.Key, err))
-			fmt.Printf("❌ [%d/%d] 文件处理失败: %s - %v\n", i+1, len(files), file.Key, err)
+			fmt.Printf("❌ [游戏%d-%s: %d/%d] 文件处理失败: %s - %v\n", file.GameID, file.Mode, i+1, len(files), file.Key, err)
 		} else {
 			successCount++
 			totalProcessed++
 			totalBytes += file.Size
 			fileDuration := time.Since(fileStartTime)
-			fmt.Printf("✅ [%d/%d] 文件处理完成: %s (耗时: %v)\n",
-				i+1, len(files), file.Key, fileDuration)
+			fmt.Printf("✅ [游戏%d-%s: %d/%d] 文件处理完成: %s (耗时: %v)\n",
+				file.GameID, file.Mode, i+1, len(files), file.Key, fileDuration)
 		}
 	}
 
@@ -1108,9 +1204,13 @@ func (si *S3Importer) importS3FilesSequentialStream(files []S3FileInfo, tableNam
 		fmt.Printf("  - 平均速度: %.2f MB/s\n", float64(totalBytes)/(1024*1024)/totalDuration.Seconds())
 	}
 
-	// 如果有错误，返回第一个错误
+	// 如果有错误，返回汇总错误信息
 	if len(errors) > 0 {
-		return errors[0]
+		fmt.Printf("⚠️  部分文件处理失败:\n")
+		for i, err := range errors {
+			fmt.Printf("   %d. %v\n", i+1, err)
+		}
+		return fmt.Errorf("处理过程中出现 %d 个错误，详细信息见上方输出", len(errors))
 	}
 
 	return nil

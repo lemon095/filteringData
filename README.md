@@ -172,21 +172,23 @@ df -h
 ./filteringData importFb 93 level1 bt         # 导入output/93_fb/中level1档位，使用巴西测试环境
 ```
 
-#### S3 导入命令
+#### S3 智能导入命令
 
-支持从 AWS S3 导入数据到数据库：
+支持从 AWS S3 智能导入数据到数据库：
 
 ```bash
-# S3普通模式导入
+# S3智能导入（自动检测normal和fb模式）
 ./filteringData import-s3 112,103,105         # 导入多个游戏的所有文件
 ./filteringData import-s3 112,103 50          # 导入指定等级的文件
 ./filteringData import-s3 112,103 50 ht       # 导入到指定环境
-
-# S3购买夺宝模式导入
-./filteringData importFb-s3 112,103,105       # 导入多个游戏的FB文件
-./filteringData importFb-s3 112,103 50        # 导入指定等级的FB文件
-./filteringData importFb-s3 112,103 50 hp     # 导入到指定环境
 ```
+
+**智能模式特性：**
+
+- 自动检测每个游戏 ID 下的 normal 和 fb 模式文件
+- 如果同时存在两种模式，先导入 normal 再导入 fb
+- 如果只存在一种模式，只导入该模式的文件
+- fb 模式的处理逻辑保持不变
 
 **S3 导入特性：**
 

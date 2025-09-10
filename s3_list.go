@@ -77,6 +77,40 @@ func NewS3Client(config *Config) (*S3Client, error) {
 	}, nil
 }
 
+// CheckGameModes 检查游戏ID下有哪些模式的文件
+func (s3c *S3Client) CheckGameModes(gameID int) (bool, bool, error) {
+	hasNormal := false
+	hasFb := false
+
+	// 检查normal模式
+	normalPrefix := fmt.Sprintf("mpg-slot-data/%d/normal/", gameID)
+	normalInput := &s3.ListObjectsV2Input{
+		Bucket:  aws.String(s3c.bucket),
+		Prefix:  aws.String(normalPrefix),
+		MaxKeys: aws.Int32(1), // 只需要检查是否有文件
+	}
+	normalResult, err := s3c.client.ListObjectsV2(context.TODO(), normalInput)
+	if err != nil {
+		return false, false, fmt.Errorf("检查normal模式失败: %v", err)
+	}
+	hasNormal = len(normalResult.Contents) > 0
+
+	// 检查fb模式
+	fbPrefix := fmt.Sprintf("mpg-slot-data/%d/fb/", gameID)
+	fbInput := &s3.ListObjectsV2Input{
+		Bucket:  aws.String(s3c.bucket),
+		Prefix:  aws.String(fbPrefix),
+		MaxKeys: aws.Int32(1), // 只需要检查是否有文件
+	}
+	fbResult, err := s3c.client.ListObjectsV2(context.TODO(), fbInput)
+	if err != nil {
+		return false, false, fmt.Errorf("检查fb模式失败: %v", err)
+	}
+	hasFb = len(fbResult.Contents) > 0
+
+	return hasNormal, hasFb, nil
+}
+
 // ListS3Files 列出S3指定前缀下的所有JSON文件
 func (s3c *S3Client) ListS3Files(gameIDs []int, mode string) ([]S3FileInfo, error) {
 	var allFiles []S3FileInfo
