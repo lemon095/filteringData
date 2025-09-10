@@ -1204,7 +1204,9 @@ func main() {
 		fmt.Println("     mode: generate/generate2/generate3/generateFb")
 		fmt.Println("  ./filteringData import                     # 导入output目录下的所有JSON文件到数据库")
 		fmt.Println("  ./filteringData import [fileLevelId]       # 只导入指定fileLevelId的JSON文件")
-		fmt.Println("  ./filteringData import-s3 <gameIds> [level] [env] # 从S3导入多个游戏的普通模式文件")
+		fmt.Println("  ./filteringData import-s3 <gameIds> [level] [env] # 从S3智能导入（自动检测normal和fb模式）")
+		fmt.Println("  ./filteringData import-s3-normal <gameIds> [level] [env] # 从S3导入普通模式文件")
+		fmt.Println("  ./filteringData import-s3-fb <gameIds> [level] [env] # 从S3导入购买夺宝模式文件")
 		fmt.Println("  ./filteringData importFb-s3 <gameIds> [level] [env] # 从S3导入多个游戏的购买夺宝模式文件")
 		fmt.Println("     gameIds: 逗号分隔的游戏ID列表，如: 112,103,105")
 		fmt.Println("     level: 可选的RTP等级过滤")
@@ -1214,10 +1216,11 @@ func main() {
 		fmt.Println("  ./filteringData import                     # 导入所有文件")
 		fmt.Println("  ./filteringData import 1                   # 只导入GameResults_1_*.json文件")
 		fmt.Println("  ./filteringData import 93                  # 只导入GameResults_93_*.json文件")
-		fmt.Println("  ./filteringData import-s3 112,103,105      # 从S3导入游戏112,103,105的普通模式文件")
-		fmt.Println("  ./filteringData importFb-s3 112,103,105    # 从S3导入游戏112,103,105的购买夺宝模式文件")
-		fmt.Println("  ./filteringData import-s3 112,103 50       # 导入RTP等级50的普通模式文件")
-		fmt.Println("  ./filteringData importFb-s3 112,103 50 hp  # 导入到香港生产环境的购买夺宝模式文件")
+		fmt.Println("  ./filteringData import-s3 112,103,105      # 智能导入游戏112,103,105（自动检测模式）")
+		fmt.Println("  ./filteringData import-s3-normal 112,103   # 只导入游戏112,103的普通模式文件")
+		fmt.Println("  ./filteringData import-s3-fb 112,103       # 只导入游戏112,103的购买夺宝模式文件")
+		fmt.Println("  ./filteringData import-s3 112,103 50       # 智能导入RTP等级50的文件")
+		fmt.Println("  ./filteringData import-s3 112,103 50 hp    # 智能导入到生产环境")
 		os.Exit(1)
 	}
 
@@ -1366,9 +1369,17 @@ func main() {
 		// S3智能导入命令：./filteringData import-s3 <gameIds> [level] [env]
 		// 自动检测游戏ID下的normal和fb模式，先导入normal再导入fb
 		handleS3ImportCommand("auto")
+	case "import-s3-normal":
+		// S3普通模式导入命令：./filteringData import-s3-normal <gameIds> [level] [env]
+		// 只导入normal模式文件
+		handleS3ImportCommand("normal")
+	case "import-s3-fb":
+		// S3购买夺宝模式导入命令：./filteringData import-s3-fb <gameIds> [level] [env]
+		// 只导入fb模式文件
+		handleS3ImportCommand("fb")
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate, generate2, generate3, multi-game, import, importFb, import-s3")
+		fmt.Println("支持的命令: generate, generate2, generate3, multi-game, import, importFb, import-s3, import-s3-normal, import-s3-fb")
 		os.Exit(1)
 	}
 }
