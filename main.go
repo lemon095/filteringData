@@ -1381,21 +1381,30 @@ func main() {
 			os.Exit(1)
 		}
 
-		// 解析等级过滤参数
+		// 解析等级过滤参数和环境参数
 		levelFilter := ""
-		if len(os.Args) > 3 {
-			levelFilter = os.Args[3]
-		}
-
-		// 解析环境参数
 		env := "" // 默认环境
-		if len(os.Args) > 4 {
-			env = os.Args[4]
-			if !IsEnv(env) {
-				fmt.Printf("❌ 无效的环境: %s，支持的环境: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp\n", env)
-				os.Exit(1)
+		
+		if len(os.Args) > 3 {
+			arg3 := os.Args[3]
+			// 检查第三个参数是环境还是等级
+			if IsEnv(arg3) {
+				// 第三个参数是环境
+				env = ResolveEnv(arg3)
+			} else {
+				// 第三个参数是等级
+				levelFilter = arg3
+				// 检查第四个参数是否是环境
+				if len(os.Args) > 4 {
+					arg4 := os.Args[4]
+					if IsEnv(arg4) {
+						env = ResolveEnv(arg4)
+					} else {
+						fmt.Printf("❌ 无效的环境: %s，支持的环境: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp\n", arg4)
+						os.Exit(1)
+					}
+				}
 			}
-			env = ResolveEnv(env)
 		}
 
 		runS3ImportMode(gameIds, "normal", levelFilter, env)
@@ -1418,21 +1427,30 @@ func main() {
 			os.Exit(1)
 		}
 
-		// 解析等级过滤参数
+		// 解析等级过滤参数和环境参数
 		levelFilter := ""
-		if len(os.Args) > 3 {
-			levelFilter = os.Args[3]
-		}
-
-		// 解析环境参数
 		env := "" // 默认环境
-		if len(os.Args) > 4 {
-			env = os.Args[4]
-			if !IsEnv(env) {
-				fmt.Printf("❌ 无效的环境: %s，支持的环境: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp\n", env)
-				os.Exit(1)
+		
+		if len(os.Args) > 3 {
+			arg3 := os.Args[3]
+			// 检查第三个参数是环境还是等级
+			if IsEnv(arg3) {
+				// 第三个参数是环境
+				env = ResolveEnv(arg3)
+			} else {
+				// 第三个参数是等级
+				levelFilter = arg3
+				// 检查第四个参数是否是环境
+				if len(os.Args) > 4 {
+					arg4 := os.Args[4]
+					if IsEnv(arg4) {
+						env = ResolveEnv(arg4)
+					} else {
+						fmt.Printf("❌ 无效的环境: %s，支持的环境: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp\n", arg4)
+						os.Exit(1)
+					}
+				}
 			}
-			env = ResolveEnv(env)
 		}
 
 		runS3ImportMode(gameIds, "fb", levelFilter, env)
