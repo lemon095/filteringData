@@ -781,6 +781,7 @@ func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) erro
 	batch := make([]map[string]interface{}, 0, batchSize)
 	batchCount := 0
 	totalRecords := 0
+	globalSrId := 0 // 全局srId计数器，确保整个文件内连续
 
 	fmt.Printf("📊 文件 %s: 大小=%.2fMB, 批次大小=%d\n",
 		file.Key, float64(file.Size)/(1024*1024), batchSize)
@@ -833,7 +834,7 @@ func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) erro
 					if len(batch) >= batchSize {
 						batchCount++
 						fmt.Printf("  🔄 处理批次 %d (记录 %d-%d)\n", batchCount, totalRecords-len(batch)+1, totalRecords)
-						if err := si.insertS3Batch(batch, tableName, rtpLevel, srNumber, batchCount, file.Mode); err != nil {
+						if err := si.insertS3Batch(batch, tableName, rtpLevel, srNumber, batchCount, file.Mode, &globalSrId); err != nil {
 							return fmt.Errorf("批量插入失败: %v", err)
 						}
 						batch = batch[:0] // 清空批次
@@ -857,7 +858,7 @@ func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) erro
 	if len(batch) > 0 {
 		batchCount++
 		fmt.Printf("  🔄 处理最后批次 %d (记录 %d-%d)\n", batchCount, totalRecords-len(batch)+1, totalRecords)
-		if err := si.insertS3Batch(batch, tableName, rtpLevel, srNumber, batchCount, file.Mode); err != nil {
+		if err := si.insertS3Batch(batch, tableName, rtpLevel, srNumber, batchCount, file.Mode, &globalSrId); err != nil {
 			return fmt.Errorf("批量插入剩余数据失败: %v", err)
 		}
 	}
@@ -906,7 +907,7 @@ func (si *S3Importer) insertBatch(data []GameResultData, tableName string, rtpLe
 }
 
 // insertS3Batch 批量插入S3数据到数据库
-func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName string, rtpLevel int, testNum int, batchNum int, mode string) error {
+func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName string, rtpLevel int, testNum int, batchNum int, mode string, globalSrId *int) error {
 	if len(data) == 0 {
 		return nil
 	}
@@ -969,10 +970,11 @@ func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName str
 			rtpLevelVal = float64(rtpLevel) + 0.1
 		}
 
+		*globalSrId++ // 递增全局srId
 		_, err := stmt.Exec(
 			rtpLevelVal, // rtpLevel
 			testNum,     // srNumber
-			i+1,         // srId (从1开始)
+			*globalSrId, // srId (全局连续)
 			totalBet,    // bet
 			winValue,    // win (精度修正后)
 			detailVal,   // detail (JSONB)
