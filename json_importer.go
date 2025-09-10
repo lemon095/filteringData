@@ -1149,7 +1149,7 @@ func (si *S3Importer) calculateOptimalBatchSize(fileSize int64) int {
 	// 根据文件大小动态调整，避免内存占用过高
 	if fileSize < 10*1024*1024 { // < 10MB
 		return 10000
-	} else if fileSize < 20*1024*1024 { // < 20MB
+	} else if fileSize < 30*1024*1024 { // < 20MB
 		return 5000
 	} else if fileSize < 50*1024*1024 { // < 50MB
 		return 1000
