@@ -1148,12 +1148,14 @@ func max(a, b int) int {
 func (si *S3Importer) calculateOptimalBatchSize(fileSize int64) int {
 	// 根据文件大小动态调整
 	if fileSize < 1024*1024 { // < 1MB
-		return 1000
+		return 10000
 	} else if fileSize < 5*1024*1024 { // < 5MB
-		return 2000
+		return 10000
 	} else if fileSize < 10*1024*1024 { // < 10MB
-		return 3000
+		return 10000
 	} else if fileSize < 20*1024*1024 { // < 20MB
+		return 10000
+	} else if fileSize > 100*1024*1024 {
 		return 5000
 	} else {
 		return 10000 // 大文件使用更大的批次
