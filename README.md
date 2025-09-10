@@ -111,12 +111,25 @@ df -h
 
 ### 基础命令
 
+#### 数据生成命令
+
 ```bash
 # 1) 生成普通流程 JSON（输出到 output/<gameId>）
 ./filteringData generate
 
-# 2) 生成"购买夺宝"模式 JSON（输出到 output/<gameId>_fb）
+# 2) 生成模式2 JSON（输出到 output/<gameId>）
+./filteringData generate2
+
+# 3) 生成模式3 JSON（输出到 output/<gameId>）
+./filteringData generate3
+
+# 4) 生成"购买夺宝"模式 JSON（输出到 output/<gameId>_fb）
 ./filteringData generateFb
+
+# 5) 多游戏生成模式（支持指定生成模式）
+./filteringData multi-game                    # 使用默认模式
+./filteringData multi-game generate2          # 使用generate2模式
+./filteringData multi-game generate3          # 使用generate3模式
 ```
 
 ### 多环境导入命令
@@ -159,18 +172,43 @@ df -h
 ./filteringData importFb 93 level1 bt         # 导入output/93_fb/中level1档位，使用巴西测试环境
 ```
 
+#### S3 导入命令
+
+支持从 AWS S3 导入数据到数据库：
+
+```bash
+# S3普通模式导入
+./filteringData import-s3 112,103,105         # 导入多个游戏的所有文件
+./filteringData import-s3 112,103 50          # 导入指定等级的文件
+./filteringData import-s3 112,103 50 ht       # 导入到指定环境
+
+# S3购买夺宝模式导入
+./filteringData importFb-s3 112,103,105       # 导入多个游戏的FB文件
+./filteringData importFb-s3 112,103 50        # 导入指定等级的FB文件
+./filteringData importFb-s3 112,103 50 hp     # 导入到指定环境
+```
+
+**S3 导入特性：**
+
+- 支持多个游戏 ID（用逗号分隔）
+- 支持等级过滤（只导入指定 RTP 等级的文件）
+- 支持多环境数据库连接
+- 串行处理同一游戏的文件（避免数据库锁冲突）
+- 流式处理大文件（避免内存问题）
+- 详细的时间统计和进度显示
+
 ### 环境代码说明
 
 支持以下环境代码（支持完整名称和简短别名）：
 
-| 环境名称  | 简短代码 | 说明             | 数据库主机                                                         |
-| --------- | -------- | ---------------- | ------------------------------------------------------------------ |
-| `local`   | `l`      | 本地环境（默认） | 127.0.0.1                                                          |
-| `hk-test` | `ht`     | 香港测试环境     | mpg-rds-aurora-ae.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com |
-| `br-test` | `bt`     | 巴西测试环境     | mpg-db-test.cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com               |
-| `br-prod` | `bp`     | 巴西正式环境     | mpg-db-cluster.cluster-cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com    |
-| `us-prod` | `up`     | 美国正式环境     | mpg-db-cluster.cluster-cvwq2uy263dd.us-east-1.rds.amazonaws.com    |
-| `hk-prod` | `hp`     | 香港正式环境     | mpgdb.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com             |
+| 环境名称  | 简短代码 | 说明             | 数据库主机示例           |
+| --------- | -------- | ---------------- | ------------------------ |
+| `local`   | `l`      | 本地环境（默认） | 127.0.0.1                |
+| `hk-test` | `ht`     | 香港测试环境     | your-hk-test-db-host.com |
+| `br-test` | `bt`     | 巴西测试环境     | your-br-test-db-host.com |
+| `br-prod` | `bp`     | 巴西正式环境     | your-br-prod-db-host.com |
+| `us-prod` | `up`     | 美国正式环境     | your-us-prod-db-host.com |
+| `hk-prod` | `hp`     | 香港正式环境     | your-hk-prod-db-host.com |
 
 ### 使用示例
 
@@ -188,19 +226,69 @@ df -h
 
 ### 命令逻辑说明
 
-1. **目录检测逻辑**：
-   - `import <number>`：先检查 `output/<number>/` 是否存在
-     - 存在：当作 gameId，导入整个目录
-     - 不存在：当作档位 ID，在 `output/<config.Game.ID>/` 下查找对应文件
-2. **文件过滤规则**：
+#### 1. 目录检测逻辑
 
-   - 档位过滤：查找 `GameResults_<档位>_*.json` 格式的文件
-   - 例如：档位 103 会匹配 `GameResults_103_1.json`, `GameResults_103_2.json` 等
+- **`import <number>`**：先检查 `output/<number>/` 是否存在
 
-3. **环境配置**：
-   - 不指定环境时使用默认环境（local）
-   - 环境配置在 `config.yaml` 的 `environments` 部分
-   - 每个环境有独立的数据库连接配置
+  - 存在：当作 gameId，导入整个目录
+  - 不存在：当作档位 ID，在 `output/<config.Game.ID>/` 下查找对应文件
+
+- **`importFb <number>`**：先检查 `output/<number>_fb/` 是否存在
+  - 存在：当作 gameId，导入整个目录
+  - 不存在：当作档位 ID，在 `output/<config.Game.ID>_fb/` 下查找对应文件
+
+#### 2. 文件过滤规则
+
+- **档位过滤**：查找 `GameResults_<档位>_*.json` 格式的文件
+
+  - 例如：档位 103 会匹配 `GameResults_103_1.json`, `GameResults_103_2.json` 等
+
+- **S3 文件过滤**：根据游戏 ID 和等级过滤 S3 中的文件
+  - 支持多游戏 ID（逗号分隔）
+  - 支持等级过滤（只导入指定 RTP 等级的文件）
+
+#### 3. 环境配置
+
+- 不指定环境时使用默认环境（local）
+- 环境配置在 `config.yaml` 的 `environments` 部分
+- 每个环境有独立的数据库连接配置
+- 支持环境变量配置敏感信息
+
+#### 4. 参数组合说明
+
+**本地导入命令参数：**
+
+- `./filteringData import` - 导入所有文件（默认环境）
+- `./filteringData import <gameId>` - 导入指定游戏（默认环境）
+- `./filteringData import <levelId>` - 导入指定档位（默认环境）
+- `./filteringData import <gameId> <env>` - 导入指定游戏到指定环境
+- `./filteringData import <levelId> <env>` - 导入指定档位到指定环境
+- `./filteringData import <gameId> <level> <env>` - 导入指定游戏和档位到指定环境
+
+**S3 导入命令参数：**
+
+- `./filteringData import-s3 <gameIds>` - 导入多个游戏的所有文件
+- `./filteringData import-s3 <gameIds> <level>` - 导入指定等级的文件
+- `./filteringData import-s3 <gameIds> <level> <env>` - 导入到指定环境
+
+**S3 导入示例：**
+
+```bash
+# 香港测试环境
+./filteringData import-s3 1513328 ht                    # 导入单个游戏
+./filteringData import-s3 1513328,128 ht                # 导入多个游戏
+./filteringData import-s3 1513328 50 ht                 # 导入指定等级
+
+# 香港生产环境
+./filteringData import-s3 1513328 hp                    # 导入单个游戏
+./filteringData import-s3 1513328,128 hp                # 导入多个游戏
+./filteringData import-s3 1513328 50 hp                 # 导入指定等级
+
+# 其他环境
+./filteringData import-s3 1513328 bt                    # 巴西测试环境
+./filteringData import-s3 1513328 bp                    # 巴西生产环境
+./filteringData import-s3 1513328 up                    # 美国生产环境
+```
 
 补充说明：
 
@@ -396,6 +484,8 @@ rsync -av \
 
 ## 数据库表结构
 
+### 源数据表结构
+
 程序需要以下字段的 PostgreSQL 表：
 
 - `id`: 主键
@@ -408,6 +498,67 @@ rsync -av \
 - `createdAt`: 创建时间 (timestamp)
 - `updatedAt`: 更新时间 (timestamp)
 
+### 导入目标表结构
+
+导入时会自动创建目标表（如果不存在）：
+
+```sql
+CREATE TABLE "GameResults_93" (
+    "id" SERIAL PRIMARY KEY,
+    "rtpLevel" NUMERIC NOT NULL,
+    "srNumber" INTEGER NOT NULL,
+    "srId" INTEGER NOT NULL,
+    "bet" NUMERIC NOT NULL,
+    "win" NUMERIC NOT NULL,
+    "detail" JSONB,
+    "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### 索引
+
+自动创建以下索引以提高查询性能：
+
+- `rtpLevel_idx`：RTP 等级索引
+- `srNumber_idx`：测试次数索引
+- `srId_idx`：序列 ID 索引
+- `rtpLevel_srNumber_idx`：RTP 等级+测试次数复合索引
+- `rtpLevel_srNumber_srId_idx`：三字段复合索引
+- `detail_gin_idx`：JSONB 字段 GIN 索引
+
+### 批量处理
+
+- 默认批次大小：1000 条记录
+- 可在 `config.yaml` 中配置：`settings.batch_size`
+- 使用数据库事务确保数据一致性
+
+### JSON 文件格式
+
+生成的 JSON 文件包含以下结构：
+
+```json
+{
+  "rtpLevel": 15.0,
+  "srNumber": 1,
+  "data": [
+    {
+      "ID": 1,
+      "TB": 100,
+      "AW": 150.5,
+      "GD": {
+        "Data": {...}
+      }
+    }
+  ],
+  "metadata": {
+    "bet": 100.0,
+    "totalRecords": 1000,
+    "generatedAt": "2024-01-01T12:00:00Z",
+    "gameId": 93
+  }
+}
+```
+
 ## 多环境功能详解
 
 ### 功能特性
@@ -417,6 +568,160 @@ rsync -av \
 - **简化命令**: 支持环境代码简写，提高操作效率
 - **智能检测**: 自动检测目录结构，提供友好的错误提示
 - **向后兼容**: 保持与旧版本命令的兼容性
+- **环境变量配置**: 支持通过环境变量配置敏感信息，提高安全性
+
+### 环境变量配置
+
+#### 概述
+
+现在系统支持通过环境变量来配置不同环境的数据库连接信息。这样可以避免在配置文件中硬编码敏感信息，提高安全性。
+
+#### 环境变量命名规则
+
+每个环境都有对应的环境变量前缀：
+
+- `HT_` - 香港测试环境 (hk-test)
+- `BT_` - 巴西测试环境 (br-test)
+- `BP_` - 巴西生产环境 (br-prod)
+- `UP_` - 美国生产环境 (us-prod)
+- `HP_` - 香港生产环境 (hk-prod)
+
+#### 必需的环境变量
+
+每个环境都需要设置以下环境变量：
+
+```bash
+# 数据库主机地址
+{ENV_PREFIX}_DB_HOST=数据库主机地址
+
+# 数据库端口
+{ENV_PREFIX}_DB_PORT=5432
+
+# 数据库用户名
+{ENV_PREFIX}_DB_USER=用户名
+
+# 数据库密码
+{ENV_PREFIX}_DB_PASSWORD=密码
+
+# 数据库名称
+{ENV_PREFIX}_DB_NAME=数据库名
+```
+
+#### 示例配置
+
+```bash
+# 香港测试环境 (ht)
+export HT_DB_HOST=your-hk-test-db-host.com
+export HT_DB_PORT=5432
+export HT_DB_USER=your_username
+export HT_DB_PASSWORD=your_password
+export HT_DB_NAME=your_database_name
+
+# 巴西测试环境 (bt)
+export BT_DB_HOST=your-br-test-db-host.com
+export BT_DB_PORT=5432
+export BT_DB_USER=your_username
+export BT_DB_PASSWORD=your_password
+export BT_DB_NAME=your_database_name
+
+# 巴西生产环境 (bp)
+export BP_DB_HOST=your-br-prod-db-host.com
+export BP_DB_PORT=5432
+export BP_DB_USER=your_username
+export BP_DB_PASSWORD=your_password
+export BP_DB_NAME=your_database_name
+
+# 美国生产环境 (up)
+export UP_DB_HOST=your-us-prod-db-host.com
+export UP_DB_PORT=5432
+export UP_DB_USER=your_username
+export UP_DB_PASSWORD=your_password
+export UP_DB_NAME=your_database_name
+
+# 香港生产环境 (hp)
+export HP_DB_HOST=your-hk-prod-db-host.com
+export HP_DB_PORT=5432
+export HP_DB_USER=your_username
+export HP_DB_PASSWORD=your_password
+export HP_DB_NAME=your_database_name
+```
+
+#### 使用方法
+
+##### 1. 设置环境变量
+
+在运行程序之前，确保设置了相应的环境变量：
+
+```bash
+# 方法1: 直接在命令行设置
+export HT_DB_HOST=your-host
+export HT_DB_PORT=5432
+# ... 其他变量
+
+# 方法2: 使用 .env 文件 (需要额外工具支持)
+# 创建 .env 文件并设置变量
+
+# 方法3: 在脚本中设置
+#!/bin/bash
+export HT_DB_HOST=your-host
+export HT_DB_PORT=5432
+# ... 其他变量
+./filteringData import 112 ht
+```
+
+##### 2. 运行命令
+
+设置环境变量后，可以使用相应的环境代码运行命令：
+
+```bash
+# 香港测试环境
+./filteringData import 112 ht
+
+# 巴西测试环境
+./filteringData import 112 bt
+
+# 巴西生产环境
+./filteringData import 112 bp
+
+# 美国生产环境
+./filteringData import 112 up
+
+# 香港生产环境
+./filteringData import 112 hp
+```
+
+#### 配置文件说明
+
+`config.yaml` 文件中的数据库配置现在使用环境变量占位符：
+
+```yaml
+environments:
+  hk-test:
+    host: "${HT_DB_HOST}"
+    port: "${HT_DB_PORT}"
+    user: "${HT_DB_USER}"
+    password: "${HT_DB_PASSWORD}"
+    dbname: "${HT_DB_NAME}"
+    sslmode: "require"
+    timezone: "UTC"
+  # ... 其他环境
+```
+
+#### 注意事项
+
+1. **安全性**: 不要在代码仓库中提交包含真实密码的配置文件
+2. **环境变量**: 确保在运行程序前设置了所有必需的环境变量
+3. **默认值**: local 环境仍然使用硬编码配置，不需要环境变量
+4. **错误处理**: 如果环境变量未设置，程序会显示相应的错误信息
+
+#### 故障排除
+
+如果遇到数据库连接问题：
+
+1. 检查环境变量是否正确设置：`echo $HT_DB_HOST`
+2. 检查环境变量值是否正确
+3. 检查网络连接和数据库服务状态
+4. 查看程序输出的错误信息
 
 ### 环境配置管理
 
@@ -452,7 +757,7 @@ var envMapping = map[string]string{
 程序启动时会显示连接的环境信息：
 
 ```
-数据库连接成功 [环境: br-test, 主机: mpg-db-test.cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com]
+数据库连接成功 [环境: br-test, 主机: your-br-test-db-host.com]
 ```
 
 ### 最佳实践
