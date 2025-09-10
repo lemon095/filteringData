@@ -1146,19 +1146,17 @@ func max(a, b int) int {
 
 // calculateOptimalBatchSize 计算最优批处理大小
 func (si *S3Importer) calculateOptimalBatchSize(fileSize int64) int {
-	// 根据文件大小动态调整
-	if fileSize < 1024*1024 { // < 1MB
-		return 10000
-	} else if fileSize < 5*1024*1024 { // < 5MB
-		return 10000
-	} else if fileSize < 10*1024*1024 { // < 10MB
+	// 根据文件大小动态调整，避免内存占用过高
+	if fileSize < 10*1024*1024 { // < 10MB
 		return 10000
 	} else if fileSize < 20*1024*1024 { // < 20MB
-		return 10000
-	} else if fileSize > 100*1024*1024 {
 		return 5000
-	} else {
-		return 10000 // 大文件使用更大的批次
+	} else if fileSize < 50*1024*1024 { // < 50MB
+		return 1000
+	} else if fileSize < 100*1024*1024 { // < 100MB
+		return 1000
+	} else { // >= 100MB
+		return 1000 // 超大文件使用小批次
 	}
 }
 
