@@ -785,34 +785,71 @@ func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) erro
 	fmt.Printf("📊 文件 %s: 大小=%.2fMB, 批次大小=%d\n",
 		file.Key, float64(file.Size)/(1024*1024), batchSize)
 
-	// 解析JSON文件结构：{"rtpLevel": 200, "srNumber": 1, "data": [...]}
-	var fileHeader struct {
-		RtpLevel int                      `json:"rtpLevel"`
-		SrNumber int                      `json:"srNumber"`
-		Data     []map[string]interface{} `json:"data"`
-	}
+	// 流式解析JSON文件结构：{"rtpLevel": 200, "srNumber": 1, "data": [...]}
+	var rtpLevel int
+	var srNumber int
 
-	// 解析整个文件结构
-	if err := decoder.Decode(&fileHeader); err != nil {
-		return fmt.Errorf("解析S3文件结构失败: %v", err)
-	}
+	// 解析文件头部信息
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return fmt.Errorf("解析JSON token失败: %v", err)
+		}
 
-	fmt.Printf("📊 S3文件信息: RTP等级=%d, 测试编号=%d, 数据条数=%d\n",
-		fileHeader.RtpLevel, fileHeader.SrNumber, len(fileHeader.Data))
+		if key, ok := token.(string); ok {
+			switch key {
+			case "rtpLevel":
+				if err := decoder.Decode(&rtpLevel); err != nil {
+					return fmt.Errorf("解析rtpLevel失败: %v", err)
+				}
+			case "srNumber":
+				if err := decoder.Decode(&srNumber); err != nil {
+					return fmt.Errorf("解析srNumber失败: %v", err)
+				}
+			case "data":
+				// 进入数据数组
+				token, err := decoder.Token()
+				if err != nil {
+					return fmt.Errorf("读取data数组开始标记失败: %v", err)
+				}
+				if delim, ok := token.(json.Delim); !ok || delim != '[' {
+					return fmt.Errorf("期望数组开始标记 '['，但得到 %v", token)
+				}
 
-	// 处理数据数组
-	for _, item := range fileHeader.Data {
-		batch = append(batch, item)
-		totalRecords++
+				fmt.Printf("📊 S3文件信息: RTP等级=%d, 测试编号=%d, 开始流式处理数据\n",
+					rtpLevel, srNumber)
 
-		// 达到批次大小时插入数据库
-		if len(batch) >= batchSize {
-			batchCount++
-			fmt.Printf("  🔄 处理批次 %d (记录 %d-%d)\n", batchCount, totalRecords-len(batch)+1, totalRecords)
-			if err := si.insertS3Batch(batch, tableName, fileHeader.RtpLevel, fileHeader.SrNumber, batchCount, file.Mode); err != nil {
-				return fmt.Errorf("批量插入失败: %v", err)
+				// 流式处理数据数组
+				for decoder.More() {
+					var item map[string]interface{}
+					if err := decoder.Decode(&item); err != nil {
+						return fmt.Errorf("解析数据项失败: %v", err)
+					}
+
+					batch = append(batch, item)
+					totalRecords++
+
+					// 达到批次大小时插入数据库
+					if len(batch) >= batchSize {
+						batchCount++
+						fmt.Printf("  🔄 处理批次 %d (记录 %d-%d)\n", batchCount, totalRecords-len(batch)+1, totalRecords)
+						if err := si.insertS3Batch(batch, tableName, rtpLevel, srNumber, batchCount, file.Mode); err != nil {
+							return fmt.Errorf("批量插入失败: %v", err)
+						}
+						batch = batch[:0] // 清空批次
+					}
+				}
+
+				// 读取数组结束标记
+				token, err = decoder.Token()
+				if err != nil {
+					return fmt.Errorf("读取数组结束标记失败: %v", err)
+				}
+				if delim, ok := token.(json.Delim); !ok || delim != ']' {
+					return fmt.Errorf("期望数组结束标记 ']'，但得到 %v", token)
+				}
+				break
 			}
-			batch = batch[:0] // 清空批次
 		}
 	}
 
@@ -820,7 +857,7 @@ func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) erro
 	if len(batch) > 0 {
 		batchCount++
 		fmt.Printf("  🔄 处理最后批次 %d (记录 %d-%d)\n", batchCount, totalRecords-len(batch)+1, totalRecords)
-		if err := si.insertS3Batch(batch, tableName, fileHeader.RtpLevel, fileHeader.SrNumber, batchCount, file.Mode); err != nil {
+		if err := si.insertS3Batch(batch, tableName, rtpLevel, srNumber, batchCount, file.Mode); err != nil {
 			return fmt.Errorf("批量插入剩余数据失败: %v", err)
 		}
 	}
