@@ -2609,7 +2609,7 @@ func runGenerateMode3() {
 	fmt.Printf("⏱️  整个程序总耗时: %v\n", totalDuration)
 }
 
-// runRtpTestV3 执行单次RTP测试V3 - 10%不中奖+40%不盈利+30%盈利策略
+// runRtpTestV3 执行单次RTP测试V3 - 优化版本：动态比例调整+RTP下限保证+数量精确控制
 func runRtpTestV3(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData) error {
 	var logBuf bytes.Buffer
 	printf := func(format string, a ...interface{}) {
@@ -2618,37 +2618,57 @@ func runRtpTestV3(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	testStartTime := time.Now()
 
 	// 任务头分隔线
-	printf("\n========== [TASK BEGIN - V3 STRATEGY] RtpNo: %.0f | Test: %d | %s =========\n", rtpLevel, testNumber, time.Now().Format(time.RFC3339))
+	printf("\n========== [TASK BEGIN - V3 OPTIMIZED] RtpNo: %.0f | Test: %d | %s =========\n", rtpLevel, testNumber, time.Now().Format(time.RFC3339))
 
 	// 计算允许中的金额
 	allowWin := totalBet * rtp
 	rtpUpperLimit := rtp + 0.5
 	maxAllowWin := totalBet * rtpUpperLimit
+	rtpLowerLimit := rtp - 0.1 // RTP下限：目标值-0.1
+	minAllowWin := totalBet * rtpLowerLimit
 
 	// 数据统计
 	printf("\n数据源统计:\n")
 	printf("  - 中奖数据(包含不盈利): %d条\n", len(winDataAll))
 	printf("  - 不中奖数据(aw=0): %d条\n", len(noWinDataAll))
 	printf("档位: %.0f, 目标RTP: %.4f, 允许中奖金额: %.2f\n", rtpLevel, rtp, allowWin)
-	printf("🔧 V3策略：10%%不中奖 + 40%%不盈利 + 30%%盈利数据\n")
-	printf("RTP上限控制: %.2f (目标%.2f + 0.5)，最大允许中奖: %.2f\n", rtpUpperLimit, rtp, maxAllowWin)
+	printf("🔧 V3优化策略：动态比例调整 + RTP下限保证 + 数量精确控制\n")
+	printf("RTP控制范围: [%.2f, %.2f]，中奖金额范围: [%.2f, %.2f]\n", rtpLowerLimit, rtpUpperLimit, minAllowWin, maxAllowWin)
 
 	// 每任务独立随机源
 	seed := time.Now().UnixNano() ^ int64(config.Game.ID)*1_000_003 ^ int64(testNumber)*1_000_033 ^ int64(rtpLevel)*1_000_037
 	rng := rand.New(rand.NewSource(seed))
 
-	// 计算各阶段的数量目标
+	// 动态计算各阶段的数量目标（根据RTP目标调整）
 	totalCount := config.Tables.DataNum
-	noWinCount := int(float64(totalCount) * 0.1)                             // 10%不中奖
-	notProfitCount := int(float64(totalCount) * 0.4)                         // 40%不盈利
-	profitCount := int(float64(totalCount) * 0.3)                            // 30%盈利
-	remainingCount := totalCount - noWinCount - notProfitCount - profitCount // 剩余20%用于调整
+	var noWinCount, notProfitCount, profitCount, remainingCount int
 
-	printf("🎯 数据分配计划:\n")
-	printf("  - 不中奖数据: %d 条 (10%%)\n", noWinCount)
-	printf("  - 不盈利数据: %d 条 (40%%)\n", notProfitCount)
-	printf("  - 盈利数据: %d 条 (30%%)\n", profitCount)
-	printf("  - 剩余调整: %d 条 (20%%)\n", remainingCount)
+	// 根据RTP目标动态调整比例
+	if rtp >= 3.0 {
+		// 超高RTP：需要更多盈利数据
+		noWinCount = int(float64(totalCount) * 0.05)     // 5%不中奖
+		notProfitCount = int(float64(totalCount) * 0.25) // 25%不盈利
+		profitCount = int(float64(totalCount) * 0.50)    // 50%盈利
+		remainingCount = int(float64(totalCount) * 0.20) // 20%调整
+	} else if rtp >= 2.0 {
+		// 高RTP：增加盈利数据比例
+		noWinCount = int(float64(totalCount) * 0.08)     // 8%不中奖
+		notProfitCount = int(float64(totalCount) * 0.32) // 32%不盈利
+		profitCount = int(float64(totalCount) * 0.40)    // 40%盈利
+		remainingCount = int(float64(totalCount) * 0.20) // 20%调整
+	} else {
+		// 中低RTP：保持原比例
+		noWinCount = int(float64(totalCount) * 0.10)     // 10%不中奖
+		notProfitCount = int(float64(totalCount) * 0.40) // 40%不盈利
+		profitCount = int(float64(totalCount) * 0.30)    // 30%盈利
+		remainingCount = int(float64(totalCount) * 0.20) // 20%调整
+	}
+
+	printf("🎯 动态数据分配计划 (RTP=%.2f):\n", rtp)
+	printf("  - 不中奖数据: %d 条 (%.1f%%)\n", noWinCount, float64(noWinCount)/float64(totalCount)*100)
+	printf("  - 不盈利数据: %d 条 (%.1f%%)\n", notProfitCount, float64(notProfitCount)/float64(totalCount)*100)
+	printf("  - 盈利数据: %d 条 (%.1f%%)\n", profitCount, float64(profitCount)/float64(totalCount)*100)
+	printf("  - 剩余调整: %d 条 (%.1f%%)\n", remainingCount, float64(remainingCount)/float64(totalCount)*100)
 
 	var data []GameResultData
 	var totalWin float64 = 0
@@ -2689,15 +2709,30 @@ func runRtpTestV3(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		printf("✅ 添加不盈利数据: %d 条，累计中奖金额: %.2f\n", addedCount, totalWin)
 	}
 
-	// 第三步：添加盈利数据 (30%)，条件：aw > 1.5*tb 且 aw < rtp*6*tb（平衡范围）
+	// 第三步：添加盈利数据，动态调整筛选条件
 	printf("\n📊 第三步：添加盈利数据\n")
-	profitUpperLimit := perSpinBet * rtp * 6 // 调整为6倍，平衡范围
-	printf("盈利数据上限: %.2f (rtp*6*tb)\n", profitUpperLimit)
 
-	// 筛选盈利数据：aw > 1.5*tb 且 aw < rtp*6*tb
+	// 根据RTP目标动态调整盈利数据筛选条件
+	var profitMinRatio, profitMaxMultiplier float64
+	if rtp >= 3.0 {
+		profitMinRatio = 1.2     // 超高RTP：放宽下限
+		profitMaxMultiplier = 15 // 提高上限
+	} else if rtp >= 2.0 {
+		profitMinRatio = 1.3     // 高RTP：适度放宽
+		profitMaxMultiplier = 10 // 适度提高上限
+	} else {
+		profitMinRatio = 1.5    // 中低RTP：保持原条件
+		profitMaxMultiplier = 6 // 保持原上限
+	}
+
+	profitUpperLimit := perSpinBet * rtp * profitMaxMultiplier
+	printf("盈利数据筛选条件: aw > %.1f*tb 且 aw <= %.1f*tb (上限: %.2f)\n",
+		profitMinRatio, rtp*profitMaxMultiplier, profitUpperLimit)
+
+	// 筛选盈利数据：动态条件
 	var suitableProfitData []GameResultData
 	for _, item := range winDataAll {
-		if item.AW > float64(item.TB)*1.5 && item.AW <= profitUpperLimit {
+		if item.AW > float64(item.TB)*profitMinRatio && item.AW <= profitUpperLimit {
 			suitableProfitData = append(suitableProfitData, item)
 		}
 	}
@@ -2728,7 +2763,7 @@ func runRtpTestV3(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	}
 	printf("✅ 添加盈利数据: %d 条，盈利金额: %.2f，累计中奖金额: %.2f\n", addedProfitCount, currentProfitWin, totalWin)
 
-	// 第四步：智能调整剩余数据
+	// 第四步：智能调整剩余数据 - 优化版本
 	printf("\n📊 第四步：智能调整剩余数据\n")
 	currentCount := len(data)
 	needMore := totalCount - currentCount
@@ -2736,141 +2771,159 @@ func runRtpTestV3(db *Database, config *Config, rtpLevel float64, rtp float64, t
 
 	// 计算当前RTP与目标的差距
 	currentRTP := totalWin / totalBet
-	rtpGap := currentRTP - rtp // 改为有符号差距，正数表示超过目标
+	rtpGap := currentRTP - rtp
 	printf("当前RTP: %.6f，目标RTP: %.6f，差距: %.6f\n", currentRTP, rtp, rtpGap)
 
+	// 确保数量达标
 	if needMore > 0 {
-		// 计算还需要多少中奖金额才能达到目标
-		remainingWinNeeded := allowWin - totalWin
-		printf("还需要中奖金额: %.2f 才能达到目标RTP\n", remainingWinNeeded)
+		printf("🎯 需要补充 %d 条数据以达到目标数量\n", needMore)
 
-		// 计算目标RTP的110%范围，用于更精确控制
-		targetRTPMax := rtp * 1.1
+		// 计算还需要多少中奖金额才能达到RTP下限
+		remainingWinNeeded := minAllowWin - totalWin
+		printf("还需要中奖金额: %.2f 才能达到RTP下限 (%.2f)\n", remainingWinNeeded, rtpLowerLimit)
 
-		printf("目标RTP上限: %.2f (%.1f%%)\n", targetRTPMax, targetRTPMax*100)
+		// 收集所有可用数据（去重）
+		usedIds := make(map[int]bool)
+		for _, item := range data {
+			usedIds[item.ID] = true
+		}
+
+		var allAvailableData []GameResultData
+		// 优先使用盈利数据
+		for _, item := range suitableProfitData {
+			if !usedIds[item.ID] {
+				allAvailableData = append(allAvailableData, item)
+			}
+		}
+		// 其次使用不盈利数据
+		for _, item := range notProfitData {
+			if !usedIds[item.ID] {
+				allAvailableData = append(allAvailableData, item)
+			}
+		}
+		// 最后使用不中奖数据
+		for _, item := range noWinDataAll {
+			if !usedIds[item.ID] {
+				allAvailableData = append(allAvailableData, item)
+			}
+		}
+
+		printf("可用补充数据: %d 条\n", len(allAvailableData))
 
 		if remainingWinNeeded > 0 {
-			// 还需要更多中奖金额，优先用大金额补充
-			printf("🎯 需要更多中奖金额，优先用大金额补充\n")
-			// 按AW降序排序所有可用数据
-			var allAvailableData []GameResultData
-			allAvailableData = append(allAvailableData, suitableProfitData...)
-			allAvailableData = append(allAvailableData, notProfitData...)
-
-			// 去重
-			usedIds := make(map[int]bool)
-			for _, item := range data {
-				usedIds[item.ID] = true
-			}
-
-			var uniqueData []GameResultData
-			for _, item := range allAvailableData {
-				if !usedIds[item.ID] {
-					uniqueData = append(uniqueData, item)
-				}
-			}
-
-			sort.Slice(uniqueData, func(i, j int) bool {
-				return uniqueData[i].AW > uniqueData[j].AW
+			// RTP不足，优先选择大金额数据
+			printf("🎯 RTP不足，优先选择大金额数据提升RTP\n")
+			sort.Slice(allAvailableData, func(i, j int) bool {
+				return allAvailableData[i].AW > allAvailableData[j].AW
 			})
-
-			added := 0
-			for _, item := range uniqueData {
-				if added >= needMore {
-					break
-				}
-				newTotalWin := totalWin + item.AW
-				// 放宽限制：只要不超过硬上限就允许添加
-				if newTotalWin > maxAllowWin {
-					continue
-				}
-				data = append(data, item)
-				totalWin += item.AW
-				added++
-			}
-			printf("✅ 大金额补充: %d 条\n", added)
-
-			// 如果还是不够，用不中奖数据填充
-			if len(data) < totalCount {
-				remaining := totalCount - len(data)
-				printf("🎯 还需要 %d 条数据，用不中奖数据填充\n", remaining)
-
-				// 重新获取不中奖数据
-				permNo := rng.Perm(len(noWinDataAll))
-				for i := 0; i < remaining && i < len(permNo); i++ {
-					idx := permNo[i]
-					data = append(data, noWinDataAll[idx])
-				}
-				printf("✅ 不中奖数据填充: %d 条\n", remaining)
-			}
 		} else {
-			// 已经超过目标，优先保证数据量，RTP允许达到上限
-			printf("🎯 已超过目标RTP，优先保证数据量，RTP允许达到上限\n")
-			// 按AW升序排序，选择中小金额数据
-			var allAvailableData []GameResultData
-			allAvailableData = append(allAvailableData, suitableProfitData...)
-			allAvailableData = append(allAvailableData, notProfitData...)
-			if len(noWinDataAll) > 0 {
-				allAvailableData = append(allAvailableData, noWinDataAll...)
-			}
-
-			// 去重
-			usedIds := make(map[int]bool)
-			for _, item := range data {
-				usedIds[item.ID] = true
-			}
-
-			var uniqueData []GameResultData
-			for _, item := range allAvailableData {
-				if !usedIds[item.ID] {
-					uniqueData = append(uniqueData, item)
-				}
-			}
-
-			sort.Slice(uniqueData, func(i, j int) bool {
-				return uniqueData[i].AW < uniqueData[j].AW
+			// RTP已达标，优先选择中小金额数据保持平衡
+			printf("🎯 RTP已达标，优先选择中小金额数据保持平衡\n")
+			sort.Slice(allAvailableData, func(i, j int) bool {
+				return allAvailableData[i].AW < allAvailableData[j].AW
 			})
+		}
 
-			added := 0
-			for _, item := range uniqueData {
-				if added >= needMore {
-					break
-				}
-				// 放宽限制：只要不超过硬上限就允许添加
-				newTotalWin := totalWin + item.AW
-				if newTotalWin > maxAllowWin {
-					continue
-				}
-				data = append(data, item)
-				totalWin += item.AW
-				added++
+		// 添加数据直到数量达标
+		added := 0
+		for _, item := range allAvailableData {
+			if added >= needMore {
+				break
 			}
-			printf("✅ 中小金额填补: %d 条\n", added)
 
-			// 如果还是不够，用不中奖数据填充
-			if len(data) < totalCount {
-				remaining := totalCount - len(data)
-				printf("🎯 还需要 %d 条数据，用不中奖数据填充\n", remaining)
-
-				// 重新获取不中奖数据
-				permNo := rng.Perm(len(noWinDataAll))
-				for i := 0; i < remaining && i < len(permNo); i++ {
-					idx := permNo[i]
-					data = append(data, noWinDataAll[idx])
-				}
-				printf("✅ 不中奖数据填充: %d 条\n", remaining)
+			// 检查添加后是否超过RTP上限
+			newTotalWin := totalWin + item.AW
+			if newTotalWin > maxAllowWin {
+				continue
 			}
+
+			data = append(data, item)
+			totalWin += item.AW
+			added++
+		}
+		printf("✅ 补充数据: %d 条，累计中奖金额: %.2f\n", added, totalWin)
+
+		// 如果还是不够，用不中奖数据填充（确保数量达标）
+		if len(data) < totalCount {
+			remaining := totalCount - len(data)
+			printf("🎯 还需要 %d 条数据，用不中奖数据填充确保数量达标\n", remaining)
+
+			permNo := rng.Perm(len(noWinDataAll))
+			for i := 0; i < remaining && i < len(permNo); i++ {
+				idx := permNo[i]
+				data = append(data, noWinDataAll[idx])
+			}
+			printf("✅ 不中奖数据填充: %d 条\n", remaining)
 		}
 	}
 
-	// 第五步：精确RTP调整（如果还有调整空间）
-	printf("\n📊 第五步：精确RTP调整\n")
+	// 第五步：精确RTP调整和下限保证
+	printf("\n📊 第五步：精确RTP调整和下限保证\n")
 	finalRTP := totalWin / totalBet
 	rtpDeviation := math.Abs(finalRTP - rtp)
 	printf("调整前RTP: %.6f，目标RTP: %.6f，偏差: %.6f\n", finalRTP, rtp, rtpDeviation)
 
-	// 如果RTP偏差超过0.1，尝试微调
-	if rtpDeviation > 0.1 {
+	// 检查RTP下限
+	if finalRTP < rtpLowerLimit {
+		printf("⚠️ RTP低于下限 (%.2f < %.2f)，尝试提升RTP\n", finalRTP, rtpLowerLimit)
+
+		// 收集所有未使用的中奖数据
+		usedIds := make(map[int]bool)
+		for _, item := range data {
+			usedIds[item.ID] = true
+		}
+
+		var allUnusedWinData []GameResultData
+		for _, item := range winDataAll {
+			if !usedIds[item.ID] && item.AW > 0 {
+				allUnusedWinData = append(allUnusedWinData, item)
+			}
+		}
+
+		if len(allUnusedWinData) > 0 {
+			// 按AW降序排序，优先选择大额数据
+			sort.Slice(allUnusedWinData, func(i, j int) bool {
+				return allUnusedWinData[i].AW > allUnusedWinData[j].AW
+			})
+
+			// 尝试替换不中奖数据来提升RTP
+			adjustmentCount := 0
+			maxAdjustments := 200 // 增加调整次数
+
+			for _, newItem := range allUnusedWinData {
+				if adjustmentCount >= maxAdjustments {
+					break
+				}
+
+				// 找到一条不中奖数据进行替换
+				for i, oldItem := range data {
+					if oldItem.AW == 0 { // 只替换不中奖数据
+						// 计算替换后的RTP
+						replaceTotalWin := totalWin - oldItem.AW + newItem.AW
+						replaceRTP := replaceTotalWin / totalBet
+
+						// 如果替换后RTP更接近目标且不超过上限
+						if replaceRTP >= rtpLowerLimit && replaceTotalWin <= maxAllowWin {
+							data[i] = newItem
+							totalWin = replaceTotalWin
+							finalRTP = replaceRTP
+							adjustmentCount++
+							printf("🔄 替换不中奖数据: 旧AW=%.2f -> 新AW=%.2f, 新RTP=%.6f\n",
+								oldItem.AW, newItem.AW, replaceRTP)
+							break
+						}
+					}
+				}
+			}
+
+			printf("✅ RTP下限调整完成，调整了 %d 条数据，最终RTP: %.6f\n", adjustmentCount, finalRTP)
+		}
+	}
+
+	// 如果RTP偏差仍然较大，尝试微调
+	if math.Abs(finalRTP-rtp) > 0.05 {
+		printf("🎯 RTP偏差较大 (%.6f)，尝试微调\n", math.Abs(finalRTP-rtp))
+
 		// 收集所有未使用的数据
 		usedIds := make(map[int]bool)
 		for _, item := range data {
@@ -2902,37 +2955,29 @@ func runRtpTestV3(db *Database, config *Config, rtpLevel float64, rtp float64, t
 
 			// 尝试替换一些数据来调整RTP
 			adjustmentCount := 0
-			maxAdjustments := 100 // 最多调整100条数据
+			maxAdjustments := 100
 
 			for _, newItem := range allUnusedData {
 				if adjustmentCount >= maxAdjustments {
 					break
 				}
 
-				// 计算添加这条数据后的新RTP
-				newTotalWin := totalWin + newItem.AW
-				newRTP := newTotalWin / totalBet
-				newDeviation := math.Abs(newRTP - rtp)
+				// 随机选择一条现有数据进行替换
+				if len(data) > 0 {
+					replaceIndex := rng.Intn(len(data))
+					oldItem := data[replaceIndex]
 
-				// 如果新RTP更接近目标且不超过上限
-				if newDeviation < rtpDeviation && newTotalWin <= maxAllowWin {
-					// 随机替换一条现有数据
-					if len(data) > 0 {
-						replaceIndex := rng.Intn(len(data))
-						oldItem := data[replaceIndex]
+					// 计算替换后的RTP
+					replaceTotalWin := totalWin - oldItem.AW + newItem.AW
+					replaceRTP := replaceTotalWin / totalBet
+					replaceDeviation := math.Abs(replaceRTP - rtp)
 
-						// 计算替换后的RTP
-						replaceTotalWin := totalWin - oldItem.AW + newItem.AW
-						replaceRTP := replaceTotalWin / totalBet
-						replaceDeviation := math.Abs(replaceRTP - rtp)
-
-						// 如果替换后RTP更接近目标
-						if replaceDeviation < rtpDeviation && replaceTotalWin <= maxAllowWin {
-							data[replaceIndex] = newItem
-							totalWin = replaceTotalWin
-							rtpDeviation = replaceDeviation
-							adjustmentCount++
-						}
+					// 如果替换后RTP更接近目标且不超过上限
+					if replaceDeviation < rtpDeviation && replaceTotalWin <= maxAllowWin && replaceRTP >= rtpLowerLimit {
+						data[replaceIndex] = newItem
+						totalWin = replaceTotalWin
+						rtpDeviation = replaceDeviation
+						adjustmentCount++
 					}
 				}
 			}
@@ -2958,21 +3003,34 @@ func runRtpTestV3(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		}
 	}
 
-	printf("✅ V3策略结果:\n")
+	printf("✅ V3优化策略结果:\n")
 	printf("  - 总数据量: %d 条\n", len(data))
 	printf("  - 总投注: %.2f\n", totalBet)
 	printf("  - 总中奖: %.2f\n", totalWin)
 	printf("  - 实际RTP: %.6f\n", finalRTP)
 	printf("  - 目标RTP: %.6f\n", rtp)
 	printf("  - RTP偏差: %.6f\n", rtpDeviation)
+	printf("  - RTP下限: %.6f (%.1f%%)\n", rtpLowerLimit, rtpLowerLimit*100)
 	printf("  - 不中奖数据: %d 条 (%.1f%%)\n", finalNoWinCount, float64(finalNoWinCount)/float64(len(data))*100)
 	printf("  - 不盈利数据: %d 条 (%.1f%%)\n", finalNotProfitCount, float64(finalNotProfitCount)/float64(len(data))*100)
 	printf("  - 盈利数据: %d 条 (%.1f%%)\n", finalProfitCount, float64(finalProfitCount)/float64(len(data))*100)
 
-	// 检查数据量是否正确
+	// 验证数据量
 	if len(data) != config.Tables.DataNum {
 		return fmt.Errorf("❌ 数据量不匹配：期望 %d 条, 实际 %d 条", config.Tables.DataNum, len(data))
 	}
+
+	// 验证RTP下限
+	if finalRTP < rtpLowerLimit {
+		return fmt.Errorf("❌ RTP低于下限：实际 %.6f < 下限 %.6f", finalRTP, rtpLowerLimit)
+	}
+
+	// 验证RTP上限
+	if finalRTP > rtpUpperLimit {
+		return fmt.Errorf("❌ RTP超过上限：实际 %.6f > 上限 %.6f", finalRTP, rtpUpperLimit)
+	}
+
+	printf("✅ 所有验证通过：数据量正确，RTP在允许范围内 [%.2f, %.2f]\n", rtpLowerLimit, rtpUpperLimit)
 
 	// 打乱输出顺序
 	rand.Shuffle(len(data), func(i, j int) {
