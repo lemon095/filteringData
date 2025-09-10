@@ -83,6 +83,20 @@ bet:
   cs: 1.0 # 硬币面值
   ml: 1.0 # 投注线数倍数
   bl: 20.0 # 投注线数
+  fb: 2.0 # 购买夺宝的倍数
+
+# 奖品比例配置
+prize_ratios:
+  big_prize: 0.01 # 大奖比例
+  mega_prize: 0.005 # 巨奖比例
+  super_mega_prize: 0.001 # 超级巨奖比例
+
+# 阶段比例配置
+stage_ratios:
+  stage1_min_ratio: 0.6 # 第一阶段最小比例
+  stage1_max_ratio: 0.8 # 第一阶段最大比例
+  stage3_win_top_ratio: 0.9 # 第三阶段大额补齐比例
+  upper_deviation: 0.005 # 允许上偏差
 
 # Multi-Game Configuration (多游戏配置)
 multi_game:
