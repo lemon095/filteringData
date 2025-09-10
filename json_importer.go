@@ -620,8 +620,8 @@ func (si *S3Importer) ImportS3Files(gameIDs []int, mode string, levelFilter stri
 			return fmt.Errorf("创建目标表失败: %v", err)
 		}
 
-		// 使用并发流式处理导入文件
-		if err := si.importS3FilesConcurrentStream(gameFiles, tableName); err != nil {
+		// 使用串行流式处理导入文件（避免同一游戏文件的数据库锁冲突）
+		if err := si.importS3FilesSequentialStream(gameFiles, tableName); err != nil {
 			return fmt.Errorf("游戏 %d 文件导入失败: %v", gameID, err)
 		}
 
@@ -1057,5 +1057,54 @@ func (si *S3Importer) createS3TargetTable(tableName string) error {
 	}
 
 	fmt.Printf("✅ 成功创建S3目标表: %s", tableName)
+	return nil
+}
+
+// importS3FilesSequentialStream 串行流式导入S3文件 - 避免同一游戏文件的数据库锁冲突
+func (si *S3Importer) importS3FilesSequentialStream(files []S3FileInfo, tableName string) error {
+	var errors []error
+	var successCount int
+	var totalProcessed int64
+	var totalBytes int64
+	startTime := time.Now()
+
+	fmt.Printf("🚀 开始串行流式处理 %d 个文件（避免数据库锁冲突）\n", len(files))
+
+	for i, file := range files {
+		fmt.Printf("🔄 [%d/%d] 开始处理文件: %s (大小: %.2fMB)\n",
+			i+1, len(files), file.Key, float64(file.Size)/(1024*1024))
+		fileStartTime := time.Now()
+
+		// 流式处理单个文件
+		if err := si.importS3FileStream(file, tableName); err != nil {
+			errors = append(errors, fmt.Errorf("文件 %s 处理失败: %v", file.Key, err))
+			fmt.Printf("❌ [%d/%d] 文件处理失败: %s - %v\n", i+1, len(files), file.Key, err)
+		} else {
+			successCount++
+			totalProcessed++
+			totalBytes += file.Size
+			fileDuration := time.Since(fileStartTime)
+			fmt.Printf("✅ [%d/%d] 文件处理完成: %s (耗时: %v)\n",
+				i+1, len(files), file.Key, fileDuration)
+		}
+	}
+
+	// 输出最终统计
+	totalDuration := time.Since(startTime)
+	fmt.Printf("\n📊 串行处理完成统计:\n")
+	fmt.Printf("  - 总文件数: %d\n", len(files))
+	fmt.Printf("  - 成功处理: %d\n", successCount)
+	fmt.Printf("  - 失败文件: %d\n", len(errors))
+	fmt.Printf("  - 总数据量: %.2f MB\n", float64(totalBytes)/(1024*1024))
+	fmt.Printf("  - 总耗时: %v\n", totalDuration)
+	if len(files) > 0 {
+		fmt.Printf("  - 平均速度: %.2f MB/s\n", float64(totalBytes)/(1024*1024)/totalDuration.Seconds())
+	}
+
+	// 如果有错误，返回第一个错误
+	if len(errors) > 0 {
+		return errors[0]
+	}
+
 	return nil
 }

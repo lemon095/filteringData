@@ -28,7 +28,7 @@ settings:
   batch_size: 1000
   timeout: 30
   s3_import:
-    max_concurrency: 12 # S3导入最大并发数
+    max_concurrency: 1 # S3导入最大并发数
     batch_size: 2000 # S3导入批处理大小
     buffer_size: 8192 # 缓冲区大小
   database:
