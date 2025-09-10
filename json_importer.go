@@ -922,20 +922,12 @@ func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName str
 	}
 	defer tx.Rollback()
 
-	// 准备插入语句
-	query := fmt.Sprintf(`
-		INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "bet", "win", "detail")
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, tableName)
+	// 准备批量插入数据
+	values := make([]string, 0, len(data))
+	args := make([]interface{}, 0, len(data)*6)
+	argIndex := 1
 
-	stmt, err := tx.Prepare(query)
-	if err != nil {
-		return fmt.Errorf("准备语句失败: %v", err)
-	}
-	defer stmt.Close()
-
-	// 批量插入数据
-	for i, item := range data {
+	for _, item := range data {
 		// 将gd字段转换为JSON字符串以适配JSONB类型
 		var detailVal interface{}
 		if item["gd"] != nil {
@@ -971,17 +963,26 @@ func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName str
 		}
 
 		*globalSrId++ // 递增全局srId
-		_, err := stmt.Exec(
-			rtpLevelVal, // rtpLevel
-			testNum,     // srNumber
-			*globalSrId, // srId (全局连续)
-			totalBet,    // bet
-			winValue,    // win (精度修正后)
-			detailVal,   // detail (JSONB)
-		)
-		if err != nil {
-			return fmt.Errorf("插入记录 %d 失败: %v", i+1, err)
-		}
+
+		// 构建VALUES子句
+		values = append(values, fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d)",
+			argIndex, argIndex+1, argIndex+2, argIndex+3, argIndex+4, argIndex+5))
+
+		// 添加参数
+		args = append(args, rtpLevelVal, testNum, *globalSrId, totalBet, winValue, detailVal)
+		argIndex += 6
+	}
+
+	// 构建批量插入SQL
+	query := fmt.Sprintf(`
+		INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "bet", "win", "detail")
+		VALUES %s
+	`, tableName, strings.Join(values, ", "))
+
+	// 执行批量插入
+	_, err = tx.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("批量插入失败: %v", err)
 	}
 
 	// 提交事务
@@ -1146,17 +1147,17 @@ func max(a, b int) int {
 
 // calculateOptimalBatchSize 计算最优批处理大小
 func (si *S3Importer) calculateOptimalBatchSize(fileSize int64) int {
-	// 根据文件大小动态调整，避免内存占用过高
+	// 根据文件大小动态调整，平衡内存使用和性能
 	if fileSize < 10*1024*1024 { // < 10MB
-		return 10000
-	} else if fileSize < 30*1024*1024 { // < 20MB
 		return 5000
+	} else if fileSize < 30*1024*1024 { // < 30MB
+		return 2000
 	} else if fileSize < 50*1024*1024 { // < 50MB
 		return 1000
 	} else if fileSize < 100*1024*1024 { // < 100MB
-		return 1000
+		return 500
 	} else { // >= 100MB
-		return 1000 // 超大文件使用小批次
+		return 200 // 超大文件使用更小批次
 	}
 }
 
