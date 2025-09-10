@@ -96,6 +96,11 @@ func runMultiGameMode(mode string) {
 		fmt.Printf("\n🎯 开始处理游戏 %d/%d: ID=%d, BL=%.0f\n",
 			gameIndex+1, len(config.MultiGame.Games), gameConfig.ID, gameConfig.BL)
 
+		// 检查连接健康状态
+		if err := db.EnsureConnection(); err != nil {
+			fmt.Printf("⚠️ 连接健康检查失败: %v\n", err)
+		}
+
 		// 创建游戏特定的配置
 		gameConfigCopy := *config
 		gameConfigCopy.Game.ID = gameConfig.ID
@@ -124,6 +129,14 @@ func runMultiGameMode(mode string) {
 
 		gameDuration := time.Since(gameStartTime)
 		fmt.Printf("✅ 游戏 %d 生成完成，耗时: %v\n", gameConfig.ID, gameDuration)
+
+		// 游戏间连接健康检查
+		if gameIndex < len(config.MultiGame.Games)-1 {
+			fmt.Printf("🔍 检查连接健康状态...\n")
+			if err := db.EnsureConnection(); err != nil {
+				fmt.Printf("⚠️ 连接健康检查失败: %v\n", err)
+			}
+		}
 	}
 
 	totalDuration := time.Since(startTime)

@@ -110,6 +110,20 @@ type Config struct {
 		LogLevel  string `yaml:"log_level"`
 		BatchSize int    `yaml:"batch_size"`
 		Timeout   int    `yaml:"timeout"`
+		// S3导入优化配置
+		S3Import struct {
+			MaxConcurrency int `yaml:"max_concurrency"` // 最大并发数
+			BatchSize      int `yaml:"batch_size"`      // 批处理大小
+			BufferSize     int `yaml:"buffer_size"`     // 缓冲区大小
+		} `yaml:"s3_import"`
+		// 数据库连接池配置
+		Database struct {
+			MaxOpenConns    int `yaml:"max_open_conns"`     // 最大打开连接数
+			MaxIdleConns    int `yaml:"max_idle_conns"`     // 最大空闲连接数
+			ConnMaxLifetime int `yaml:"conn_max_lifetime"`  // 连接最大生存时间(分钟)
+			ConnMaxIdleTime int `yaml:"conn_max_idle_time"` // 连接最大空闲时间(分钟)
+			PingInterval    int `yaml:"ping_interval"`      // 连接健康检查间隔(分钟)
+		} `yaml:"database"`
 	} `yaml:"settings"`
 
 	// S3配置

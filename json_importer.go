@@ -664,7 +664,7 @@ func (si *S3Importer) importS3File(file S3FileInfo, tableName string) error {
 	}
 
 	// 批量插入数据库
-	return si.batchInsertS3Data(gameData, tableName, file.RtpLevel, file.TestNum)
+	return si.insertBatch(gameData, tableName, file.RtpLevel, file.TestNum)
 }
 
 // importS3FileStream 流式导入单个S3文件
@@ -679,9 +679,14 @@ func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) erro
 	// 流式JSON解析
 	decoder := json.NewDecoder(result.Body)
 
-	// 分批处理，控制内存占用
-	batch := make([]GameResultData, 0, 1000)
+	// 优化批处理大小 - 根据文件大小动态调整
+	batchSize := si.calculateOptimalBatchSize(file.Size)
+	batch := make([]GameResultData, 0, batchSize)
 	batchCount := 0
+	totalRecords := 0
+
+	fmt.Printf("📊 文件 %s: 大小=%.2fMB, 批次大小=%d\n",
+		file.Key, float64(file.Size)/(1024*1024), batchSize)
 
 	for decoder.More() {
 		var item GameResultData
@@ -691,9 +696,10 @@ func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) erro
 
 		batch = append(batch, item)
 		batchCount++
+		totalRecords++
 
 		// 达到批次大小时插入数据库
-		if len(batch) >= 1000 {
+		if len(batch) >= batchSize {
 			if err := si.insertBatch(batch, tableName, file.RtpLevel, file.TestNum); err != nil {
 				return fmt.Errorf("批量插入失败: %v", err)
 			}
@@ -711,99 +717,35 @@ func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) erro
 	return nil
 }
 
-// batchInsertS3Data 批量插入S3数据到数据库
-func (si *S3Importer) batchInsertS3Data(data []GameResultData, tableName string, rtpLevel int, testNum int) error {
-	if len(data) == 0 {
-		return nil
-	}
-
-	// 准备批量插入SQL
-	query := fmt.Sprintf(`
-		INSERT INTO "%s" (rtpLevel, srNumber, srId, bet, win, detail) 
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, tableName)
-
-	// 开始事务
-	tx, err := si.db.DB.Begin()
-	if err != nil {
-		return fmt.Errorf("开始事务失败: %v", err)
-	}
-	defer tx.Rollback()
-
-	// 准备语句
-	stmt, err := tx.Prepare(query)
-	if err != nil {
-		return fmt.Errorf("准备语句失败: %v", err)
-	}
-	defer stmt.Close()
-
-	// 批量插入
-	for i, item := range data {
-		// 构建detail JSON
-		detail := map[string]interface{}{
-			"id":  item.ID,
-			"aw":  item.AW,
-			"gwt": item.GWT,
-			"fb":  item.FB,
-			"sp":  item.SP,
-		}
-		detailJSON, _ := json.Marshal(detail)
-
-		_, err := stmt.Exec(
-			rtpLevel,   // rtpLevel
-			testNum,    // srNumber (测试编号)
-			i+1,        // srId (序列号)
-			item.TB,    // bet (使用TB字段作为投注额)
-			item.AW,    // win
-			detailJSON, // detail
-		)
-		if err != nil {
-			return fmt.Errorf("插入数据失败: %v", err)
-		}
-	}
-
-	// 提交事务
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("提交事务失败: %v", err)
-	}
-
-	fmt.Printf("✅ 成功插入 %d 条数据到表 %s\n", len(data), tableName)
-	return nil
-}
-
-// insertBatch 批量插入数据到数据库
+// insertBatch 批量插入数据到数据库 - 优化版本
 func (si *S3Importer) insertBatch(data []GameResultData, tableName string, rtpLevel int, testNum int) error {
 	if len(data) == 0 {
 		return nil
 	}
 
-	// 准备批量插入SQL
+	// 使用批量插入SQL - 优化版本
 	query := fmt.Sprintf(`
 		INSERT INTO "%s" (rtpLevel, srNumber, srId, bet, win, detail) 
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, tableName)
+		VALUES %s
+	`, tableName, si.generatePlaceholders(len(data)))
 
-	// 开始事务
-	tx, err := si.db.DB.Begin()
+	// 准备参数
+	args := make([]interface{}, 0, len(data)*6)
+	for i, item := range data {
+		args = append(args, rtpLevel, testNum, i+1, item.TB, item.AW, item.GD)
+	}
+
+	// 开始事务 - 使用带重试机制的事务开始
+	tx, err := si.db.BeginWithRetry()
 	if err != nil {
 		return fmt.Errorf("开始事务失败: %v", err)
 	}
 	defer tx.Rollback()
 
-	// 准备语句
-	stmt, err := tx.Prepare(query)
+	// 执行批量插入
+	_, err = tx.Exec(query, args...)
 	if err != nil {
-		return fmt.Errorf("准备语句失败: %v", err)
-	}
-	defer stmt.Close()
-
-	// 批量插入
-	for _, item := range data {
-		// 将GameResultData映射到表字段：bet=TB, win=AW, detail=GD
-		_, err := stmt.Exec(rtpLevel, testNum, item.ID, item.TB, item.AW, item.GD)
-		if err != nil {
-			return fmt.Errorf("插入数据失败: %v", err)
-		}
+		return fmt.Errorf("批量插入失败: %v", err)
 	}
 
 	// 提交事务
@@ -814,13 +756,29 @@ func (si *S3Importer) insertBatch(data []GameResultData, tableName string, rtpLe
 	return nil
 }
 
-// importS3FilesConcurrentStream 并发流式导入S3文件
-func (si *S3Importer) importS3FilesConcurrentStream(files []S3FileInfo, tableName string) error {
-	// 动态调整并发数量
-	maxConcurrency := 3
-	if len(files) < 3 {
-		maxConcurrency = len(files)
+// generatePlaceholders 生成占位符字符串
+func (si *S3Importer) generatePlaceholders(count int) string {
+	if count <= 0 {
+		return ""
 	}
+
+	// 生成 (?, ?, ?, ?, ?, ?) 格式的占位符
+	placeholder := "($1, $2, $3, $4, $5, $6)"
+	result := placeholder
+
+	for i := 1; i < count; i++ {
+		offset := i * 6
+		result += fmt.Sprintf(", ($%d, $%d, $%d, $%d, $%d, $%d)",
+			offset+1, offset+2, offset+3, offset+4, offset+5, offset+6)
+	}
+
+	return result
+}
+
+// importS3FilesConcurrentStream 并发流式导入S3文件 - 优化版本
+func (si *S3Importer) importS3FilesConcurrentStream(files []S3FileInfo, tableName string) error {
+	// 动态调整并发数量 - 优化策略
+	maxConcurrency := si.calculateOptimalConcurrency(len(files))
 
 	// 创建信号量控制并发
 	semaphore := make(chan struct{}, maxConcurrency)
@@ -828,6 +786,9 @@ func (si *S3Importer) importS3FilesConcurrentStream(files []S3FileInfo, tableNam
 	var mu sync.Mutex
 	var errors []error
 	var successCount int
+	var totalProcessed int64
+	var totalBytes int64
+	startTime := time.Now()
 
 	fmt.Printf("🚀 开始并发流式处理 %d 个文件，最大并发数: %d\n", len(files), maxConcurrency)
 
@@ -840,7 +801,8 @@ func (si *S3Importer) importS3FilesConcurrentStream(files []S3FileInfo, tableNam
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
-			fmt.Printf("🔄 [%d/%d] 开始处理文件: %s\n", index+1, len(files), f.Key)
+			fmt.Printf("🔄 [%d/%d] 开始处理文件: %s (大小: %.2fMB)\n",
+				index+1, len(files), f.Key, float64(f.Size)/(1024*1024))
 			startTime := time.Now()
 
 			// 流式处理单个文件
@@ -852,9 +814,27 @@ func (si *S3Importer) importS3FilesConcurrentStream(files []S3FileInfo, tableNam
 			} else {
 				mu.Lock()
 				successCount++
+				totalProcessed++
+				totalBytes += f.Size
 				mu.Unlock()
 				duration := time.Since(startTime)
-				fmt.Printf("✅ [%d/%d] 文件处理完成: %s (耗时: %v)\n", index+1, len(files), f.Key, duration)
+				rate := float64(f.Size) / (1024 * 1024) / duration.Seconds()
+				fmt.Printf("✅ [%d/%d] 文件处理完成: %s (耗时: %v, 速度: %.2fMB/s)\n",
+					index+1, len(files), f.Key, duration, rate)
+
+				// 定期检查连接健康状态和续期
+				if successCount%10 == 0 {
+					if err := si.db.CheckConnectionHealth(); err != nil {
+						fmt.Printf("⚠️ 连接健康检查失败: %v\n", err)
+					}
+				}
+
+				// 每处理50个文件延长一次连接生存时间
+				if successCount%50 == 0 {
+					if err := si.db.ExtendConnection(); err != nil {
+						fmt.Printf("⚠️ 连接续期失败: %v\n", err)
+					}
+				}
 			}
 		}(i, file)
 	}
@@ -862,10 +842,25 @@ func (si *S3Importer) importS3FilesConcurrentStream(files []S3FileInfo, tableNam
 	wg.Wait()
 
 	// 输出处理结果
+	totalDuration := time.Since(startTime)
+	avgSpeed := float64(totalBytes) / (1024 * 1024) / totalDuration.Seconds()
+
 	fmt.Printf("\n📊 处理结果统计:\n")
 	fmt.Printf("  - 总文件数: %d\n", len(files))
 	fmt.Printf("  - 成功处理: %d\n", successCount)
 	fmt.Printf("  - 处理失败: %d\n", len(errors))
+	fmt.Printf("  - 总耗时: %v\n", totalDuration)
+	fmt.Printf("  - 总数据量: %.2fMB\n", float64(totalBytes)/(1024*1024))
+	fmt.Printf("  - 平均速度: %.2fMB/s\n", avgSpeed)
+	fmt.Printf("  - 平均每文件: %v\n", totalDuration/time.Duration(len(files)))
+
+	// 长时间导入警告
+	if totalDuration > 30*time.Minute {
+		fmt.Printf("⚠️ 导入时间超过30分钟，建议检查连接配置\n")
+	}
+	if totalDuration > 60*time.Minute {
+		fmt.Printf("⚠️ 导入时间超过1小时，建议优化导入策略\n")
+	}
 
 	if len(errors) > 0 {
 		fmt.Printf("\n❌ 错误详情:\n")
@@ -877,6 +872,55 @@ func (si *S3Importer) importS3FilesConcurrentStream(files []S3FileInfo, tableNam
 
 	fmt.Printf("🎉 所有文件处理完成！\n")
 	return nil
+}
+
+// calculateOptimalConcurrency 计算最优并发数
+func (si *S3Importer) calculateOptimalConcurrency(fileCount int) int {
+	// 基础并发数
+	baseConcurrency := 5
+
+	// 根据文件数量动态调整
+	if fileCount <= 10 {
+		return min(baseConcurrency, fileCount)
+	} else if fileCount <= 50 {
+		return min(8, fileCount)
+	} else if fileCount <= 100 {
+		return min(12, fileCount)
+	} else {
+		return min(16, fileCount) // 最多16个并发
+	}
+}
+
+// min 返回两个整数中的较小值
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// max 返回两个整数中的较大值
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// calculateOptimalBatchSize 计算最优批处理大小
+func (si *S3Importer) calculateOptimalBatchSize(fileSize int64) int {
+	// 根据文件大小动态调整
+	if fileSize < 1024*1024 { // < 1MB
+		return 1000
+	} else if fileSize < 5*1024*1024 { // < 5MB
+		return 2000
+	} else if fileSize < 10*1024*1024 { // < 10MB
+		return 3000
+	} else if fileSize < 20*1024*1024 { // < 20MB
+		return 5000
+	} else {
+		return 8000 // 大文件使用更大的批次
+	}
 }
 
 // createS3TargetTable 创建S3导入的目标数据表
