@@ -53,26 +53,6 @@ environments:
     sslmode: "disable"
     timezone: "Asia/Shanghai"
 
-  # 香港测试环境
-  hk-test:
-    host: "mpg-rds-aurora-ae.cluster-c34408aa43zx.ap-east-1.rds.amazonaws.com"
-    port: 5432
-    username: "devadmin"
-    password: "*ztnEY8n12"
-    database: "mpgdb"
-    sslmode: "require"
-    timezone: "Asia/Shanghai"
-
-  # 巴西测试环境
-  br-test:
-    host: "mpg-db-test.cnwcy0eo4x3k.sa-east-1.rds.amazonaws.com"
-    port: 5432
-    username: "devadmin"
-    password: "*ztnEY8n12"
-    database: "mpgdb"
-    sslmode: "require"
-    timezone: "Asia/Shanghai"
-
   # 更多环境...
 ```
 
