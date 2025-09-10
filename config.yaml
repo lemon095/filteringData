@@ -48,7 +48,10 @@ environments:
 
 # 表配置
 tables:
-  output_table_prefix: "game_results_"
+  output_table_prefix: "GameResults_"
+  data_num: 10000 # 目标数据量
+  data_table_num: 10 # 每个RTP档位生成的数据表数量
+  data_table_num_3: 5 # V3模式每个RTP档位生成的数据表数量
   source_table_prefix: "GameResultData_"
 
 # 性能优化配置
@@ -69,9 +72,15 @@ settings:
 
 # 游戏配置
 game:
-  id: 1513328
+  id: 112
   bl: 20.0
   isFb: true
+
+# 投注配置
+bet:
+  cs: 1.0 # 硬币面值
+  ml: 1.0 # 投注线数倍数
+  bl: 20.0 # 投注线数
 
 # Multi-Game Configuration (多游戏配置)
 multi_game:
