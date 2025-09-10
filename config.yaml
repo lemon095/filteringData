@@ -52,6 +52,8 @@ tables:
   data_num: 10000 # 目标数据量
   data_table_num: 10 # 每个RTP档位生成的数据表数量
   data_table_num_3: 5 # V3模式每个RTP档位生成的数据表数量
+  data_num_fb: 10000 # FB模式目标数据量
+  data_table_num_fb: 1 # FB模式每个RTP档位生成的数据表数量
   source_table_prefix: "GameResultData_"
 
 # 性能优化配置
