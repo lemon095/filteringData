@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -13,6 +14,35 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
+
+// loadEnvFile 加载.env文件
+func loadEnvFile(filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// 跳过空行和注释
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// 解析 KEY=VALUE 格式
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			os.Setenv(key, value)
+		}
+	}
+
+	return scanner.Err()
+}
 
 // S3FileInfo S3文件信息结构
 type S3FileInfo struct {
@@ -37,11 +67,17 @@ func NewS3Client(config *Config) (*S3Client, error) {
 		return nil, fmt.Errorf("S3功能未启用")
 	}
 
+	// 尝试加载.env文件
+	if err := loadEnvFile(".env"); err != nil {
+		// .env文件不存在或读取失败，继续使用其他方式
+		fmt.Printf("⚠️  未找到.env文件，使用配置文件或环境变量: %v\n", err)
+	}
+
 	// 配置AWS客户端
-	// 优先使用环境变量，如果没有则使用配置文件
+	// 优先级：环境变量 > .env文件 > 配置文件
 	accessKeyID := config.S3.AccessKeyID
 	secretAccessKey := config.S3.SecretAccessKey
-	
+
 	// 检查环境变量
 	if envAccessKey := os.Getenv("AWS_ACCESS_KEY_ID"); envAccessKey != "" {
 		accessKeyID = envAccessKey
@@ -49,7 +85,7 @@ func NewS3Client(config *Config) (*S3Client, error) {
 	if envSecretKey := os.Getenv("AWS_SECRET_ACCESS_KEY"); envSecretKey != "" {
 		secretAccessKey = envSecretKey
 	}
-	
+
 	cfg, err := awsconfig.LoadDefaultConfig(context.TODO(),
 		awsconfig.WithRegion(config.S3.Region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
