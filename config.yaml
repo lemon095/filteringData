@@ -1,6 +1,7 @@
 default_env: "local"
 
 # 数据库配置
+# local 环境使用配置文件，其他环境从环境变量读取
 environments:
   local:
     host: "localhost"
@@ -10,41 +11,6 @@ environments:
     dbname: "postgres"
     sslmode: "disable"
     timezone: "UTC"
-  hk-test:
-    host: "hk-test-db.example.com"
-    port: 5432
-    user: "postgres"
-    password: "test_password"
-    dbname: "filtering_data"
-    sslmode: "require"
-  br-test:
-    host: "br-test-db.example.com"
-    port: 5432
-    user: "postgres"
-    password: "test_password"
-    dbname: "filtering_data"
-    sslmode: "require"
-  br-prod:
-    host: "br-prod-db.example.com"
-    port: 5432
-    user: "postgres"
-    password: "prod_password"
-    dbname: "filtering_data"
-    sslmode: "require"
-  us-prod:
-    host: "us-prod-db.example.com"
-    port: 5432
-    user: "postgres"
-    password: "prod_password"
-    dbname: "filtering_data"
-    sslmode: "require"
-  hk-prod:
-    host: "hk-prod-db.example.com"
-    port: 5432
-    user: "postgres"
-    password: "prod_password"
-    dbname: "filtering_data"
-    sslmode: "require"
 
 # 表配置
 tables:
@@ -114,7 +80,7 @@ multi_game:
 
 # S3 Configuration (S3配置)
 s3:
-  enabled: false # 是否启用S3导入功能
+  enabled: true # 是否启用S3导入功能
   bucket: "mpg-rtp-data"
   region: "ap-east-1"
   access_key_id: "YOUR_AWS_ACCESS_KEY_ID"

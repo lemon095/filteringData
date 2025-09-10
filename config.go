@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io/ioutil"
+	"os"
+	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,9 +34,9 @@ var envMapping = map[string]string{
 type DatabaseConfig struct {
 	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"`
-	User 		 string `yaml:"user"`
+	User     string `yaml:"user"`
 	Password string `yaml:"password"`
-	Dbname 	 string `yaml:"dbname"`
+	Dbname   string `yaml:"dbname"`
 	SSLMode  string `yaml:"sslmode"`
 	Timezone string `yaml:"timezone"`
 }
@@ -162,26 +166,127 @@ func (c *Config) GetDatabaseConfig(env string) (*DatabaseConfig, error) {
 	// 解析环境参数（支持简写）
 	env = ResolveEnv(env)
 
-	// 首先尝试从environments中获取
-	if dbConfig, exists := c.Environments[env]; exists {
-		return &dbConfig, nil
+	// 如果是 local 环境，使用配置文件中的配置
+	if env == "local" {
+		if dbConfig, exists := c.Environments[env]; exists {
+			return &dbConfig, nil
+		}
+		// 向后兼容：如果environments为空，使用传统的database配置
+		if len(c.Environments) == 0 {
+			return &c.Database.Postgres, nil
+		}
 	}
 
-	// 尝试从database配置中获取
-	if dbConfig, exists := c.Database.Environments[env]; exists {
-		return &dbConfig, nil
+	// 对于其他环境，直接从环境变量读取
+	dbConfig, err := getDatabaseConfigFromEnv(env)
+	if err != nil {
+		return nil, err
 	}
 
-	// 向后兼容：如果environments为空，使用传统的database配置
-	if len(c.Environments) == 0 {
-		return &c.Database.Postgres, nil
+	return dbConfig, nil
+}
+
+// getDatabaseConfigFromEnv 从环境变量读取数据库配置
+func getDatabaseConfigFromEnv(env string) (*DatabaseConfig, error) {
+	// 根据环境确定环境变量前缀
+	var prefix string
+	switch env {
+	case "hk-test":
+		prefix = "HT"
+	case "br-test":
+		prefix = "BT"
+	case "br-prod":
+		prefix = "BP"
+	case "us-prod":
+		prefix = "UP"
+	case "hk-prod":
+		prefix = "HP"
+	default:
+		return nil, fmt.Errorf("不支持的环境: %s", env)
 	}
 
-	return nil, fmt.Errorf("环境 '%s' 不存在", env)
+	// 从环境变量读取配置
+	host := os.Getenv(prefix + "_DB_HOST")
+	portStr := os.Getenv(prefix + "_DB_PORT")
+	user := os.Getenv(prefix + "_DB_USER")
+	password := os.Getenv(prefix + "_DB_PASSWORD")
+	dbname := os.Getenv(prefix + "_DB_NAME")
+
+	// 检查必需的环境变量
+	if host == "" {
+		return nil, fmt.Errorf("环境变量 %s_DB_HOST 未设置", prefix)
+	}
+	if portStr == "" {
+		return nil, fmt.Errorf("环境变量 %s_DB_PORT 未设置", prefix)
+	}
+	if user == "" {
+		return nil, fmt.Errorf("环境变量 %s_DB_USER 未设置", prefix)
+	}
+	if password == "" {
+		return nil, fmt.Errorf("环境变量 %s_DB_PASSWORD 未设置", prefix)
+	}
+	if dbname == "" {
+		return nil, fmt.Errorf("环境变量 %s_DB_NAME 未设置", prefix)
+	}
+
+	// 解析端口号
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, fmt.Errorf("环境变量 %s_DB_PORT 不是有效的整数: %s", prefix, portStr)
+	}
+
+	return &DatabaseConfig{
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: password,
+		Dbname:   dbname,
+		SSLMode:  "require",
+		Timezone: "UTC",
+	}, nil
+}
+
+// loadEnvFile 加载 .env 文件
+func loadEnvFile(filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		// 如果文件不存在，不报错，只是跳过
+		return nil
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// 跳过空行和注释行
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// 解析 KEY=VALUE 格式
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+
+			// 如果环境变量还没有设置，则设置它
+			if os.Getenv(key) == "" {
+				os.Setenv(key, value)
+			}
+		}
+	}
+
+	return scanner.Err()
 }
 
 // LoadConfig 加载配置文件
 func LoadConfig(filename string) (*Config, error) {
+	// 首先尝试加载 .env 文件
+	if err := loadEnvFile(".env"); err != nil {
+		return nil, fmt.Errorf("加载 .env 文件失败: %v", err)
+	}
+
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("读取配置文件失败: %v", err)
