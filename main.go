@@ -1384,7 +1384,7 @@ func main() {
 		// 解析等级过滤参数和环境参数
 		levelFilter := ""
 		env := "" // 默认环境
-		
+
 		if len(os.Args) > 3 {
 			arg3 := os.Args[3]
 			// 检查第三个参数是环境还是等级
@@ -1430,7 +1430,7 @@ func main() {
 		// 解析等级过滤参数和环境参数
 		levelFilter := ""
 		env := "" // 默认环境
-		
+
 		if len(os.Args) > 3 {
 			arg3 := os.Args[3]
 			// 检查第三个参数是环境还是等级
