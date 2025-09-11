@@ -70,7 +70,7 @@ rsync -av \
 ```
 
 ```
-ssh -i /Users/shihao/Desktop/shihao/hk.pem ec2-user@18.162.45.129
+ssh -i /Users/shihao/Desktop/shihao/hk.pem ec2-user@18.166.15.173
 ssh -i /Users/shihao/Desktop/shihao/bx.pem ec2-user@18.229.148.69
 ssh -i /Users/shihao/Desktop/shihao/us.pem ec2-user@54.88.164.42
 ```
@@ -107,6 +107,10 @@ go run *.go import 103 ht
 
 # 测试档位数据生成
 go run *.go generateTest
+
+go run *.go import-s3-fb 1513328 ht
+go run *.go import-s3-normal 1513328 ht
+free -h
 ```
 
 ### 根据 psid 查记录
