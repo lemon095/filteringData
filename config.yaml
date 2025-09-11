@@ -18,7 +18,7 @@ tables:
   data_num: 10000 # 目标数据量
   data_table_num: 10 # 每个RTP档位生成的数据表数量
   data_table_num_3: 5 # V3模式每个RTP档位生成的数据表数量
-  data_num_fb: 5000 # FB模式目标数据量
+  data_num_fb: 4000 # FB模式目标数据量
   data_table_num_fb: 1 # FB模式每个RTP档位生成的数据表数量
   source_table_prefix: "GameResultData_"
 
@@ -40,7 +40,7 @@ settings:
 
 # 游戏配置
 game:
-  id: 130
+  id: 1513328
   bl: 20.0
   isFb: true
 
@@ -49,7 +49,7 @@ bet:
   cs: 1.0 # 硬币面值
   ml: 1.0 # 投注线数倍数
   bl: 20.0 # 投注线数
-  fb: 2.0 # 购买夺宝的倍数
+  fb: 75 # 购买夺宝的倍数
 
 # 奖品比例配置
 prize_ratios:
