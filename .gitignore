@@ -47,3 +47,4 @@ config.yaml
 # Generated artifacts (do not track large outputs)
 /output/
 /output/**
+config copy.yaml
