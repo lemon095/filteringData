@@ -150,6 +150,10 @@ func runSingleGameMode(config *Config, db *Database, gameIndex int) error {
 	// 计算总投注
 	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNum)
 
+	// 失败统计
+	var failedLevels []float64
+	var failedTests []string
+
 	// 预取共享只读数据
 	winDataAll, err := db.GetWinData()
 	if err != nil {
@@ -185,6 +189,9 @@ func runSingleGameMode(config *Config, db *Database, gameIndex int) error {
 
 				if err := runRtpTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll); err != nil {
 					log.Printf("RTP测试失败: %v", err)
+					// 记录失败的档位和测试
+					failedLevels = append(failedLevels, rtpNo)
+					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
 				}
 
 				fmt.Printf("⏱️  游戏%d | RTP等级 %.0f (第%d次生成) 耗时: %v\n",
@@ -195,6 +202,9 @@ func runSingleGameMode(config *Config, db *Database, gameIndex int) error {
 		wg.Wait()
 		fmt.Printf("⏱️  游戏%d | RTP等级 %.0f 总耗时: %v\n", config.Game.ID, RtpLevels[rtpNum].RtpNo, time.Since(time.Now()))
 	}
+
+	// 输出失败统计
+	printFailureSummary("generate", config.Game.ID, failedLevels, failedTests)
 
 	fmt.Printf("✅ 游戏 %d 导入完成！\n", config.Game.ID)
 	return nil
@@ -277,6 +287,10 @@ func runSingleGameMode2(config *Config, db *Database, gameIndex int) error {
 	// 计算总投注
 	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNum)
 
+	// 失败统计
+	var failedLevels []float64
+	var failedTests []string
+
 	// 预取共享只读数据（使用三种数据源）
 	fmt.Println("🔄 正在获取中奖但不盈利数据...")
 	winDataAll, err := db.GetWinData()
@@ -330,6 +344,9 @@ func runSingleGameMode2(config *Config, db *Database, gameIndex int) error {
 
 				if err := runRtpTest2(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, profitDataAll); err != nil {
 					log.Printf("RTP测试V2失败: %v", err)
+					// 记录失败的档位和测试
+					failedLevels = append(failedLevels, rtpNo)
+					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
 				}
 
 				fmt.Printf("⏱️  游戏%d | RTP等级 %.0f (第%d次生成V2) 耗时: %v\n",
@@ -339,6 +356,9 @@ func runSingleGameMode2(config *Config, db *Database, gameIndex int) error {
 
 		wg.Wait()
 	}
+
+	// 输出失败统计
+	printFailureSummary("generate2", config.Game.ID, failedLevels, failedTests)
 
 	fmt.Printf("✅ 游戏 %d 导入完成！\n", config.Game.ID)
 	return nil
@@ -351,6 +371,10 @@ func runSingleGameMode3(config *Config, db *Database, gameIndex int) error {
 
 	// 计算总投注
 	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNum)
+
+	// 失败统计
+	var failedLevels []float64
+	var failedTests []string
 
 	// 预取共享只读数据
 	winDataAll, err := db.GetWinData()
@@ -386,6 +410,9 @@ func runSingleGameMode3(config *Config, db *Database, gameIndex int) error {
 
 				if err := runRtpTestV3(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll); err != nil {
 					log.Printf("RTP测试V3失败: %v", err)
+					// 记录失败的档位和测试
+					failedLevels = append(failedLevels, rtpNo)
+					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
 				}
 
 				fmt.Printf("⏱️  游戏%d | RTP等级 %.0f (第%d次生成V3) 耗时: %v\n",
@@ -396,12 +423,58 @@ func runSingleGameMode3(config *Config, db *Database, gameIndex int) error {
 		wg.Wait()
 	}
 
+	// 输出失败统计
+	printFailureSummary("generate3", config.Game.ID, failedLevels, failedTests)
+
 	fmt.Printf("✅ 游戏 %d 导入完成！\n", config.Game.ID)
 	return nil
 }
 
 // 保证并发任务按块输出日志
 var outputMu sync.Mutex
+
+// printFailureSummary 输出失败统计汇总
+func printFailureSummary(mode string, gameID int, failedLevels []float64, failedTests []string) {
+	if len(failedLevels) == 0 {
+		fmt.Printf("✅ [%s] 游戏 %d 所有档位生成成功！\n", mode, gameID)
+		return
+	}
+
+	// 统计失败的档位
+	levelCount := make(map[float64]int)
+	for _, level := range failedLevels {
+		levelCount[level]++
+	}
+
+	fmt.Printf("\n❌ [%s] 游戏 %d 失败统计:\n", mode, gameID)
+	fmt.Printf("   总失败次数: %d\n", len(failedLevels))
+	fmt.Printf("   失败档位统计:\n")
+
+	// 按档位排序输出
+	var sortedLevels []float64
+	for level := range levelCount {
+		sortedLevels = append(sortedLevels, level)
+	}
+	sort.Float64s(sortedLevels)
+
+	for _, level := range sortedLevels {
+		fmt.Printf("     RTP%.0f: %d次失败\n", level, levelCount[level])
+	}
+
+	// 输出详细失败列表
+	if len(failedTests) <= 10 {
+		fmt.Printf("   详细失败列表:\n")
+		for _, test := range failedTests {
+			fmt.Printf("     - %s\n", test)
+		}
+	} else {
+		fmt.Printf("   详细失败列表 (前10个):\n")
+		for i := 0; i < 10; i++ {
+			fmt.Printf("     - %s\n", failedTests[i])
+		}
+		fmt.Printf("     ... 还有 %d 个失败\n", len(failedTests)-10)
+	}
+}
 
 // runRtpTest 执行单次RTP测试
 func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData) error {
@@ -1685,6 +1758,10 @@ func runGenerateFbMode() {
 		fmt.Println("⚠️ [generateFb] 未获取到购买模式不中奖数据，后续将无法补全至目标条数。")
 	}
 
+	// 失败统计
+	var failedLevels []float64
+	var failedTests []string
+
 	// 遍历 RTP 档位，每档位执行多次，并统计耗时
 	fbStartTime := time.Now()
 	worker := runtime.NumCPU()
@@ -1712,6 +1789,9 @@ func runGenerateFbMode() {
 
 				if err := runRtpFbTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, profitDataAll); err != nil {
 					log.Printf("[generateFb] RTP测试失败: %v", err)
+					// 记录失败的档位和测试
+					failedLevels = append(failedLevels, rtpNo)
+					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
 				}
 
 				fmt.Printf("⏱️  [generateFb] RTP等级 %.0f (第%d次生成) 耗时: %v\n", rtpNo, testIndex, time.Since(testStartTime))
@@ -1721,6 +1801,9 @@ func runGenerateFbMode() {
 		wgLevel.Wait()
 		fmt.Printf("⏱️  [generateFb] RTP等级 %.0f 总耗时: %v\n", levelNo, time.Since(levelStart))
 	}
+
+	// 输出失败统计
+	printFailureSummary("generateFb", config.Game.ID, failedLevels, failedTests)
 
 	fmt.Printf("\n🎉 [generateFb] 全部档位生成完成！\n")
 	fmt.Printf("⏱️  [generateFb] 整体总耗时: %v\n", time.Since(fbStartTime))
