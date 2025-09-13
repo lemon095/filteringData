@@ -1255,3 +1255,244 @@ func (si *S3Importer) importS3FilesSequentialStream(files []S3FileInfo, tableNam
 
 	return nil
 }
+
+// ==================== Fb2模式独立实现 ====================
+
+// ImportS3FilesFb2 从S3导入Fb2模式文件（完全独立的实现）
+func (si *S3Importer) ImportS3FilesFb2(gameIDs []int, levelFilter string) error {
+	// 记录总开始时间
+	totalStartTime := time.Now()
+	fmt.Printf("🔄 启动S3 Fb2导入模式 (游戏IDs: %v)\n", gameIDs)
+
+	// 获取所有Fb2文件
+	allFiles, err := si.getS3Fb2Files(gameIDs, levelFilter)
+	if err != nil {
+		return err
+	}
+
+	if len(allFiles) == 0 {
+		return fmt.Errorf("在S3中未找到匹配的Fb2文件")
+	}
+
+	// 按游戏ID分组处理
+	gameFiles := make(map[int][]S3FileInfoFb2)
+	for _, file := range allFiles {
+		gameFiles[file.GameID] = append(gameFiles[file.GameID], file)
+	}
+
+	// 处理每个游戏
+	for gameID, files := range gameFiles {
+		fmt.Printf("\n🎯 开始处理游戏 %d 的 %d 个Fb2文件...\n", gameID, len(files))
+
+		// 创建目标表
+		tableName := fmt.Sprintf("GameResultData_%d", gameID)
+		if err := si.createS3TargetTable(tableName); err != nil {
+			return fmt.Errorf("创建表 %s 失败: %v", tableName, err)
+		}
+
+		// 导入文件
+		if err := si.importS3Fb2FilesSequential(files, tableName); err != nil {
+			return fmt.Errorf("导入游戏 %d 的Fb2文件失败: %v", gameID, err)
+		}
+
+		fmt.Printf("✅ 游戏 %d Fb2文件导入完成！\n", gameID)
+	}
+
+	totalDuration := time.Since(totalStartTime)
+	fmt.Printf("\n🎉 S3 Fb2导入完成！总耗时: %v\n", totalDuration)
+	return nil
+}
+
+// S3FileInfoFb2 Fb2模式S3文件信息结构
+type S3FileInfoFb2 struct {
+	Key          string // S3对象键
+	Size         int64  // 文件大小
+	LastModified string // 最后修改时间
+	GameID       int    // 游戏ID
+	FbType       string // Fb类型：fb1, fb2, fb3
+	RtpLevel     int    // RTP等级
+	TestNum      int    // 测试编号
+}
+
+// getS3Fb2Files 获取S3中的Fb2文件
+func (si *S3Importer) getS3Fb2Files(gameIDs []int, levelFilter string) ([]S3FileInfoFb2, error) {
+	var allFiles []S3FileInfoFb2
+
+	// 遍历每个游戏ID
+	for _, gameID := range gameIDs {
+		fmt.Printf("🔍 搜索游戏 %d 的Fb2文件...\n", gameID)
+
+		// 搜索三种fb类型的文件：fb1, fb2, fb3
+		fbTypes := []string{"fb1", "fb2", "fb3"}
+
+		for _, fbType := range fbTypes {
+			// 构建S3路径：mpg-slot-data/gameID_fb_fbType/
+			s3Prefix := fmt.Sprintf("mpg-slot-data/%d_fb_%s/", gameID, fbType)
+
+			// 列出该路径下的所有文件
+			files, err := si.s3Client.ListS3FilesByPrefix(s3Prefix)
+			if err != nil {
+				fmt.Printf("⚠️ 搜索 %s 失败: %v\n", s3Prefix, err)
+				continue
+			}
+
+			// 转换为Fb2格式
+			for _, file := range files {
+				fb2File := S3FileInfoFb2{
+					Key:          file.Key,
+					Size:         file.Size,
+					LastModified: file.LastModified,
+					GameID:       gameID,
+					FbType:       fbType,
+					RtpLevel:     file.RtpLevel,
+					TestNum:      file.TestNum,
+				}
+				allFiles = append(allFiles, fb2File)
+			}
+
+			fmt.Printf("  ✅ 找到 %d 个 %s 文件\n", len(files), fbType)
+		}
+	}
+
+	// 如果指定了levelFilter，则过滤文件
+	if levelFilter != "" {
+		allFiles = si.filterS3Fb2FilesByLevel(allFiles, levelFilter)
+	}
+
+	fmt.Printf("📊 总共找到 %d 个Fb2文件\n", len(allFiles))
+	return allFiles, nil
+}
+
+// filterS3Fb2FilesByLevel 根据RTP等级过滤Fb2文件
+func (si *S3Importer) filterS3Fb2FilesByLevel(files []S3FileInfoFb2, levelFilter string) []S3FileInfoFb2 {
+	level, err := strconv.Atoi(levelFilter)
+	if err != nil {
+		fmt.Printf("⚠️ 无效的等级过滤条件: %s\n", levelFilter)
+		return files
+	}
+
+	var filteredFiles []S3FileInfoFb2
+	for _, file := range files {
+		if file.RtpLevel == level {
+			filteredFiles = append(filteredFiles, file)
+		}
+	}
+
+	fmt.Printf("🔍 等级过滤: 从 %d 个文件筛选出 %d 个文件 (RTP等级: %d)\n",
+		len(files), len(filteredFiles), level)
+	return filteredFiles
+}
+
+// importS3Fb2FilesSequential 串行导入Fb2文件
+func (si *S3Importer) importS3Fb2FilesSequential(files []S3FileInfoFb2, tableName string) error {
+	globalSrId := 0
+
+	for i, file := range files {
+		fmt.Printf("  📁 处理文件 %d/%d: %s\n", i+1, len(files), file.Key)
+
+		if err := si.importS3Fb2File(file, tableName, &globalSrId); err != nil {
+			return fmt.Errorf("导入文件 %s 失败: %v", file.Key, err)
+		}
+	}
+
+	return nil
+}
+
+// importS3Fb2File 导入单个Fb2文件
+func (si *S3Importer) importS3Fb2File(file S3FileInfoFb2, tableName string, globalSrId *int) error {
+	// 从S3下载文件内容
+	content, err := si.s3Client.DownloadS3File(file.Key)
+	if err != nil {
+		return fmt.Errorf("下载S3文件失败: %v", err)
+	}
+
+	// 解析JSON文件
+	var jsonData struct {
+		RtpLevel int                      `json:"rtpLevel"`
+		SrNumber int                      `json:"srNumber"`
+		Data     []map[string]interface{} `json:"data"`
+	}
+
+	if err := json.Unmarshal(content, &jsonData); err != nil {
+		return fmt.Errorf("解析JSON失败: %v", err)
+	}
+
+	// 批量插入数据
+	return si.insertS3Fb2Batch(jsonData.Data, tableName, file.RtpLevel, file.TestNum, file.FbType, globalSrId)
+}
+
+// insertS3Fb2Batch 批量插入Fb2数据到数据库
+func (si *S3Importer) insertS3Fb2Batch(data []map[string]interface{}, tableName string, rtpLevel int, testNum int, fbType string, globalSrId *int) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	// 根据fbType计算rtpLevel偏移
+	var rtpOffset float64
+	switch fbType {
+	case "fb1":
+		rtpOffset = 0.1
+	case "fb2":
+		rtpOffset = 0.2
+	case "fb3":
+		rtpOffset = 0.3
+	default:
+		rtpOffset = 0.1 // 默认值
+	}
+
+	// 开始事务
+	tx, err := si.db.BeginWithRetry()
+	if err != nil {
+		return fmt.Errorf("开始事务失败: %v", err)
+	}
+	defer tx.Rollback()
+
+	// 准备批量插入
+	values := make([]string, 0, len(data))
+	args := make([]interface{}, 0, len(data)*6)
+
+	for _, item := range data {
+		var totalBet float64
+		if tb, ok := item["tb"].(float64); ok {
+			totalBet = math.Round(tb*100) / 100
+		}
+
+		var totalWin float64
+		if aw, ok := item["aw"].(float64); ok {
+			totalWin = math.Round(aw*100) / 100
+		}
+
+		// 计算调整后的rtpLevel
+		rtpLevelVal := float64(rtpLevel) + rtpOffset
+
+		*globalSrId++
+
+		// 构建VALUES子句
+		argIndex := len(args) + 1
+		values = append(values, fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d)",
+			argIndex, argIndex+1, argIndex+2, argIndex+3, argIndex+4, argIndex+5))
+
+		// 准备参数
+		args = append(args, rtpLevelVal, testNum, *globalSrId, totalBet, totalWin, item)
+	}
+
+	// 执行批量插入
+	query := fmt.Sprintf(`
+		INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "bet", "win", "detail")
+		VALUES %s
+	`, tableName, strings.Join(values, ","))
+
+	_, err = tx.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("批量插入失败: %v", err)
+	}
+
+	// 提交事务
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交事务失败: %v", err)
+	}
+
+	rtpLevelVal := float64(rtpLevel) + rtpOffset
+	fmt.Printf("    ✅ 成功插入 %d 条记录 (RTP等级: %.1f, Fb类型: %s)\n", len(data), rtpLevelVal, fbType)
+	return nil
+}

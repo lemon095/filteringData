@@ -49,21 +49,22 @@ func runMultiGameMode(mode string) {
 	rand.Seed(time.Now().UnixNano())
 
 	// 加载配置文件
-	config, err := LoadConfig("buconfig.yaml")
+	config, err := LoadConfig("config.yaml")
 	if err != nil {
 		log.Fatalf("加载配置文件失败: %v", err)
 	}
 
 	// 验证生成模式
 	validModes := map[string]bool{
-		"generate":   true,
-		"generate2":  true,
-		"generate3":  true,
-		"generateFb": true,
+		"generate":    true,
+		"generate2":   true,
+		"generate3":   true,
+		"generateFb":  true,
+		"generateFb2": true,
 	}
 	if !validModes[mode] {
 		fmt.Printf("❌ 无效的生成模式: %s\n", mode)
-		fmt.Println("支持的模式: generate, generate2, generate3, generateFb")
+		fmt.Println("支持的模式: generate, generate2, generate3, generateFb, generateFb2")
 		return
 	}
 
@@ -118,6 +119,8 @@ func runMultiGameMode(mode string) {
 			err = runSingleGameMode3(&gameConfigCopy, db, gameIndex+1)
 		case "generateFb":
 			err = runSingleGameFbMode(&gameConfigCopy, db, gameIndex+1)
+		case "generateFb2":
+			err = runSingleGameFb2Mode(&gameConfigCopy, db, gameIndex+1)
 		default:
 			err = fmt.Errorf("不支持的生成模式: %s", mode)
 		}
@@ -141,6 +144,38 @@ func runMultiGameMode(mode string) {
 
 	totalDuration := time.Since(startTime)
 	fmt.Printf("\n🎉 所有游戏生成完成！总耗时: %v\n", totalDuration)
+}
+
+// runGenerateFb2Mode 运行Fb2生成模式
+func runGenerateFb2Mode() {
+	// 记录程序开始时间
+	startTime := time.Now()
+
+	// 初始化随机数种子
+	rand.Seed(time.Now().UnixNano())
+
+	// 加载配置文件
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("加载配置文件失败: %v", err)
+	}
+
+	fmt.Printf("🎮 Fb2模式启动 - 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNumFb)
+
+	// 连接数据库
+	db, err := NewDatabase(config, "")
+	if err != nil {
+		log.Fatalf("数据库连接失败: %v", err)
+	}
+	defer db.Close()
+
+	// 运行Fb2模式
+	if err := runSingleGameFb2Mode(config, db, 1); err != nil {
+		log.Fatalf("Fb2模式生成失败: %v", err)
+	}
+
+	totalDuration := time.Since(startTime)
+	fmt.Printf("\n🎉 Fb2模式生成完成！总耗时: %v\n", totalDuration)
 }
 
 // runSingleGameMode 运行单个游戏的标准生成模式
@@ -1282,13 +1317,15 @@ func main() {
 		fmt.Println("  ./filteringData generate                    # 生成RTP测试数据并保存到JSON文件")
 		fmt.Println("  ./filteringData generate2                   # 生成RTP测试数据V2（四阶段策略）")
 		fmt.Println("  ./filteringData generate3                   # 生成RTP测试数据V3（10%不中奖+40%不盈利+30%盈利策略）")
+		fmt.Println("  ./filteringData generateFb2                 # 生成RTP测试数据Fb2（三种fb数据分别处理）")
 		fmt.Println("  ./filteringData multi-game [mode]           # 多游戏顺序生成模式")
-		fmt.Println("     mode: generate/generate2/generate3/generateFb")
+		fmt.Println("     mode: generate/generate2/generate3/generateFb/generateFb2")
 		fmt.Println("  ./filteringData import                     # 导入output目录下的所有JSON文件到数据库")
 		fmt.Println("  ./filteringData import [fileLevelId]       # 只导入指定fileLevelId的JSON文件")
 		fmt.Println("  ./filteringData import-s3 <gameIds> [level] [env] # 从S3智能导入（自动检测normal和fb模式）")
 		fmt.Println("  ./filteringData import-s3-normal <gameIds> [level] [env] # 从S3导入普通模式文件")
 		fmt.Println("  ./filteringData import-s3-fb <gameIds> [level] [env] # 从S3导入购买夺宝模式文件")
+		fmt.Println("  ./filteringData import-s3-fb2 <gameIds> [level] [env] # 从S3导入Fb2模式文件（根据fbType区分rtpLevel）")
 		fmt.Println("  ./filteringData importFb-s3 <gameIds> [level] [env] # 从S3导入多个游戏的购买夺宝模式文件")
 		fmt.Println("     gameIds: 逗号分隔的游戏ID列表，如: 112,103,105")
 		fmt.Println("     level: 可选的RTP等级过滤")
@@ -1315,6 +1352,8 @@ func main() {
 		runGenerateMode2()
 	case "generate3":
 		runGenerateMode3()
+	case "generateFb2":
+		runGenerateFb2Mode()
 	case "multi-game":
 		// 支持指定生成模式：./filteringData multi-game generate2
 		mode := "generate" // 默认模式
@@ -1459,9 +1498,13 @@ func main() {
 		// S3购买夺宝模式导入命令：./filteringData import-s3-fb <gameIds> [level] [env]
 		// 只导入fb模式文件
 		handleS3ImportCommand("fb")
+	case "import-s3-fb2":
+		// S3 Fb2模式导入命令：./filteringData import-s3-fb2 <gameIds> [level] [env]
+		// 根据fbType区分rtpLevel：fb1+0.1, fb2+0.2, fb3+0.3
+		handleS3ImportCommandFb2()
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate, generate2, generate3, multi-game, import, importFb, import-s3, import-s3-normal, import-s3-fb")
+		fmt.Println("支持的命令: generate, generate2, generate3, multi-game, import, importFb, import-s3, import-s3-normal, import-s3-fb, import-s3-fb2")
 		os.Exit(1)
 	}
 }
@@ -3232,4 +3275,69 @@ func runS3ImportMode(gameIds []int, mode string, levelFilter string, env string)
 	}
 
 	fmt.Println("✅ S3导入完成！")
+}
+
+// handleS3ImportCommandFb2 处理S3 Fb2模式导入命令
+func handleS3ImportCommandFb2() {
+	if len(os.Args) < 3 {
+		fmt.Println("用法: ./filteringData import-s3-fb2 <gameIds> [level] [env]")
+		fmt.Println("示例: ./filteringData import-s3-fb2 24,25 1 test")
+		os.Exit(1)
+	}
+
+	// 解析游戏ID
+	gameIdsStr := os.Args[2]
+	gameIds, err := parseGameIds(gameIdsStr)
+	if err != nil {
+		fmt.Printf("解析游戏ID失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 解析等级过滤（可选）
+	var levelFilter string
+	if len(os.Args) > 3 {
+		levelFilter = os.Args[3]
+	}
+
+	// 解析环境（可选）
+	var env string
+	if len(os.Args) > 4 {
+		env = os.Args[4]
+	}
+
+	// 加载配置
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		fmt.Printf("加载配置文件失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 根据环境选择配置
+	if env != "" {
+		// 这里需要实现环境配置选择逻辑
+		// 暂时跳过环境配置
+	}
+
+	// 初始化数据库
+	db, err := NewDatabase(config, env)
+	if err != nil {
+		fmt.Printf("初始化数据库失败: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	// 创建S3导入器
+	importer, err := NewS3Importer(db, config)
+	if err != nil {
+		fmt.Printf("创建S3导入器失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 执行Fb2模式导入
+	if err := importer.ImportS3FilesFb2(gameIds, levelFilter); err != nil {
+		fmt.Printf("S3 Fb2导入失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("S3 Fb2导入完成！")
 }

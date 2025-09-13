@@ -572,3 +572,105 @@ func (d *Database) GetBestSingleMatch(targetWin float64, excludeIds []int, maxDe
 
 	return &item, nil
 }
+
+// GetWinDataFb1 获取 fb=1 的中奖数据
+func (d *Database) GetWinDataFb1() ([]GameResultData, error) {
+	tableName := d.GetTableName()
+	query := fmt.Sprintf(`
+        SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
+        FROM %s 
+        WHERE aw > 0 AND fb = 1
+        ORDER BY id
+    `, tableName)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
+	defer cancel()
+	rows, err := d.DB.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var data []GameResultData
+	for rows.Next() {
+		var item GameResultData
+		err := rows.Scan(
+			&item.ID, &item.TB, &item.AW, &item.GWT,
+			&item.SP, &item.FB, &item.GD,
+			&item.CreatedAt, &item.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		data = append(data, item)
+	}
+
+	return data, nil
+}
+
+// GetWinDataFb2 获取 fb=2 的中奖数据
+func (d *Database) GetWinDataFb2() ([]GameResultData, error) {
+	tableName := d.GetTableName()
+	query := fmt.Sprintf(`
+        SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
+        FROM %s 
+        WHERE aw > 0 AND fb = 2
+        ORDER BY id
+    `, tableName)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
+	defer cancel()
+	rows, err := d.DB.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var data []GameResultData
+	for rows.Next() {
+		var item GameResultData
+		err := rows.Scan(
+			&item.ID, &item.TB, &item.AW, &item.GWT,
+			&item.SP, &item.FB, &item.GD,
+			&item.CreatedAt, &item.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		data = append(data, item)
+	}
+
+	return data, nil
+}
+
+// GetWinDataFb3 获取 fb=3 的中奖数据
+func (d *Database) GetWinDataFb3() ([]GameResultData, error) {
+	tableName := d.GetTableName()
+	query := fmt.Sprintf(`
+        SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
+        FROM %s 
+        WHERE aw > 0 AND fb = 3
+        ORDER BY id
+    `, tableName)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
+	defer cancel()
+	rows, err := d.DB.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var data []GameResultData
+	for rows.Next() {
+		var item GameResultData
+		err := rows.Scan(
+			&item.ID, &item.TB, &item.AW, &item.GWT,
+			&item.SP, &item.FB, &item.GD,
+			&item.CreatedAt, &item.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		data = append(data, item)
+	}
+
+	return data, nil
+}
