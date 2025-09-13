@@ -1322,36 +1322,34 @@ func (si *S3Importer) getS3Fb2Files(gameIDs []int, levelFilter string) ([]S3File
 	for _, gameID := range gameIDs {
 		fmt.Printf("🔍 搜索游戏 %d 的Fb2文件...\n", gameID)
 
-		// 搜索三种fb类型的文件：fb1, fb2, fb3
-		fbTypes := []string{"fb1", "fb2", "fb3"}
+		// 构建S3路径：mpg-slot-data/gameID/fb/
+		s3Prefix := fmt.Sprintf("mpg-slot-data/%d/fb/", gameID)
 
-		for _, fbType := range fbTypes {
-			// 构建S3路径：mpg-slot-data/gameID_fb_fbType/
-			s3Prefix := fmt.Sprintf("mpg-slot-data/%d_fb_%s/", gameID, fbType)
-
-			// 列出该路径下的所有文件
-			files, err := si.s3Client.ListS3FilesByPrefix(s3Prefix)
-			if err != nil {
-				fmt.Printf("⚠️ 搜索 %s 失败: %v\n", s3Prefix, err)
-				continue
-			}
-
-			// 转换为Fb2格式
-			for _, file := range files {
-				fb2File := S3FileInfoFb2{
-					Key:          file.Key,
-					Size:         file.Size,
-					LastModified: file.LastModified,
-					GameID:       gameID,
-					FbType:       fbType,
-					RtpLevel:     file.RtpLevel,
-					TestNum:      file.TestNum,
-				}
-				allFiles = append(allFiles, fb2File)
-			}
-
-			fmt.Printf("  ✅ 找到 %d 个 %s 文件\n", len(files), fbType)
+		// 列出该路径下的所有文件
+		files, err := si.s3Client.ListS3FilesByPrefix(s3Prefix)
+		if err != nil {
+			fmt.Printf("⚠️ 搜索 %s 失败: %v\n", s3Prefix, err)
+			continue
 		}
+
+		// 转换为Fb2格式，根据文件名解析fbType
+		for _, file := range files {
+			// 从文件名中解析fbType：GameResultData_fb1_1_1.json -> fb1
+			fbType := si.extractFbTypeFromFileName(file.Key)
+
+			fb2File := S3FileInfoFb2{
+				Key:          file.Key,
+				Size:         file.Size,
+				LastModified: file.LastModified,
+				GameID:       gameID,
+				FbType:       fbType,
+				RtpLevel:     file.RtpLevel,
+				TestNum:      file.TestNum,
+			}
+			allFiles = append(allFiles, fb2File)
+		}
+
+		fmt.Printf("  ✅ 找到 %d 个文件\n", len(files))
 	}
 
 	// 如果指定了levelFilter，则过滤文件
@@ -1361,6 +1359,18 @@ func (si *S3Importer) getS3Fb2Files(gameIDs []int, levelFilter string) ([]S3File
 
 	fmt.Printf("📊 总共找到 %d 个Fb2文件\n", len(allFiles))
 	return allFiles, nil
+}
+
+// extractFbTypeFromFileName 从文件名中提取fbType
+func (si *S3Importer) extractFbTypeFromFileName(key string) string {
+	// 文件名格式：GameResultData_fb1_1_1.json
+	fileName := filepath.Base(key)
+	parts := strings.Split(fileName, "_")
+	if len(parts) >= 2 {
+		// 提取fbType：GameResultData_fb1_1_1.json -> fb1
+		return parts[1]
+	}
+	return "fb1" // 默认返回fb1
 }
 
 // filterS3Fb2FilesByLevel 根据RTP等级过滤Fb2文件

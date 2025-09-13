@@ -289,13 +289,13 @@ func (s3c *S3Client) ListS3FilesByPrefix(prefix string) ([]S3FileInfo, error) {
 
 // extractGameIDFromPath 从S3路径中提取游戏ID
 func (s3c *S3Client) extractGameIDFromPath(key string) int {
-	// 路径格式：mpg-slot-data/gameID_fb_fbType/GameResultData_fbType_rtpLevel_testNum.json
+	// 路径格式：mpg-slot-data/gameID/fb/GameResultData_fbType_rtpLevel_testNum.json
 	parts := strings.Split(key, "/")
 	if len(parts) >= 2 {
-		// 获取目录名：gameID_fb_fbType
+		// 获取目录名：gameID
 		dirName := parts[len(parts)-2]
-		// 提取gameID：gameID_fb_fbType -> gameID
-		gameIDPart := strings.Split(dirName, "_")[0]
+		// 提取gameID
+		gameIDPart := dirName
 		if gameID, err := strconv.Atoi(gameIDPart); err == nil {
 			return gameID
 		}
