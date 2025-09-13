@@ -153,6 +153,7 @@ func runSingleGameMode(config *Config, db *Database, gameIndex int) error {
 	// 失败统计
 	var failedLevels []float64
 	var failedTests []string
+	var failedMu sync.Mutex
 
 	// 预取共享只读数据
 	winDataAll, err := db.GetWinData()
@@ -189,9 +190,11 @@ func runSingleGameMode(config *Config, db *Database, gameIndex int) error {
 
 				if err := runRtpTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll); err != nil {
 					log.Printf("RTP测试失败: %v", err)
-					// 记录失败的档位和测试
+					// 记录失败的档位和测试（线程安全）
+					failedMu.Lock()
 					failedLevels = append(failedLevels, rtpNo)
 					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
+					failedMu.Unlock()
 				}
 
 				fmt.Printf("⏱️  游戏%d | RTP等级 %.0f (第%d次生成) 耗时: %v\n",
@@ -290,6 +293,7 @@ func runSingleGameMode2(config *Config, db *Database, gameIndex int) error {
 	// 失败统计
 	var failedLevels []float64
 	var failedTests []string
+	var failedMu sync.Mutex
 
 	// 预取共享只读数据（使用三种数据源）
 	fmt.Println("🔄 正在获取中奖但不盈利数据...")
@@ -344,9 +348,11 @@ func runSingleGameMode2(config *Config, db *Database, gameIndex int) error {
 
 				if err := runRtpTest2(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, profitDataAll); err != nil {
 					log.Printf("RTP测试V2失败: %v", err)
-					// 记录失败的档位和测试
+					// 记录失败的档位和测试（线程安全）
+					failedMu.Lock()
 					failedLevels = append(failedLevels, rtpNo)
 					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
+					failedMu.Unlock()
 				}
 
 				fmt.Printf("⏱️  游戏%d | RTP等级 %.0f (第%d次生成V2) 耗时: %v\n",
@@ -375,6 +381,7 @@ func runSingleGameMode3(config *Config, db *Database, gameIndex int) error {
 	// 失败统计
 	var failedLevels []float64
 	var failedTests []string
+	var failedMu sync.Mutex
 
 	// 预取共享只读数据
 	winDataAll, err := db.GetWinData()
@@ -410,9 +417,11 @@ func runSingleGameMode3(config *Config, db *Database, gameIndex int) error {
 
 				if err := runRtpTestV3(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll); err != nil {
 					log.Printf("RTP测试V3失败: %v", err)
-					// 记录失败的档位和测试
+					// 记录失败的档位和测试（线程安全）
+					failedMu.Lock()
 					failedLevels = append(failedLevels, rtpNo)
 					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
+					failedMu.Unlock()
 				}
 
 				fmt.Printf("⏱️  游戏%d | RTP等级 %.0f (第%d次生成V3) 耗时: %v\n",
@@ -1761,6 +1770,7 @@ func runGenerateFbMode() {
 	// 失败统计
 	var failedLevels []float64
 	var failedTests []string
+	var failedMu sync.Mutex
 
 	// 遍历 RTP 档位，每档位执行多次，并统计耗时
 	fbStartTime := time.Now()
@@ -1789,9 +1799,11 @@ func runGenerateFbMode() {
 
 				if err := runRtpFbTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, profitDataAll); err != nil {
 					log.Printf("[generateFb] RTP测试失败: %v", err)
-					// 记录失败的档位和测试
+					// 记录失败的档位和测试（线程安全）
+					failedMu.Lock()
 					failedLevels = append(failedLevels, rtpNo)
 					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
+					failedMu.Unlock()
 				}
 
 				fmt.Printf("⏱️  [generateFb] RTP等级 %.0f (第%d次生成) 耗时: %v\n", rtpNo, testIndex, time.Since(testStartTime))
