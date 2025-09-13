@@ -21,18 +21,18 @@ var RtpLevels = []RtpLevel{
 	{RtpNo: 11, Rtp: 0.95},
 	{RtpNo: 12, Rtp: 0.96},
 	{RtpNo: 13, Rtp: 0.97},
-	{RtpNo: 14, Rtp: 1.5},
-	{RtpNo: 15, Rtp: 2},
 	{RtpNo: 20, Rtp: 0.2},
 	{RtpNo: 30, Rtp: 0.3},
 	{RtpNo: 40, Rtp: 0.4},
 	{RtpNo: 50, Rtp: 0.5},
-	{RtpNo: 120, Rtp: 1.2},
-	{RtpNo: 150, Rtp: 1.5},
 }
 
 // RtpLevelsTest 测试RTP等级配置
 var RtpLevelsTest = []RtpLevel{
+	{RtpNo: 120, Rtp: 1.2},
+	{RtpNo: 150, Rtp: 1.5},
+	{RtpNo: 14, Rtp: 1.5},
+	{RtpNo: 15, Rtp: 2},
 	{RtpNo: 200, Rtp: 2.0},
 	{RtpNo: 300, Rtp: 3.0},
 	{RtpNo: 500, Rtp: 5.0},
