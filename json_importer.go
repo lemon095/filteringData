@@ -1285,7 +1285,7 @@ func (si *S3Importer) ImportS3FilesFb2(gameIDs []int, levelFilter string) error 
 		fmt.Printf("\n🎯 开始处理游戏 %d 的 %d 个Fb2文件...\n", gameID, len(files))
 
 		// 创建目标表
-		tableName := fmt.Sprintf("GameResultData_%d", gameID)
+		tableName := fmt.Sprintf("%s%d", si.config.Tables.OutputTablePrefix, gameID)
 		if err := si.createS3TargetTable(tableName); err != nil {
 			return fmt.Errorf("创建表 %s 失败: %v", tableName, err)
 		}
@@ -1482,8 +1482,19 @@ func (si *S3Importer) insertS3Fb2Batch(data []map[string]interface{}, tableName 
 		values = append(values, fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d)",
 			argIndex, argIndex+1, argIndex+2, argIndex+3, argIndex+4, argIndex+5))
 
+		// 将gd字段转换为JSON字符串以适配JSONB类型
+		var detailVal interface{}
+		if item["gd"] != nil {
+			// 将gd字段转换为JSON字符串
+			gdJSON, err := json.Marshal(item["gd"])
+			if err != nil {
+				return fmt.Errorf("序列化gd字段失败: %v", err)
+			}
+			detailVal = string(gdJSON)
+		}
+
 		// 准备参数
-		args = append(args, rtpLevelVal, testNum, *globalSrId, totalBet, totalWin, item)
+		args = append(args, rtpLevelVal, testNum, *globalSrId, totalBet, totalWin, detailVal)
 	}
 
 	// 执行批量插入
