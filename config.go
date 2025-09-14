@@ -270,10 +270,8 @@ func loadEnvFile(filename string) error {
 			key := strings.TrimSpace(parts[0])
 			value := strings.TrimSpace(parts[1])
 
-			// 如果环境变量还没有设置，则设置它
-			if os.Getenv(key) == "" {
-				os.Setenv(key, value)
-			}
+			// 从 .env 文件设置环境变量（覆盖现有值）
+			os.Setenv(key, value)
 		}
 	}
 

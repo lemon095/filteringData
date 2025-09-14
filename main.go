@@ -3293,16 +3293,27 @@ func handleS3ImportCommandFb2() {
 		os.Exit(1)
 	}
 
-	// 解析等级过滤（可选）
+	// 解析等级过滤和环境参数
 	var levelFilter string
+	var env string
+
 	if len(os.Args) > 3 {
-		levelFilter = os.Args[3]
+		arg3 := os.Args[3]
+		// 检查第三个参数是环境还是等级
+		if IsEnv(arg3) {
+			env = ResolveEnv(arg3)
+		} else {
+			levelFilter = arg3
+		}
 	}
 
-	// 解析环境（可选）
-	var env string
 	if len(os.Args) > 4 {
-		env = os.Args[4]
+		arg4 := os.Args[4]
+		if IsEnv(arg4) {
+			env = ResolveEnv(arg4)
+		} else if levelFilter == "" {
+			levelFilter = arg4
+		}
 	}
 
 	// 加载配置
@@ -3312,11 +3323,7 @@ func handleS3ImportCommandFb2() {
 		os.Exit(1)
 	}
 
-	// 根据环境选择配置
-	if env != "" {
-		// 这里需要实现环境配置选择逻辑
-		// 暂时跳过环境配置
-	}
+	// 环境配置已通过 env 参数传递，无需额外处理
 
 	// 初始化数据库
 	db, err := NewDatabase(config, env)
