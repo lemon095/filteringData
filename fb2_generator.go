@@ -84,13 +84,20 @@ func runSingleGameFb2Mode(config *Config, db *Database, gameIndex int) error {
 	fmt.Printf("🎮 Fb2模式启动 - 游戏ID: %d, 目标数据量: generate2档位=%d, 其他档位=%d\n",
 		config.Game.ID, config.Tables.DataNum, config.Tables.DataNumFb)
 
-	// 分别获取三种 fb 数据
+	// 分别获取三种 fb 的中奖和不中奖数据
 	fmt.Println("🔄 正在获取 fb=1 中奖数据...")
 	winDataFb1, err := db.GetWinDataFb1()
 	if err != nil {
 		return fmt.Errorf("获取 fb=1 中奖数据失败: %v", err)
 	}
 	fmt.Printf("✅ fb=1 中奖数据条数: %d\n", len(winDataFb1))
+
+	fmt.Println("🔄 正在获取 fb=1 不中奖数据...")
+	noWinDataFb1, err := db.GetNoWinDataFb1()
+	if err != nil {
+		return fmt.Errorf("获取 fb=1 不中奖数据失败: %v", err)
+	}
+	fmt.Printf("✅ fb=1 不中奖数据条数: %d\n", len(noWinDataFb1))
 
 	fmt.Println("🔄 正在获取 fb=2 中奖数据...")
 	winDataFb2, err := db.GetWinDataFb2()
@@ -99,12 +106,26 @@ func runSingleGameFb2Mode(config *Config, db *Database, gameIndex int) error {
 	}
 	fmt.Printf("✅ fb=2 中奖数据条数: %d\n", len(winDataFb2))
 
+	fmt.Println("🔄 正在获取 fb=2 不中奖数据...")
+	noWinDataFb2, err := db.GetNoWinDataFb2()
+	if err != nil {
+		return fmt.Errorf("获取 fb=2 不中奖数据失败: %v", err)
+	}
+	fmt.Printf("✅ fb=2 不中奖数据条数: %d\n", len(noWinDataFb2))
+
 	fmt.Println("🔄 正在获取 fb=3 中奖数据...")
 	winDataFb3, err := db.GetWinDataFb3()
 	if err != nil {
 		return fmt.Errorf("获取 fb=3 中奖数据失败: %v", err)
 	}
 	fmt.Printf("✅ fb=3 中奖数据条数: %d\n", len(winDataFb3))
+
+	fmt.Println("🔄 正在获取 fb=3 不中奖数据...")
+	noWinDataFb3, err := db.GetNoWinDataFb3()
+	if err != nil {
+		return fmt.Errorf("获取 fb=3 不中奖数据失败: %v", err)
+	}
+	fmt.Printf("✅ fb=3 不中奖数据条数: %d\n", len(noWinDataFb3))
 
 	// 检查是否有数据
 	if len(winDataFb1) == 0 && len(winDataFb2) == 0 && len(winDataFb3) == 0 {
@@ -114,21 +135,21 @@ func runSingleGameFb2Mode(config *Config, db *Database, gameIndex int) error {
 	// 分别处理三种数据
 	if len(winDataFb1) > 0 {
 		fmt.Println("\n🎯 开始处理 fb=1 数据...")
-		if err := processFbData(winDataFb1, "fb1", config, db); err != nil {
+		if err := processFbData(winDataFb1, noWinDataFb1, "fb1", config, db); err != nil {
 			log.Printf("❌ 处理 fb=1 数据失败: %v", err)
 		}
 	}
 
 	if len(winDataFb2) > 0 {
 		fmt.Println("\n🎯 开始处理 fb=2 数据...")
-		if err := processFbData(winDataFb2, "fb2", config, db); err != nil {
+		if err := processFbData(winDataFb2, noWinDataFb2, "fb2", config, db); err != nil {
 			log.Printf("❌ 处理 fb=2 数据失败: %v", err)
 		}
 	}
 
 	if len(winDataFb3) > 0 {
 		fmt.Println("\n🎯 开始处理 fb=3 数据...")
-		if err := processFbData(winDataFb3, "fb3", config, db); err != nil {
+		if err := processFbData(winDataFb3, noWinDataFb3, "fb3", config, db); err != nil {
 			log.Printf("❌ 处理 fb=3 数据失败: %v", err)
 		}
 	}
@@ -138,11 +159,21 @@ func runSingleGameFb2Mode(config *Config, db *Database, gameIndex int) error {
 }
 
 // processFbData 处理指定 fb 类型的数据
-func processFbData(winData []GameResultData, fbType string, config *Config, db *Database) error {
+func processFbData(winData []GameResultData, noWinData []GameResultData, fbType string, config *Config, db *Database) error {
 	// 计算总投注
-	// 使用平均数据量计算totalBet（generate2档位用data_num，其他用data_num_fb）
-	avgDataNum := (config.Tables.DataNum + config.Tables.DataNumFb) / 2
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB * float64(avgDataNum)
+	// generateFb2 模式使用 data_num_fb 作为数据量
+	var fbMul int = 1
+	if fbType == "fb1" {
+		fbMul = 1
+	}
+	if fbType == "fb2" {
+		fbMul = 2
+	}
+	if fbType == "fb3" {
+		fbMul = 3
+	}
+
+	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(fbMul) * float64(config.Tables.DataNumFb)
 
 	// 失败统计
 	var failedLevels []float64
@@ -183,7 +214,7 @@ func processFbData(winData []GameResultData, fbType string, config *Config, db *
 				fmt.Printf("▶️ 开始生成Fb2 | %s | RTP等级 %.0f | 第%d次 | %s\n",
 					fbType, rtpNo, testIndex, testStartTime.Format(time.RFC3339))
 
-				if err := runRtpFb2Test(db, config, rtpNo, rtpVal, testIndex, totalBet, winData, fbType); err != nil {
+				if err := runRtpFb2Test(db, config, rtpNo, rtpVal, testIndex, totalBet, winData, noWinData, fbType); err != nil {
 					fmt.Printf("❌ RTP测试Fb2失败 [%s RTP%.0f 第%d次]: %v\n", fbType, rtpNo, testIndex, err)
 					// 记录失败的档位和测试（线程安全）
 					failedMu.Lock()
@@ -208,7 +239,7 @@ func processFbData(winData []GameResultData, fbType string, config *Config, db *
 }
 
 // runRtpFb2Test 执行单次RTP测试 - Fb2模式
-func runRtpFb2Test(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, fbType string) error {
+func runRtpFb2Test(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData, fbType string) error {
 	var logBuf bytes.Buffer
 	printf := func(format string, a ...interface{}) {
 		fmt.Fprintf(&logBuf, format, a...)
@@ -261,13 +292,13 @@ func runRtpFb2Test(db *Database, config *Config, rtpLevel float64, rtp float64, 
 	switch strategyType {
 	case "generate2":
 		data, totalWin, _, _, _ = applyGenerate2Strategy(
-			winDataAll, targetCount, allowWin, bigNum, megaNum, superMegaNum, rng, printf)
+			winDataAll, noWinDataAll, targetCount, allowWin, bigNum, megaNum, superMegaNum, rng, printf)
 	case "generate3":
 		data, totalWin, _, _, _ = applyGenerate3Strategy(
-			winDataAll, targetCount, allowWin, bigNum, megaNum, superMegaNum, rng, printf)
+			winDataAll, noWinDataAll, targetCount, allowWin, bigNum, megaNum, superMegaNum, rng, printf)
 	case "generateFb2":
 		data, totalWin, _, _, _ = applyGenerateFb2Strategy(
-			winDataAll, targetCount, allowWin, bigNum, megaNum, superMegaNum, rng, printf)
+			winDataAll, noWinDataAll, targetCount, allowWin, bigNum, megaNum, superMegaNum, rng, printf, rtpLevel)
 	default:
 		return fmt.Errorf("未知策略类型: %s", strategyType)
 	}
@@ -335,7 +366,7 @@ func getStrategyType(rtpLevel float64) string {
 }
 
 // applyGenerate2Strategy 应用 generate2 策略
-func applyGenerate2Strategy(winDataAll []GameResultData, targetCount int, allowWin float64,
+func applyGenerate2Strategy(winDataAll []GameResultData, noWinDataAll []GameResultData, targetCount int, allowWin float64,
 	bigNum, megaNum, superMegaNum int, rng *rand.Rand, printf func(string, ...interface{})) ([]GameResultData, float64, int, int, int) {
 
 	var data []GameResultData
@@ -412,25 +443,21 @@ func applyGenerate2Strategy(winDataAll []GameResultData, targetCount int, allowW
 		}
 	}
 
-	// 如果数据量不够，用不中奖数据补全
+	// 如果数据量不够，用真实的不中奖数据补全
 	if len(data) < targetCount {
 		remainingCount := targetCount - len(data)
 		printf("数据量不足，需要补全 %d 条不中奖数据\n", remainingCount)
 
-		// 使用不中奖数据补全
-		for i := 0; i < remainingCount; i++ {
-			template := winDataAll[0]
-			noWinItem := GameResultData{
-				ID:  template.ID + 1000000 + i, // 避免ID冲突
-				TB:  template.TB,
-				AW:  0, // 不中奖
-				GWT: 1, // 普通奖
-				SP:  template.SP,
-				FB:  template.FB,
-				GD:  template.GD,
+		// 使用真实的不中奖数据补全
+		if len(noWinDataAll) > 0 {
+			permNo := rng.Perm(len(noWinDataAll))
+			for i := 0; i < remainingCount && i < len(permNo); i++ {
+				idx := permNo[i]
+				data = append(data, noWinDataAll[idx])
+				// totalWin 不变，因为 AW = 0
 			}
-			data = append(data, noWinItem)
-			// totalWin 不变，因为 AW = 0
+		} else {
+			printf("⚠️ 没有不中奖数据，无法补全到目标数量\n")
 		}
 	}
 
@@ -439,7 +466,7 @@ func applyGenerate2Strategy(winDataAll []GameResultData, targetCount int, allowW
 }
 
 // applyGenerate3Strategy 应用 generate3 策略
-func applyGenerate3Strategy(winDataAll []GameResultData, targetCount int, allowWin float64,
+func applyGenerate3Strategy(winDataAll []GameResultData, noWinDataAll []GameResultData, targetCount int, allowWin float64,
 	bigNum, megaNum, superMegaNum int, rng *rand.Rand, printf func(string, ...interface{})) ([]GameResultData, float64, int, int, int) {
 
 	var data []GameResultData
@@ -495,26 +522,21 @@ func applyGenerate3Strategy(winDataAll []GameResultData, targetCount int, allowW
 		}
 	}
 
-	// 如果数据不够，重复使用数据填充
+	// 如果数据不够，使用真实的不中奖数据填充
 	if len(data) < targetCount {
 		remainingCount := targetCount - len(data)
-		printf("数据不足，需要重复填充 %d 条\n", remainingCount)
+		printf("数据不足，需要填充 %d 条不中奖数据\n", remainingCount)
 
-		// 直接使用不中奖数据补全（参考generate2策略）
-		for i := 0; i < remainingCount; i++ {
-			// 使用第一个中奖数据作为模板，但设置AW=0
-			template := winDataAll[0]
-			noWinItem := GameResultData{
-				ID:  template.ID + 1000000 + i, // 避免ID冲突
-				TB:  template.TB,
-				AW:  0, // 不中奖
-				GWT: 1, // 普通奖
-				SP:  template.SP,
-				FB:  template.FB,
-				GD:  template.GD,
+		// 使用真实的不中奖数据补全
+		if len(noWinDataAll) > 0 {
+			permNo := rng.Perm(len(noWinDataAll))
+			for i := 0; i < remainingCount && i < len(permNo); i++ {
+				idx := permNo[i]
+				data = append(data, noWinDataAll[idx])
+				// totalWin 不变，因为 AW = 0
 			}
-			data = append(data, noWinItem)
-			// totalWin 不变，因为 AW = 0
+		} else {
+			printf("⚠️ 没有不中奖数据，无法补全到目标数量\n")
 		}
 	}
 
@@ -523,14 +545,33 @@ func applyGenerate3Strategy(winDataAll []GameResultData, targetCount int, allowW
 }
 
 // applyGenerateFb2Strategy 应用 generateFb2 新策略
-func applyGenerateFb2Strategy(winDataAll []GameResultData, targetCount int, allowWin float64,
-	bigNum, megaNum, superMegaNum int, rng *rand.Rand, printf func(string, ...interface{})) ([]GameResultData, float64, int, int, int) {
+func applyGenerateFb2Strategy(winDataAll []GameResultData, noWinDataAll []GameResultData, targetCount int, allowWin float64,
+	bigNum, megaNum, superMegaNum int, rng *rand.Rand, printf func(string, ...interface{}), rtpLevel float64) ([]GameResultData, float64, int, int, int) {
 
 	var data []GameResultData
 	var totalWin float64
 	bigCount := 0
 	megaCount := 0
 	superMegaCount := 0
+
+	// 判断是否为高RTP档位（RTP >= 2.0）
+	// 需要根据档位号查找对应的RTP值
+	var currentRTP float64
+	for _, level := range FbRtpLevels {
+		if level.RtpNo == rtpLevel {
+			currentRTP = level.Rtp
+			break
+		}
+	}
+	isHighRTP := currentRTP >= 2.0
+
+	if isHighRTP {
+		printf("🎯 检测到高RTP档位（RTP >= 2.0），使用全部中奖数据策略\n")
+		return applyHighRTPStrategy(winDataAll, noWinDataAll, targetCount, allowWin, bigNum, megaNum, superMegaNum, rng, printf)
+	}
+
+	// 低RTP档位使用原有的分阶段策略
+	printf("🎯 低RTP档位，使用分阶段策略\n")
 
 	// 分类数据
 	categorized := categorizeFb2Data(winDataAll)
@@ -551,36 +592,64 @@ func applyGenerateFb2Strategy(winDataAll []GameResultData, targetCount int, allo
 		}
 	}
 
-	// 如果数据不够，重复使用中奖数据填充（高RTP档位全部用中奖数据）
-	if len(data) < targetCount {
-		remainingCount := targetCount - len(data)
-		printf("数据不足，需要重复填充 %d 条中奖数据\n", remainingCount)
+	// 第四阶段：优先使用高额中奖数据（stage4 - 所有中奖数据）
+	if len(categorized["stage4"]) > 0 {
+		stage4Count := int(float64(targetCount) * 0.15) // 15%
+		stage4Data := selectDataByConditionWithUsed(categorized["stage4"], stage4Count, nil, allowWin, &totalWin, rng, usedIds)
+		data = append(data, stage4Data...)
+		printf("阶段4填充: 目标%d条, 实际%d条, 累计中奖%.2f\n",
+			stage4Count, len(stage4Data), totalWin)
+	}
 
-		// 重置usedIds，允许重复使用中奖数据
-		usedIds = make(map[int]bool)
+	// 如果中奖金额不足，尝试补充更多高额中奖数据
+	if totalWin < allowWin {
+		remainingWin := allowWin - totalWin
+		printf("中奖金额不足，需要补充 %.2f，尝试使用高额中奖数据\n", remainingWin)
 
-		// 随机选择中奖数据重复填充
-		perm := rng.Perm(len(winDataAll))
-		for i := 0; i < remainingCount; i++ {
-			item := winDataAll[perm[i%len(perm)]]
-			// 检查RTP限制（高RTP档位允许更大的偏差）
-			if totalWin+item.AW <= allowWin*1.1 {
+		// 按中奖金额降序排序所有未使用的中奖数据
+		var availableHighWinData []GameResultData
+		for _, item := range winDataAll {
+			if !usedIds[item.ID] && item.AW > 0 {
+				availableHighWinData = append(availableHighWinData, item)
+			}
+		}
+
+		// 按中奖金额降序排序
+		sort.Slice(availableHighWinData, func(i, j int) bool {
+			return availableHighWinData[i].AW > availableHighWinData[j].AW
+		})
+
+		// 优先选择高额中奖数据
+		for _, item := range availableHighWinData {
+			if totalWin+item.AW <= allowWin*1.01 { // 允许1%的偏差
 				data = append(data, item)
 				totalWin += item.AW
-			} else {
-				// 如果RTP超限，使用不中奖数据填充
-				noWinItem := GameResultData{
-					ID:  item.ID + 1000000 + i, // 避免ID冲突
-					TB:  item.TB,
-					AW:  0, // 不中奖
-					GWT: 1, // 普通奖
-					SP:  item.SP,
-					FB:  item.FB,
-					GD:  item.GD,
+				usedIds[item.ID] = true
+				printf("补充高额中奖数据: AW=%.2f, 累计中奖%.2f\n", item.AW, totalWin)
+
+				if totalWin >= allowWin {
+					printf("✅ 高额数据补充完成！当前中奖总额: %.2f, 目标: %.2f\n", totalWin, allowWin)
+					break
 				}
-				data = append(data, noWinItem)
+			}
+		}
+	}
+
+	// 如果数据量不够，使用真实的不中奖数据填充
+	if len(data) < targetCount {
+		remainingCount := targetCount - len(data)
+		printf("数据量不足，需要填充 %d 条不中奖数据\n", remainingCount)
+
+		// 使用真实的不中奖数据补全
+		if len(noWinDataAll) > 0 {
+			permNo := rng.Perm(len(noWinDataAll))
+			for i := 0; i < remainingCount && i < len(permNo); i++ {
+				idx := permNo[i]
+				data = append(data, noWinDataAll[idx])
 				// totalWin 不变，因为 AW = 0
 			}
+		} else {
+			printf("⚠️ 没有不中奖数据，无法补全到目标数量\n")
 		}
 	}
 
@@ -868,4 +937,204 @@ func saveToJSONFb2(data []GameResultData, config *Config, rtpLevel float64, test
 
 	fmt.Printf("📊 数据已保存到JSON文件: %s\n", filePath)
 	return nil
+}
+
+// applyHighRTPStrategy 高RTP档位策略：全部使用中奖数据，超出RTP时用低金额替换
+func applyHighRTPStrategy(winDataAll []GameResultData, noWinDataAll []GameResultData, targetCount int, allowWin float64,
+	bigNum, megaNum, superMegaNum int, rng *rand.Rand, printf func(string, ...interface{})) ([]GameResultData, float64, int, int, int) {
+
+	var data []GameResultData
+	var totalWin float64
+	bigCount := 0
+	megaCount := 0
+	superMegaCount := 0
+
+	printf("🎯 高RTP档位策略：全部使用中奖数据填充\n")
+	printf("目标数据量: %d, 允许中奖金额: %.2f\n", targetCount, allowWin)
+
+	// 按中奖金额降序排序所有中奖数据
+	sortedWinData := make([]GameResultData, len(winDataAll))
+	copy(sortedWinData, winDataAll)
+	sort.Slice(sortedWinData, func(i, j int) bool {
+		return sortedWinData[i].AW > sortedWinData[j].AW
+	})
+
+	usedIds := make(map[int]bool)
+
+	// 第一阶段：优先选择高额中奖数据，直到接近目标RTP
+	printf("第一阶段：选择高额中奖数据\n")
+	for _, item := range sortedWinData {
+		if len(data) >= targetCount {
+			break
+		}
+
+		if usedIds[item.ID] {
+			continue
+		}
+
+		// 检查奖项限制
+		switch item.GWT {
+		case 2: // 大奖
+			if bigCount >= bigNum {
+				continue
+			}
+		case 3: // 巨奖
+			if megaCount >= megaNum {
+				continue
+			}
+		case 4: // 超级巨奖
+			if superMegaCount >= superMegaNum {
+				continue
+			}
+		}
+
+		// 如果添加这个数据会超出RTP上限，跳过
+		if totalWin+item.AW > allowWin*1.01 { // 允许1%的偏差
+			continue
+		}
+
+		// 添加数据
+		data = append(data, item)
+		totalWin += item.AW
+		usedIds[item.ID] = true
+
+		// 更新奖项计数
+		switch item.GWT {
+		case 2: // 大奖
+			bigCount++
+		case 3: // 巨奖
+			megaCount++
+		case 4: // 超级巨奖
+			superMegaCount++
+		}
+
+		printf("添加高额数据: AW=%.2f, 累计中奖=%.2f, 数据量=%d\n", item.AW, totalWin, len(data))
+	}
+
+	// 第二阶段：如果数据量不够，继续添加中奖数据（可能超出RTP）
+	if len(data) < targetCount {
+		printf("第二阶段：继续添加中奖数据（可能超出RTP）\n")
+		remainingCount := targetCount - len(data)
+
+		for _, item := range sortedWinData {
+			if remainingCount <= 0 {
+				break
+			}
+
+			if usedIds[item.ID] {
+				continue
+			}
+
+			// 检查奖项限制
+			switch item.GWT {
+			case 2: // 大奖
+				if bigCount >= bigNum {
+					continue
+				}
+			case 3: // 巨奖
+				if megaCount >= megaNum {
+					continue
+				}
+			case 4: // 超级巨奖
+				if superMegaCount >= superMegaNum {
+					continue
+				}
+			}
+
+			// 添加数据（即使可能超出RTP）
+			data = append(data, item)
+			totalWin += item.AW
+			usedIds[item.ID] = true
+			remainingCount--
+
+			// 更新奖项计数
+			switch item.GWT {
+			case 2: // 大奖
+				bigCount++
+			case 3: // 巨奖
+				megaCount++
+			case 4: // 超级巨奖
+				superMegaCount++
+			}
+
+			printf("添加额外数据: AW=%.2f, 累计中奖=%.2f, 剩余需要=%d\n", item.AW, totalWin, remainingCount)
+		}
+	}
+
+	// 第三阶段：如果RTP超出，用低金额数据替换高金额数据
+	if totalWin > allowWin*1.01 {
+		printf("第三阶段：RTP超出，开始替换策略\n")
+		printf("当前RTP: %.4f, 目标RTP: %.4f, 超出: %.4f\n", totalWin/allowWin*1.0, 1.0, (totalWin-allowWin)/allowWin*1.0)
+
+		// 按中奖金额升序排序，准备替换数据
+		lowWinData := make([]GameResultData, 0)
+		for _, item := range winDataAll {
+			if !usedIds[item.ID] && item.AW > 0 {
+				lowWinData = append(lowWinData, item)
+			}
+		}
+		sort.Slice(lowWinData, func(i, j int) bool {
+			return lowWinData[i].AW < lowWinData[j].AW
+		})
+
+		// 按中奖金额降序排序当前数据，准备被替换
+		sort.Slice(data, func(i, j int) bool {
+			return data[i].AW > data[j].AW
+		})
+
+		// 替换策略：用低金额数据替换高金额数据
+		replacedCount := 0
+		for i := 0; i < len(data) && totalWin > allowWin*1.01; i++ {
+			currentItem := data[i]
+
+			// 寻找合适的低金额替换数据
+			for j := 0; j < len(lowWinData); j++ {
+				replacementItem := lowWinData[j]
+
+				if usedIds[replacementItem.ID] {
+					continue
+				}
+
+				// 计算替换后的总中奖金额
+				newTotalWin := totalWin - currentItem.AW + replacementItem.AW
+
+				// 如果替换后更接近目标RTP，则进行替换
+				if newTotalWin <= allowWin*1.01 {
+					// 执行替换
+					totalWin = newTotalWin
+					data[i] = replacementItem
+					usedIds[replacementItem.ID] = true
+					usedIds[currentItem.ID] = false
+					replacedCount++
+
+					printf("替换数据: 原AW=%.2f -> 新AW=%.2f, 新总中奖=%.2f\n",
+						currentItem.AW, replacementItem.AW, totalWin)
+					break
+				}
+			}
+		}
+
+		printf("替换完成: 替换了%d条数据, 最终总中奖=%.2f\n", replacedCount, totalWin)
+	}
+
+	// 第四阶段：如果数据量仍然不够，用不中奖数据补全
+	if len(data) < targetCount {
+		remainingCount := targetCount - len(data)
+		printf("第四阶段：用不中奖数据补全 %d 条\n", remainingCount)
+
+		if len(noWinDataAll) > 0 {
+			permNo := rng.Perm(len(noWinDataAll))
+			for i := 0; i < remainingCount && i < len(permNo); i++ {
+				idx := permNo[i]
+				data = append(data, noWinDataAll[idx])
+				// totalWin 不变，因为 AW = 0
+			}
+		} else {
+			printf("⚠️ 没有不中奖数据，无法补全到目标数量\n")
+		}
+	}
+
+	printf("高RTP策略完成: 数据量=%d, 总中奖=%.2f, 实际RTP=%.4f\n",
+		len(data), totalWin, totalWin/allowWin*1.0)
+	return data, totalWin, bigCount, megaCount, superMegaCount
 }
