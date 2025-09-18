@@ -62,6 +62,6 @@ var FbRtpLevels = []RtpLevel{
 	{RtpNo: 120, Rtp: 1.2},
 	{RtpNo: 150, Rtp: 1.5},
 	{RtpNo: 200, Rtp: 2.0},
-	{RtpNo: 300, Rtp: 2.5},
-	{RtpNo: 500, Rtp: 4.0},
+	{RtpNo: 300, Rtp: 3.0},
+	{RtpNo: 500, Rtp: 5.0},
 }
