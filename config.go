@@ -76,6 +76,7 @@ type Config struct {
 		OutputTablePrefix string `yaml:"output_table_prefix"`
 		DataNum           int    `yaml:"data_num"`
 		DataTableNum      int    `yaml:"data_table_num"`
+		DataNumV3         int    `yaml:"data_num_v3"`
 		DataTableNum3     int    `yaml:"data_table_num_3"`
 		DataNumFb         int    `yaml:"data_num_fb"`
 		DataTableNumFb    int    `yaml:"data_table_num_fb"`

@@ -372,11 +372,11 @@ func runSingleGameMode2(config *Config, db *Database, gameIndex int) error {
 
 // runSingleGameMode3 运行单个游戏的V3生成模式（10%不中奖+40%不盈利+30%盈利策略）
 func runSingleGameMode3(config *Config, db *Database, gameIndex int) error {
-	fmt.Printf("配置加载成功（V3模式）- 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNum)
+	fmt.Printf("配置加载成功（V3模式）- 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNumV3)
 	fmt.Printf("🔧 V3策略：10%%不中奖 + 40%%不盈利 + 30%%盈利数据\n")
 
 	// 计算总投注
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNum)
+	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNumV3)
 
 	// 失败统计
 	var failedLevels []float64
@@ -2592,7 +2592,7 @@ func runGenerateMode3() {
 	if err != nil {
 		log.Fatalf("加载配置文件失败: %v", err)
 	}
-	fmt.Printf("配置加载成功（V3模式）- 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNum)
+	fmt.Printf("配置加载成功（V3模式）- 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNumV3)
 	fmt.Printf("🔧 V3策略：10%%不中奖 + 40%%不盈利 + 30%%盈利数据\n")
 
 	// 连接数据库
@@ -2603,7 +2603,7 @@ func runGenerateMode3() {
 	defer db.Close()
 
 	// 计算总投注
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNum)
+	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNumV3)
 
 	// 预取共享只读数据
 	winDataAll, err := db.GetWinData()
@@ -2689,7 +2689,7 @@ func runRtpTestV3(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	rng := rand.New(rand.NewSource(seed))
 
 	// 动态计算各阶段的数量目标（根据RTP目标调整）
-	totalCount := config.Tables.DataNum
+	totalCount := config.Tables.DataNumV3
 	var noWinCount, notProfitCount, profitCount, remainingCount int
 
 	// 根据RTP目标动态调整比例
@@ -3065,8 +3065,8 @@ func runRtpTestV3(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	printf("  - 盈利数据: %d 条 (%.1f%%)\n", finalProfitCount, float64(finalProfitCount)/float64(len(data))*100)
 
 	// 验证数据量
-	if len(data) != config.Tables.DataNum {
-		return fmt.Errorf("❌ 数据量不匹配：期望 %d 条, 实际 %d 条", config.Tables.DataNum, len(data))
+	if len(data) != config.Tables.DataNumV3 {
+		return fmt.Errorf("❌ 数据量不匹配：期望 %d 条, 实际 %d 条", config.Tables.DataNumV3, len(data))
 	}
 
 	// 验证RTP下限
