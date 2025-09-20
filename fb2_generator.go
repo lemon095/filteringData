@@ -135,7 +135,15 @@ func processFbData(winData []GameResultData, noWinData []GameResultData, fbType 
 		fbMultiplier = 3.0 // fb3: AW = 30-60元，需要3倍数据量
 	}
 
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(fbMul) * float64(config.Tables.DataNumFb) * fbMultiplier
+	// 根据策略类型选择数据量配置来计算totalBet
+	var baseDataNum int
+	if getStrategyType(1) == "generateFb2" { // 检查档位1的策略类型
+		baseDataNum = config.Tables.DataNumFb
+	} else {
+		baseDataNum = config.Tables.DataNum
+	}
+
+	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(fbMul) * float64(baseDataNum) * fbMultiplier
 
 	// 失败统计
 	var failedLevels []float64
