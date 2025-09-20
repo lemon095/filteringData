@@ -1601,36 +1601,27 @@ func (ji *JSONImporter) ImportFb2Files(gameID int, levelFilter string) error {
 func (ji *JSONImporter) getFb2Files(gameID int, levelFilter string) ([]Fb2FileInfo, error) {
 	var allFiles []Fb2FileInfo
 
-	// 检查三种fb类型目录
-	fbTypes := []string{"fb_1", "fb_2", "fb_3"}
+	// 新的目录结构：output/24_fb/ (所有fb类型文件都在这个目录下)
+	dirPath := filepath.Join("output", fmt.Sprintf("%d_fb", gameID))
 
-	for _, fbType := range fbTypes {
-		// 构建目录路径：output/24_fb_1/, output/24_fb_2/, output/24_fb_3/
-		dirPath := filepath.Join("output", fmt.Sprintf("%d_%s", gameID, fbType))
-
-		// 检查目录是否存在
-		if _, err := os.Stat(dirPath); os.IsNotExist(err) {
-			fmt.Printf("⚠️ 目录不存在，跳过: %s\n", dirPath)
-			continue
-		}
-
-		// 从目录名提取fb类型：fb_1 -> fb1
-		fbTypeShort := strings.Replace(fbType, "_", "", 1)
-
-		// 获取目录下的JSON文件
-		files, err := ji.getFb2FilesFromDir(dirPath, gameID, fbTypeShort, levelFilter)
-		if err != nil {
-			return nil, fmt.Errorf("获取目录 %s 的文件失败: %v", dirPath, err)
-		}
-
-		allFiles = append(allFiles, files...)
+	// 检查目录是否存在
+	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("目录不存在: %s", dirPath)
 	}
+
+	// 获取该目录下的所有Fb2文件
+	files, err := ji.getFb2FilesFromDir(dirPath, gameID, levelFilter)
+	if err != nil {
+		return nil, fmt.Errorf("获取目录 %s 的文件失败: %v", dirPath, err)
+	}
+
+	allFiles = append(allFiles, files...)
 
 	return allFiles, nil
 }
 
 // getFb2FilesFromDir 从指定目录获取Fb2文件
-func (ji *JSONImporter) getFb2FilesFromDir(dirPath string, gameID int, fbType string, levelFilter string) ([]Fb2FileInfo, error) {
+func (ji *JSONImporter) getFb2FilesFromDir(dirPath string, gameID int, levelFilter string) ([]Fb2FileInfo, error) {
 	var files []Fb2FileInfo
 
 	err := filepath.WalkDir(dirPath, func(path string, d fs.DirEntry, err error) error {
@@ -1643,16 +1634,17 @@ func (ji *JSONImporter) getFb2FilesFromDir(dirPath string, gameID int, fbType st
 			return nil
 		}
 
-		// 解析文件名：GameResultData_fb1_1_1.json -> RtpLevel=1, TestNum=1
-		re := regexp.MustCompile(`GameResultData_fb\d+_(\d+)_(\d+)\.json`)
+		// 解析文件名：GameResultData_fb{1|2|3}_{rtpLevel}_{testNum}.json
+		re := regexp.MustCompile(`GameResultData_(fb[123])_(\d+)_(\d+)\.json`)
 		matches := re.FindStringSubmatch(d.Name())
-		if len(matches) != 3 {
+		if len(matches) != 4 {
 			log.Printf("⚠️ 跳过不符合命名规则的文件: %s", d.Name())
 			return nil
 		}
 
-		rtpLevel, _ := strconv.Atoi(matches[1])
-		testNum, _ := strconv.Atoi(matches[2])
+		fbType := matches[1]        // fb1, fb2, fb3
+		rtpLevel, _ := strconv.Atoi(matches[2])
+		testNum, _ := strconv.Atoi(matches[3])
 
 		// 如果指定了levelFilter，进行过滤
 		if levelFilter != "" {

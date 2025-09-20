@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
@@ -312,10 +311,9 @@ func runRtpFb2Test(db *Database, config *Config, rtpLevel float64, rtp float64, 
 	})
 
 	// 保存到JSON文件
-	// 从 fbType (如 "fb1") 中提取数字部分 (如 "1")
-	fbNumber := strings.TrimPrefix(fbType, "fb")
-	outputDir := filepath.Join("output", fmt.Sprintf("%d_fb_%s", config.Game.ID, fbNumber))
-	if err := saveToJSONFb2(data, config, rtpLevel, testNumber, outputDir, fbNumber); err != nil {
+	// 使用统一的fb目录结构
+	outputDir := filepath.Join("output", fmt.Sprintf("%d_fb", config.Game.ID))
+	if err := saveToJSONFb2(data, config, rtpLevel, testNumber, outputDir, fbType); err != nil {
 		return fmt.Errorf("保存JSON文件失败: %v", err)
 	}
 
@@ -687,14 +685,14 @@ func printFb2FailureSummary(fbType string, gameID int, failedLevels []float64, f
 }
 
 // saveToJSONFb2 保存Fb2模式数据到JSON文件
-func saveToJSONFb2(data []GameResultData, config *Config, rtpLevel float64, testNumber int, outputDir string, fbNumber string) error {
+func saveToJSONFb2(data []GameResultData, config *Config, rtpLevel float64, testNumber int, outputDir string, fbType string) error {
 	// 创建输出目录
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("创建输出目录失败: %v", err)
 	}
 
-	// 生成文件名：GameResultData_fbType_档位_第几个文件.json
-	fileName := fmt.Sprintf("GameResultData_fb%s_%.0f_%d.json", fbNumber, rtpLevel, testNumber)
+	// 生成文件名：GameResultData_fb{1|2|3}_{rtpLevel}_{testNum}.json
+	fileName := fmt.Sprintf("GameResultData_%s_%.0f_%d.json", fbType, rtpLevel, testNumber)
 	filePath := filepath.Join(outputDir, fileName)
 
 	// 准备要保存的数据结构
