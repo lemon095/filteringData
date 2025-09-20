@@ -1502,9 +1502,13 @@ func main() {
 		// S3 Fb2模式导入命令：./filteringData import-s3-fb2 <gameIds> [level] [env]
 		// 根据fbType区分rtpLevel：fb1+0.1, fb2+0.2, fb3+0.3
 		handleS3ImportCommandFb2()
+	case "importFb2":
+		// 本地Fb2模式导入命令：./filteringData importFb2 <gameId> [level] [env]
+		// 读取 output/<gameId>_fb_1/, output/<gameId>_fb_2/, output/<gameId>_fb_3/ 目录
+		handleImportFb2Command()
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate, generate2, generate3, multi-game, import, importFb, import-s3, import-s3-normal, import-s3-fb, import-s3-fb2")
+		fmt.Println("支持的命令: generate, generate2, generate3, multi-game, import, importFb, importFb2, import-s3, import-s3-normal, import-s3-fb, import-s3-fb2")
 		os.Exit(1)
 	}
 }
@@ -3347,4 +3351,65 @@ func handleS3ImportCommandFb2() {
 	}
 
 	fmt.Println("S3 Fb2导入完成！")
+}
+
+// handleImportFb2Command 处理本地Fb2模式导入命令
+func handleImportFb2Command() {
+	if len(os.Args) < 3 {
+		fmt.Println("用法: ./filteringData importFb2 <gameId> [level] [env]")
+		fmt.Println("示例: ./filteringData importFb2 24 1 test")
+		fmt.Println("说明: 导入 output/<gameId>_fb_1/, output/<gameId>_fb_2/, output/<gameId>_fb_3/ 目录下的文件")
+		os.Exit(1)
+	}
+
+	// 解析游戏ID
+	gameIdStr := os.Args[2]
+	gameId, err := strconv.Atoi(gameIdStr)
+	if err != nil {
+		fmt.Printf("解析游戏ID失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 解析等级过滤和环境参数
+	var levelFilter string
+	var env string
+
+	if len(os.Args) >= 4 {
+		levelFilter = os.Args[3]
+	}
+	if len(os.Args) >= 5 {
+		env = os.Args[4]
+	}
+
+	// 加载配置
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		fmt.Printf("加载配置失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 设置游戏ID和环境
+	config.Game.ID = gameId
+	if env != "" {
+		config.DefaultEnv = env
+	}
+
+	// 连接数据库
+	db, err := NewDatabase(config, env)
+	if err != nil {
+		fmt.Printf("数据库连接失败: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	// 创建JSON导入器
+	importer := NewJSONImporter(db, config)
+
+	// 执行Fb2模式导入
+	if err := importer.ImportFb2Files(gameId, levelFilter); err != nil {
+		fmt.Printf("Fb2导入失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Fb2导入完成！")
 }

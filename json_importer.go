@@ -1517,3 +1517,268 @@ func (si *S3Importer) insertS3Fb2Batch(data []map[string]interface{}, tableName 
 	fmt.Printf("    ✅ 成功插入 %d 条记录 (RTP等级: %.1f, Fb类型: %s)\n", len(data), rtpLevelVal, fbType)
 	return nil
 }
+
+// Fb2FileInfo Fb2文件信息结构
+type Fb2FileInfo struct {
+	Path     string
+	Name     string
+	GameID   int
+	FbType   string // fb1, fb2, fb3
+	RtpLevel int
+	TestNum  int
+	SortKey  string // 用于排序的键
+}
+
+// ImportFb2Files 导入本地Fb2模式文件
+func (ji *JSONImporter) ImportFb2Files(gameID int, levelFilter string) error {
+	// 记录总开始时间
+	totalStartTime := time.Now()
+	fmt.Printf("🔄 启动本地Fb2导入模式 (游戏ID: %d)\n", gameID)
+
+	// 获取所有Fb2文件
+	allFiles, err := ji.getFb2Files(gameID, levelFilter)
+	if err != nil {
+		return err
+	}
+
+	if len(allFiles) == 0 {
+		return fmt.Errorf("在本地目录中未找到匹配的Fb2文件")
+	}
+
+	fmt.Printf("📂 找到 %d 个Fb2文件\n", len(allFiles))
+
+	// 创建目标表
+	tableName := fmt.Sprintf("%s%d", ji.config.Tables.OutputTablePrefix, gameID)
+
+	// 先删除现有表（如果存在）
+	dropQuery := fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName)
+	_, err = ji.db.DB.Exec(dropQuery)
+	if err != nil {
+		fmt.Printf("⚠️ 删除现有表失败: %v\n", err)
+	}
+
+	if err := ji.createTargetTable(tableName); err != nil {
+		return fmt.Errorf("创建目标表失败: %v", err)
+	}
+
+	// 按fbType分组处理
+	fbTypeFiles := make(map[string][]Fb2FileInfo)
+	for _, file := range allFiles {
+		fbTypeFiles[file.FbType] = append(fbTypeFiles[file.FbType], file)
+	}
+
+	// 处理每种fb类型
+	for fbType, files := range fbTypeFiles {
+		fmt.Printf("\n🎯 开始处理 %s 类型的 %d 个文件...\n", fbType, len(files))
+
+		// 按rtpLevel和testNum排序
+		sort.Slice(files, func(i, j int) bool {
+			if files[i].RtpLevel != files[j].RtpLevel {
+				return files[i].RtpLevel < files[j].RtpLevel
+			}
+			return files[i].TestNum < files[j].TestNum
+		})
+
+		// 导入每个文件
+		globalSrId := 1
+		for _, file := range files {
+			fmt.Printf("  📄 正在导入: %s\n", file.Name)
+
+			if err := ji.importFb2File(file, tableName, &globalSrId); err != nil {
+				return fmt.Errorf("导入文件 %s 失败: %v", file.Name, err)
+			}
+
+			fmt.Printf("  ✅ 导入完成: %s\n", file.Name)
+		}
+	}
+
+	totalDuration := time.Since(totalStartTime)
+	fmt.Printf("\n🎉 Fb2导入完成！总耗时: %v\n", totalDuration)
+	return nil
+}
+
+// getFb2Files 获取指定游戏ID的所有Fb2文件
+func (ji *JSONImporter) getFb2Files(gameID int, levelFilter string) ([]Fb2FileInfo, error) {
+	var allFiles []Fb2FileInfo
+
+	// 检查三种fb类型目录
+	fbTypes := []string{"fb_1", "fb_2", "fb_3"}
+
+	for _, fbType := range fbTypes {
+		// 构建目录路径：output/24_fb_1/, output/24_fb_2/, output/24_fb_3/
+		dirPath := filepath.Join("output", fmt.Sprintf("%d_%s", gameID, fbType))
+
+		// 检查目录是否存在
+		if _, err := os.Stat(dirPath); os.IsNotExist(err) {
+			fmt.Printf("⚠️ 目录不存在，跳过: %s\n", dirPath)
+			continue
+		}
+
+		// 从目录名提取fb类型：fb_1 -> fb1
+		fbTypeShort := strings.Replace(fbType, "_", "", 1)
+
+		// 获取目录下的JSON文件
+		files, err := ji.getFb2FilesFromDir(dirPath, gameID, fbTypeShort, levelFilter)
+		if err != nil {
+			return nil, fmt.Errorf("获取目录 %s 的文件失败: %v", dirPath, err)
+		}
+
+		allFiles = append(allFiles, files...)
+	}
+
+	return allFiles, nil
+}
+
+// getFb2FilesFromDir 从指定目录获取Fb2文件
+func (ji *JSONImporter) getFb2FilesFromDir(dirPath string, gameID int, fbType string, levelFilter string) ([]Fb2FileInfo, error) {
+	var files []Fb2FileInfo
+
+	err := filepath.WalkDir(dirPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// 只处理JSON文件
+		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
+			return nil
+		}
+
+		// 解析文件名：GameResultData_fb1_1_1.json -> RtpLevel=1, TestNum=1
+		re := regexp.MustCompile(`GameResultData_fb\d+_(\d+)_(\d+)\.json`)
+		matches := re.FindStringSubmatch(d.Name())
+		if len(matches) != 3 {
+			log.Printf("⚠️ 跳过不符合命名规则的文件: %s", d.Name())
+			return nil
+		}
+
+		rtpLevel, _ := strconv.Atoi(matches[1])
+		testNum, _ := strconv.Atoi(matches[2])
+
+		// 如果指定了levelFilter，进行过滤
+		if levelFilter != "" {
+			levelStr := strconv.Itoa(rtpLevel)
+			if levelStr != levelFilter {
+				return nil
+			}
+		}
+
+		// 创建排序键
+		sortKey := fmt.Sprintf("%s_%02d_%02d", fbType, rtpLevel, testNum)
+
+		fileInfo := Fb2FileInfo{
+			Path:     path,
+			Name:     d.Name(),
+			GameID:   gameID,
+			FbType:   fbType,
+			RtpLevel: rtpLevel,
+			TestNum:  testNum,
+			SortKey:  sortKey,
+		}
+
+		files = append(files, fileInfo)
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("遍历目录失败: %v", err)
+	}
+
+	return files, nil
+}
+
+// importFb2File 导入单个Fb2文件
+func (ji *JSONImporter) importFb2File(file Fb2FileInfo, tableName string, globalSrId *int) error {
+	// 读取文件内容
+	data, err := ji.readFb2JSONFile(file.Path)
+	if err != nil {
+		return fmt.Errorf("读取文件失败: %v", err)
+	}
+
+	if len(data) == 0 {
+		fmt.Printf("    ⚠️ 文件为空，跳过: %s\n", file.Name)
+		return nil
+	}
+
+	// 计算RTP等级偏移（根据fbType）
+	var rtpOffset float64
+	switch file.FbType {
+	case "fb1":
+		rtpOffset = 0.1
+	case "fb2":
+		rtpOffset = 0.2
+	case "fb3":
+		rtpOffset = 0.3
+	default:
+		rtpOffset = 0.0
+	}
+
+	// 批量插入数据
+	if err := ji.insertFb2Batch(data, tableName, file.RtpLevel, file.TestNum, file.FbType, globalSrId, rtpOffset); err != nil {
+		return fmt.Errorf("插入数据失败: %v", err)
+	}
+
+	return nil
+}
+
+// readFb2JSONFile 读取Fb2 JSON文件
+func (ji *JSONImporter) readFb2JSONFile(filePath string) ([]map[string]interface{}, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var result struct {
+		RtpLevel int                      `json:"rtpLevel"`
+		SrNumber int                      `json:"srNumber"`
+		Data     []map[string]interface{} `json:"data"`
+	}
+
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&result); err != nil {
+		return nil, err
+	}
+
+	return result.Data, nil
+}
+
+// insertFb2Batch 批量插入Fb2数据
+func (ji *JSONImporter) insertFb2Batch(data []map[string]interface{}, tableName string, rtpLevel int, testNum int, fbType string, globalSrId *int, rtpOffset float64) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	// 准备批量插入语句
+	query := fmt.Sprintf(`
+		INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "bet", "win", "detail")
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, tableName)
+
+	// 计算实际RTP等级
+	actualRtpLevel := float64(rtpLevel) + rtpOffset
+
+	// 批量插入
+	for _, item := range data {
+		// 提取数据字段
+		bet, _ := item["tb"].(float64)
+		win, _ := item["aw"].(float64)
+
+		// 将整个item作为detail存储
+		detailJSON, err := json.Marshal(item)
+		if err != nil {
+			return fmt.Errorf("序列化detail失败: %v", err)
+		}
+
+		// 执行插入
+		_, err = ji.db.DB.Exec(query, actualRtpLevel, testNum, *globalSrId, bet, win, string(detailJSON))
+		if err != nil {
+			return fmt.Errorf("插入记录失败: %v (rtpLevel: %.1f, testNum: %d, srId: %d, bet: %.2f, win: %.2f)", err, actualRtpLevel, testNum, *globalSrId, bet, win)
+		}
+
+		(*globalSrId)++
+	}
+
+	rtpLevelVal := float64(rtpLevel) + rtpOffset
+	fmt.Printf("    ✅ 成功插入 %d 条记录 (RTP等级: %.1f, Fb类型: %s)\n", len(data), rtpLevelVal, fbType)
+	return nil
+}
