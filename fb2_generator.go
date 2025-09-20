@@ -124,7 +124,18 @@ func processFbData(winData []GameResultData, noWinData []GameResultData, fbType 
 	// generateFb2 模式使用 data_num_fb 作为数据量
 	var fbMul int = 1
 
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(fbMul) * float64(config.Tables.DataNumFb)
+	// 根据fb类型调整totalBet倍数（因为不同fb类型的中奖金额不同，需要不同的数据量）
+	var fbMultiplier float64 = 1.0
+	switch fbType {
+	case "fb1":
+		fbMultiplier = 1.0 // fb1: AW = 10元，基准
+	case "fb2":
+		fbMultiplier = 2.0 // fb2: AW = 30元，需要2倍数据量
+	case "fb3":
+		fbMultiplier = 3.0 // fb3: AW = 30-60元，需要3倍数据量
+	}
+
+	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(fbMul) * float64(config.Tables.DataNumFb) * fbMultiplier
 
 	// 失败统计
 	var failedLevels []float64
