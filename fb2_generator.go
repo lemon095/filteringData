@@ -135,15 +135,9 @@ func processFbData(winData []GameResultData, noWinData []GameResultData, fbType 
 		fbMultiplier = 3.0 // fb3: AW = 30-60元，需要3倍数据量
 	}
 
-	// 根据策略类型选择数据量配置来计算totalBet
-	var baseDataNum int
-	if getStrategyType(1) == "generateFb2" { // 检查档位1的策略类型
-		baseDataNum = config.Tables.DataNumFb
-	} else {
-		baseDataNum = config.Tables.DataNum
-	}
-
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(fbMul) * float64(baseDataNum) * fbMultiplier
+	// 根据fb类型调整totalBet倍数（因为不同fb类型的中奖金额不同，需要不同的数据量）
+	// 注意：这里使用data_num_fb作为基准，因为generateFb2模式主要使用这个配置
+	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(fbMul) * float64(config.Tables.DataNumFb) * fbMultiplier
 
 	// 失败统计
 	var failedLevels []float64
@@ -220,21 +214,38 @@ func runRtpFb2Test(db *Database, config *Config, rtpLevel float64, rtp float64, 
 	printf("\n========== [FB2 TASK BEGIN] %s | RtpNo: %.0f | Test: %d | %s =========\n",
 		fbType, rtpLevel, testNumber, time.Now().Format(time.RFC3339))
 
-	// 计算允许中奖金额和配置参数
-	allowWin := totalBet * rtp
-	upperBound := allowWin * (1 + config.StageRatios.UpperDeviation)
-
 	// 根据策略类型选择数据量配置
 	strategyType := getStrategyType(rtpLevel)
 	var targetCount int
+	var baseDataNum int
 
 	if strategyType == "generateFb2" {
 		// 高RTP档位使用data_num_fb
 		targetCount = config.Tables.DataNumFb
+		baseDataNum = config.Tables.DataNumFb
 	} else {
 		// 统一策略档位使用data_num
 		targetCount = config.Tables.DataNum
+		baseDataNum = config.Tables.DataNum
 	}
+
+	// 根据fb类型调整totalBet倍数
+	var fbMultiplier float64 = 1.0
+	switch fbType {
+	case "fb1":
+		fbMultiplier = 1.0 // fb1: AW = 10元，基准
+	case "fb2":
+		fbMultiplier = 2.0 // fb2: AW = 30元，需要2倍数据量
+	case "fb3":
+		fbMultiplier = 3.0 // fb3: AW = 30-60元，需要3倍数据量
+	}
+
+	// 重新计算totalBet，确保与targetCount一致
+	totalBet = config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(baseDataNum) * fbMultiplier
+
+	// 计算允许中奖金额和配置参数
+	allowWin := totalBet * rtp
+	upperBound := allowWin * (1 + config.StageRatios.UpperDeviation)
 
 	// 计算奖项数量限制
 	bigNum := int(float64(targetCount) * config.PrizeRatios.BigPrize)
