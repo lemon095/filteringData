@@ -70,7 +70,7 @@ rsync -av \
 ```
 
 ```
-ssh -i /Users/shihao/Desktop/shihao/hk.pem ec2-user@18.166.15.173
+ssh -i /Users/shihao/Desktop/shihao/hk.pem ec2-user@43.198.223.247
 ssh -i /Users/shihao/Desktop/shihao/bx.pem ec2-user@18.229.148.69
 ssh -i /Users/shihao/Desktop/shihao/us.pem ec2-user@54.88.164.42
 ```
