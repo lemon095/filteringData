@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math"
+	"math/rand"
 	"sort"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -157,6 +159,9 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 	allocations["super_mega_multiplier"] = int(float64(totalCount) * distribution.MultiplierDistribution.SuperMegaMultiplier)
 	allocations["ultra_mega_multiplier"] = int(float64(totalCount) * distribution.MultiplierDistribution.UltraMegaMultiplier)
 
+	// 创建随机数生成器
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+
 	// 按区间分配数据，允许不中奖率有2%偏差
 	for rangeName, allocation := range allocations {
 		if allocation > 0 && len(dataRanges[rangeName].Data) > 0 {
@@ -167,7 +172,12 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 			}
 
 			// 随机选择数据
-			selectedData := dataRanges[rangeName].Data[:actualCount]
+			availableData := dataRanges[rangeName].Data
+			perm := rng.Perm(len(availableData))
+			var selectedData []GameResultData
+			for i := 0; i < actualCount; i++ {
+				selectedData = append(selectedData, availableData[perm[i]])
+			}
 			result = append(result, selectedData...)
 		}
 	}
