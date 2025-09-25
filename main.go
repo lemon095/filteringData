@@ -2940,7 +2940,7 @@ func runRtpTestV3(db *Database, config *Config, rtpLevel float64, rtp float64, t
 
 			// 尝试替换不中奖数据来提升RTP
 			adjustmentCount := 0
-			maxAdjustments := 200 // 增加调整次数
+			maxAdjustments := 500 // 进一步增加调整次数以确保RTP下限
 
 			for _, newItem := range allUnusedWinData {
 				if adjustmentCount >= maxAdjustments {
@@ -3072,9 +3072,50 @@ func runRtpTestV3(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		return fmt.Errorf("❌ 数据量不匹配：期望 %d 条, 实际 %d 条", config.Tables.DataNumV3, len(data))
 	}
 
-	// 验证RTP下限
+	// 验证RTP下限 - 如果仍然低于下限，尝试最后的调整
 	if finalRTP < rtpLowerLimit {
-		return fmt.Errorf("❌ RTP低于下限：实际 %.6f < 下限 %.6f", finalRTP, rtpLowerLimit)
+		printf("⚠️ 最终RTP仍低于下限，尝试最后的调整...\n")
+
+		// 最后的调整：替换更多不中奖数据
+		usedIds := make(map[int]bool)
+		for _, item := range data {
+			usedIds[item.ID] = true
+		}
+
+		var finalUnusedData []GameResultData
+		for _, item := range winDataAll {
+			if !usedIds[item.ID] && item.AW > 0 {
+				finalUnusedData = append(finalUnusedData, item)
+			}
+		}
+
+		if len(finalUnusedData) > 0 {
+			// 按AW降序排序
+			sort.Slice(finalUnusedData, func(i, j int) bool {
+				return finalUnusedData[i].AW > finalUnusedData[j].AW
+			})
+
+			// 替换所有不中奖数据
+			replaced := 0
+			for i, item := range data {
+				if item.AW == 0 && replaced < len(finalUnusedData) {
+					data[i] = finalUnusedData[replaced]
+					totalWin = totalWin - item.AW + finalUnusedData[replaced].AW
+					finalRTP = totalWin / totalBet
+					replaced++
+
+					if finalRTP >= rtpLowerLimit {
+						printf("✅ 最后调整成功，RTP达到下限: %.6f\n", finalRTP)
+						break
+					}
+				}
+			}
+		}
+
+		// 最终检查
+		if finalRTP < rtpLowerLimit {
+			return fmt.Errorf("❌ RTP低于下限：实际 %.6f < 下限 %.6f (数据源不足)", finalRTP, rtpLowerLimit)
+		}
 	}
 
 	// 验证RTP上限
@@ -3172,14 +3213,22 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 	// 设置RTP下限（目标值-0.1）
 	rtpLowerLimit := rtp - 0.1
 	if finalRTP < rtpLowerLimit {
-		printf("⚠️ RTP低于下限 (%.6f < %.6f)，尝试提升RTP\n", finalRTP, rtpLowerLimit)
+		printf("⚠️ RTP低于下限 (%.6f < %.6f)，开始动态调整RTP\n", finalRTP, rtpLowerLimit)
 
-		// 尝试提升RTP到下限
+		// 动态调整RTP到下限
 		adjustedData, err = adjustRTPToLowerLimit(adjustedData, rtpLowerLimit, totalBet, dataRanges)
 		if err == nil {
-			finalRTP = CalculateRTP(adjustedData, totalBet)
-			rtpDeviation = math.Abs(finalRTP - rtp)
-			printf("✅ RTP下限调整完成，最终RTP: %.6f\n", finalRTP)
+			newRTP := CalculateRTP(adjustedData, totalBet)
+			// 只有新RTP确实提升了才使用
+			if newRTP > finalRTP {
+				finalRTP = newRTP
+				rtpDeviation = math.Abs(finalRTP - rtp)
+				printf("✅ RTP动态调整完成，最终RTP: %.6f (提升: %.6f)\n", finalRTP, newRTP-finalRTP)
+			} else {
+				printf("⚠️ RTP动态调整失败，保持原RTP: %.6f\n", finalRTP)
+			}
+		} else {
+			printf("⚠️ RTP动态调整出错: %v\n", err)
 		}
 	}
 

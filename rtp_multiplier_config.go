@@ -813,7 +813,7 @@ func adjustRTPToLowerLimit(data []GameResultData, targetRTP float64, totalBet fl
 
 	// 替换零中奖数据直到达到RTP下限
 	replaceCount := 0
-	maxReplacements := len(zeroWinIndices) / 3 // 最多替换1/3的零中奖数据
+	maxReplacements := len(zeroWinIndices) // 允许替换所有零中奖数据以确保RTP下限
 
 	for _, rangeName := range rangeOrder {
 		if replaceCount >= maxReplacements {
