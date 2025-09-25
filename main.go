@@ -1282,8 +1282,9 @@ func main() {
 		fmt.Println("  ./filteringData generate                    # 生成RTP测试数据并保存到JSON文件")
 		fmt.Println("  ./filteringData generate2                   # 生成RTP测试数据V2（四阶段策略）")
 		fmt.Println("  ./filteringData generate3                   # 生成RTP测试数据V3（10%不中奖+40%不盈利+30%盈利策略）")
+		fmt.Println("  ./filteringData generate4                   # 生成RTP测试数据V4（RTP档位倍率分布策略）")
 		fmt.Println("  ./filteringData multi-game [mode]           # 多游戏顺序生成模式")
-		fmt.Println("     mode: generate/generate2/generate3/generateFb")
+		fmt.Println("     mode: generate/generate2/generate3/generate4/generateFb")
 		fmt.Println("  ./filteringData import                     # 导入output目录下的所有JSON文件到数据库")
 		fmt.Println("  ./filteringData import [fileLevelId]       # 只导入指定fileLevelId的JSON文件")
 		fmt.Println("  ./filteringData import-s3 <gameIds> [level] [env] # 从S3智能导入（自动检测normal和fb模式）")
@@ -1315,6 +1316,8 @@ func main() {
 		runGenerateMode2()
 	case "generate3":
 		runGenerateMode3()
+	case "generate4":
+		runGenerateMode4()
 	case "multi-game":
 		// 支持指定生成模式：./filteringData multi-game generate2
 		mode := "generate" // 默认模式
@@ -1461,7 +1464,7 @@ func main() {
 		handleS3ImportCommand("fb")
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate, generate2, generate3, multi-game, import, importFb, import-s3, import-s3-normal, import-s3-fb")
+		fmt.Println("支持的命令: generate, generate2, generate3, generate4, multi-game, import, importFb, import-s3, import-s3-normal, import-s3-fb")
 		os.Exit(1)
 	}
 }
@@ -3102,6 +3105,145 @@ func runRtpTestV3(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	return nil
 }
 
+// runRtpTestV4 执行单次RTP测试V4 - 使用RTP档位倍率分布策略
+func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, rtpLevel float64, rtp float64, testNumber int, totalBet float64, allData []GameResultData, dataNum int) error {
+	var logBuf bytes.Buffer
+	printf := func(format string, a ...interface{}) {
+		fmt.Fprintf(&logBuf, format, a...)
+	}
+	testStartTime := time.Now()
+
+	// 加载RTP配置文件
+	rtpMultiplierConfig, err := LoadRTPConfig("rtp_multiplier_config.yaml")
+	if err != nil {
+		return fmt.Errorf("加载RTP配置文件失败: %v", err)
+	}
+
+	// 任务头分隔线
+	printf("\n========== [TASK BEGIN - V4 MULTIPLIER] RtpNo: %.0f | Test: %d | %s =========\n", rtpLevel, testNumber, time.Now().Format(time.RFC3339))
+
+	// 获取RTP档位分布配置
+	distribution, err := rtpConfig.GetRtpDistribution(int(rtpLevel))
+	if err != nil {
+		return fmt.Errorf("获取RTP档位分布配置失败: %v", err)
+	}
+
+	printf("🎯 RTP档位: %.0f, 目标RTP: %.4f, 允许中奖金额: %.2f\n", rtpLevel, rtp, totalBet*rtp)
+	printf("📊 分布配置: 不中奖=%.1f%%, 低倍率=%.1f%%, 中倍率=%.1f%%, 高倍率=%.1f%%\n",
+		distribution.MultiplierDistribution.ZeroWin*100,
+		distribution.MultiplierDistribution.LowMultiplier*100,
+		distribution.MultiplierDistribution.MediumMultiplier*100,
+		distribution.MultiplierDistribution.HighMultiplier*100)
+
+	// 每任务独立随机源
+	seed := time.Now().UnixNano() ^ int64(config.Game.ID)*1_000_003 ^ int64(testNumber)*1_000_033 ^ int64(rtpLevel)*1_000_037
+	rng := rand.New(rand.NewSource(seed))
+
+	// 计算单次投注金额
+	perSpinBet := config.Bet.CS * config.Bet.ML * config.Bet.BL
+
+	// 按倍率区间分类数据
+	printf("🔄 正在按倍率区间分类数据...\n")
+	dataRanges := ClassifyDataByMultiplier(allData, perSpinBet)
+
+	// 输出各区间数据统计
+	for rangeName, rangeData := range dataRanges {
+		printf("  %s: %d 条 (%.1f%%)\n", rangeName, rangeData.Count, rangeData.Percentage*100)
+	}
+
+	// 根据分布配置生成数据
+	printf("🔄 正在根据分布配置生成数据...\n")
+	generatedData, err := GenerateDataByDistribution(distribution, dataNum, dataRanges)
+	if err != nil {
+		return fmt.Errorf("根据分布配置生成数据失败: %v", err)
+	}
+
+	printf("✅ 初步生成数据: %d 条\n", len(generatedData))
+
+	// 计算当前RTP
+	currentRTP := CalculateRTP(generatedData, totalBet)
+	printf("📊 当前RTP: %.6f, 目标RTP: %.6f, 偏差: %.6f\n", currentRTP, rtp, math.Abs(currentRTP-rtp))
+
+	// 调整RTP以满足目标
+	printf("🔄 正在调整RTP以满足目标...\n")
+	adjustedData, err := AdjustRTPByReplacement(generatedData, rtp, totalBet, dataRanges, int(rtpLevel), rtpMultiplierConfig)
+	if err != nil {
+		return fmt.Errorf("调整RTP失败: %v", err)
+	}
+
+	// 计算调整后的RTP
+	finalRTP := CalculateRTP(adjustedData, totalBet)
+	rtpDeviation := math.Abs(finalRTP - rtp)
+
+	printf("✅ 调整后RTP: %.6f, 目标RTP: %.6f, 偏差: %.6f\n", finalRTP, rtp, rtpDeviation)
+
+	// 如果数据量不足，用不中奖数据补充
+	if len(adjustedData) < dataNum {
+		needMore := dataNum - len(adjustedData)
+		printf("🔄 数据量不足，需要补充 %d 条不中奖数据\n", needMore)
+
+		// 从零倍数据中随机选择
+		if len(dataRanges["zero_win"].Data) > 0 {
+			perm := rng.Perm(len(dataRanges["zero_win"].Data))
+			for i := 0; i < needMore && i < len(perm); i++ {
+				idx := perm[i]
+				adjustedData = append(adjustedData, dataRanges["zero_win"].Data[idx])
+			}
+		}
+	}
+
+	// 如果数据量超出，随机移除多余数据
+	if len(adjustedData) > dataNum {
+		excess := len(adjustedData) - dataNum
+		printf("🔄 数据量超出，需要移除 %d 条数据\n", excess)
+
+		// 随机移除数据
+		perm := rng.Perm(len(adjustedData))
+		var newData []GameResultData
+		for i := 0; i < len(adjustedData)-excess; i++ {
+			newData = append(newData, adjustedData[perm[i]])
+		}
+		adjustedData = newData
+	}
+
+	// 最终统计
+	finalRTP = CalculateRTP(adjustedData, totalBet)
+	rtpDeviation = math.Abs(finalRTP - rtp)
+
+	printf("📊 最终统计:\n")
+	printf("  - 总数据量: %d 条\n", len(adjustedData))
+	printf("  - 总投注: %.2f\n", totalBet)
+	printf("  - 总中奖: %.2f\n", totalBet*finalRTP)
+	printf("  - 实际RTP: %.6f\n", finalRTP)
+	printf("  - 目标RTP: %.6f\n", rtp)
+	printf("  - RTP偏差: %.6f\n", rtpDeviation)
+
+	// 验证数据量
+	if len(adjustedData) != dataNum {
+		return fmt.Errorf("❌ 数据量不匹配：期望 %d 条, 实际 %d 条", dataNum, len(adjustedData))
+	}
+
+	// 打乱输出顺序
+	rand.Shuffle(len(adjustedData), func(i, j int) {
+		adjustedData[i], adjustedData[j] = adjustedData[j], adjustedData[i]
+	})
+
+	// 保存到JSON文件
+	var outputDir string = filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
+	if err := saveToJSON(adjustedData, config, rtpLevel, testNumber, outputDir); err != nil {
+		return fmt.Errorf("保存JSON文件失败: %v", err)
+	}
+
+	// 任务尾分隔线
+	printf("========== [TASK END - V4 MULTIPLIER]   RtpNo: %.0f | Test: %d =========\n\n", rtpLevel, testNumber)
+	printf("⏱️  RTP等级 %.0f (第%d次生成-V4策略) 耗时: %v\n", rtpLevel, testNumber, time.Since(testStartTime))
+
+	outputMu.Lock()
+	fmt.Print(logBuf.String())
+	outputMu.Unlock()
+	return nil
+}
+
 // parseGameIds 解析游戏ID字符串
 func parseGameIds(gameIdsStr string) ([]int, error) {
 	var gameIds []int
@@ -3232,4 +3374,118 @@ func runS3ImportMode(gameIds []int, mode string, levelFilter string, env string)
 	}
 
 	fmt.Println("✅ S3导入完成！")
+}
+
+// isHighRtpLevel 判断是否为高RTP档位，需要使用V3配置
+func isHighRtpLevel(rtpNo float64) bool {
+	highRtpLevels := []float64{14, 15, 120, 150, 200, 300, 500}
+	for _, level := range highRtpLevels {
+		if rtpNo == level {
+			return true
+		}
+	}
+	return false
+}
+
+// runGenerateMode4 运行生成模式V4 - 使用RTP档位倍率分布策略
+func runGenerateMode4() {
+	// 记录程序开始时间
+	startTime := time.Now()
+
+	// 初始化随机数种子
+	rand.Seed(time.Now().UnixNano())
+
+	// 加载配置文件
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("加载配置文件失败: %v", err)
+	}
+	fmt.Printf("配置加载成功（V4模式）- 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNum)
+	fmt.Printf("🔧 V4策略：RTP档位倍率分布策略\n")
+	fmt.Printf("📋 高RTP档位(14,15,120,150,200,300,500)将使用V3配置: data_num_v3=%d, data_table_num_3=%d\n",
+		config.Tables.DataNumV3, config.Tables.DataTableNum3)
+
+	// 加载RTP倍率分布配置
+	rtpConfig, err := LoadRtpMultiplierConfig("rtp_multiplier_config.yaml")
+	if err != nil {
+		log.Fatalf("加载RTP倍率分布配置失败: %v", err)
+	}
+
+	// 连接数据库
+	db, err := NewDatabase(config, "")
+	if err != nil {
+		log.Fatalf("数据库连接失败: %v", err)
+	}
+	defer db.Close()
+
+	// 预取共享只读数据
+	winDataAll, err := db.GetWinData()
+	if err != nil {
+		log.Fatalf("获取中奖数据失败: %v", err)
+	}
+	noWinDataAll, err := db.GetNoWinData()
+	if err != nil {
+		log.Fatalf("获取不中奖数据失败: %v", err)
+	}
+
+	// 合并所有数据
+	allData := append(winDataAll, noWinDataAll...)
+	fmt.Printf("✅ 总数据量: %d 条（中奖: %d, 不中奖: %d）\n", len(allData), len(winDataAll), len(noWinDataAll))
+
+	// 使用RtpLevels配置
+	for rtpNum := 0; rtpNum < len(RtpLevels); rtpNum++ {
+		// 并发度：CPU 核数
+		worker := runtime.NumCPU()
+		sem := make(chan struct{}, worker)
+		var wg sync.WaitGroup
+
+		// 捕获当前循环变量
+		rtpNo := RtpLevels[rtpNum].RtpNo
+		rtpVal := RtpLevels[rtpNum].Rtp
+
+		// 根据RTP档位选择配置
+		var dataNum, tableNum int
+		if isHighRtpLevel(rtpNo) {
+			dataNum = config.Tables.DataNumV3
+			tableNum = config.Tables.DataTableNum3
+			fmt.Printf("🔧 RTP档位 %.0f 使用V3配置: 数据量=%d, 生表数=%d\n", rtpNo, dataNum, tableNum)
+		} else {
+			dataNum = config.Tables.DataNum
+			tableNum = config.Tables.DataTableNum
+		}
+
+		// 计算总投注
+		totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(dataNum)
+
+		for t := 0; t < tableNum; t++ {
+			sem <- struct{}{}
+			wg.Add(1)
+
+			testIndex := t + 1
+
+			go func(rtpNo float64, rtpVal float64, testIndex int, dataNum int, totalBet float64) {
+				defer func() { <-sem; wg.Done() }()
+
+				// 记录单次测试开始时间
+				testStartTime := time.Now()
+				// 即时输出单次任务开始，便于观察进度
+				fmt.Printf("▶️ 开始生成（V4模式）| RTP等级 %.0f | 第%d次 | 数据量:%d | %s\n", rtpNo, testIndex, dataNum, testStartTime.Format(time.RFC3339))
+
+				if err := runRtpTestV4(db, config, rtpConfig, rtpNo, rtpVal, testIndex, totalBet, allData, dataNum); err != nil {
+					log.Printf("RTP测试V4失败: %v", err)
+				}
+
+				// 计算并输出单次测试耗时
+				testDuration := time.Since(testStartTime)
+				fmt.Printf("⏱️  RTP等级 %.0f (第%d次生成-V4模式) 耗时: %v\n", rtpNo, testIndex, testDuration)
+			}(rtpNo, rtpVal, testIndex, dataNum, totalBet)
+		}
+
+		wg.Wait()
+	}
+
+	// 计算并输出整个程序的总耗时
+	totalDuration := time.Since(startTime)
+	fmt.Printf("\n🎉 RTP数据筛选和保存完成（V4模式）！\n")
+	fmt.Printf("⏱️  整个程序总耗时: %v\n", totalDuration)
 }
