@@ -211,7 +211,7 @@ func calculateWinRate(data []GameResultData) float64 {
 }
 
 // AdjustRTPByReplacement 通过替换数据调整RTP
-func AdjustRTPByReplacement(data []GameResultData, targetRTP float64, totalBet float64, dataRanges map[string]MultiplierRange, rtpLevel int, config *RTPConfig) ([]GameResultData, error) {
+func AdjustRTPByReplacement(data []GameResultData, targetRTP float64, totalBet float64, dataRanges map[string]MultiplierRange, rtpLevel int, config *RtpMultiplierConfig) ([]GameResultData, error) {
 	currentRTP := CalculateRTP(data, totalBet)
 	currentWinRate := calculateWinRate(data)
 
@@ -749,7 +749,7 @@ func LoadRTPConfig(configPath string) (*RTPConfig, error) {
 }
 
 // GetTargetNoWinRateByRtpLevel 根据RTP档位获取目标不中奖率
-func GetTargetNoWinRateByRtpLevel(config *RTPConfig, rtpLevel int) float64 {
+func GetTargetNoWinRateByRtpLevel(config *RtpMultiplierConfig, rtpLevel int) float64 {
 	key := fmt.Sprintf("rtp_%d", rtpLevel)
 	if level, exists := config.RtpMultiplierDistribution[key]; exists {
 		return level.MultiplierDistribution.ZeroWin
@@ -774,4 +774,80 @@ func GetMultiplierDistributionByRtpLevel(config *RTPConfig, rtpLevel int) Multip
 		SuperMegaMultiplier: 0.0,
 		UltraMegaMultiplier: 0.0,
 	}
+}
+
+// adjustRTPToLowerLimit 调整RTP到下限
+func adjustRTPToLowerLimit(data []GameResultData, targetRTP float64, totalBet float64, dataRanges map[string]MultiplierRange) ([]GameResultData, error) {
+	result := make([]GameResultData, len(data))
+	copy(result, data)
+
+	currentRTP := CalculateRTP(result, totalBet)
+
+	// 如果当前RTP已经达到下限，直接返回
+	if currentRTP >= targetRTP {
+		return result, nil
+	}
+
+	// 找到零中奖数据
+	var zeroWinIndices []int
+	for i, item := range result {
+		if item.AW == 0 {
+			zeroWinIndices = append(zeroWinIndices, i)
+		}
+	}
+
+	if len(zeroWinIndices) == 0 {
+		return data, fmt.Errorf("没有零中奖数据可替换")
+	}
+
+	// 按倍率从低到高排序的区间（优先使用低倍率数据）
+	rangeOrder := []string{
+		"low_multiplier",
+		"medium_multiplier",
+		"high_multiplier",
+		"very_high_multiplier",
+		"mega_multiplier",
+		"super_mega_multiplier",
+		"ultra_mega_multiplier",
+	}
+
+	// 替换零中奖数据直到达到RTP下限
+	replaceCount := 0
+	maxReplacements := len(zeroWinIndices) / 3 // 最多替换1/3的零中奖数据
+
+	for _, rangeName := range rangeOrder {
+		if replaceCount >= maxReplacements {
+			break
+		}
+
+		rangeData := dataRanges[rangeName].Data
+		if len(rangeData) == 0 {
+			continue
+		}
+
+		// 按倍率从低到高排序
+		sort.Slice(rangeData, func(i, j int) bool {
+			return rangeData[i].AW/float64(rangeData[i].TB) < rangeData[j].AW/float64(rangeData[j].TB)
+		})
+
+		for _, item := range rangeData {
+			if replaceCount >= maxReplacements || len(zeroWinIndices) == 0 {
+				break
+			}
+
+			// 替换零中奖数据
+			zeroIndex := zeroWinIndices[0]
+			zeroWinIndices = zeroWinIndices[1:]
+			result[zeroIndex] = item
+			replaceCount++
+
+			// 检查RTP是否达到下限
+			newRTP := CalculateRTP(result, totalBet)
+			if newRTP >= targetRTP {
+				return result, nil
+			}
+		}
+	}
+
+	return result, nil
 }

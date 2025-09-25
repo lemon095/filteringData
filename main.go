@@ -3113,12 +3113,6 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 	}
 	testStartTime := time.Now()
 
-	// 加载RTP配置文件
-	rtpMultiplierConfig, err := LoadRTPConfig("rtp_multiplier_config.yaml")
-	if err != nil {
-		return fmt.Errorf("加载RTP配置文件失败: %v", err)
-	}
-
 	// 任务头分隔线
 	printf("\n========== [TASK BEGIN - V4 MULTIPLIER] RtpNo: %.0f | Test: %d | %s =========\n", rtpLevel, testNumber, time.Now().Format(time.RFC3339))
 
@@ -3166,7 +3160,7 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 
 	// 调整RTP以满足目标
 	printf("🔄 正在调整RTP以满足目标...\n")
-	adjustedData, err := AdjustRTPByReplacement(generatedData, rtp, totalBet, dataRanges, int(rtpLevel), rtpMultiplierConfig)
+	adjustedData, err := AdjustRTPByReplacement(generatedData, rtp, totalBet, dataRanges, int(rtpLevel), rtpConfig)
 	if err != nil {
 		return fmt.Errorf("调整RTP失败: %v", err)
 	}
@@ -3174,6 +3168,20 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 	// 计算调整后的RTP
 	finalRTP := CalculateRTP(adjustedData, totalBet)
 	rtpDeviation := math.Abs(finalRTP - rtp)
+
+	// 设置RTP下限（目标值-0.1）
+	rtpLowerLimit := rtp - 0.1
+	if finalRTP < rtpLowerLimit {
+		printf("⚠️ RTP低于下限 (%.6f < %.6f)，尝试提升RTP\n", finalRTP, rtpLowerLimit)
+
+		// 尝试提升RTP到下限
+		adjustedData, err = adjustRTPToLowerLimit(adjustedData, rtpLowerLimit, totalBet, dataRanges)
+		if err == nil {
+			finalRTP = CalculateRTP(adjustedData, totalBet)
+			rtpDeviation = math.Abs(finalRTP - rtp)
+			printf("✅ RTP下限调整完成，最终RTP: %.6f\n", finalRTP)
+		}
+	}
 
 	printf("✅ 调整后RTP: %.6f, 目标RTP: %.6f, 偏差: %.6f\n", finalRTP, rtp, rtpDeviation)
 

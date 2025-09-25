@@ -290,7 +290,7 @@ rtp_multiplier_distribution:
       super_mega_multiplier: 0.000 # 50-100倍 占比 0%
       ultra_mega_multiplier: 0.000 # 100-500倍 占比 0.1%
 
-  # 档位 14 (总RTP: 0.98)
+  # 档位 14 (总RTP: 1.5)
   rtp_14:
     rtp_no: 14
     rtp_value: 1.5
@@ -305,9 +305,9 @@ rtp_multiplier_distribution:
       very_high_multiplier: 0.0198 # 10-20倍 占比 0.8%
       mega_multiplier: 0.0197 # 20-50倍 占比 0.2%
       super_mega_multiplier: 0.0020 # 50-100倍 占比 0%
-      ultra_mega_multiplier: 0.0010 # 100-500倍 占比 0.1%
+      ultra_mega_multiplier: 0.0000 # 100-500倍 占比 0.1%
 
-  # 档位 15 (总RTP: 0.99)
+  # 档位 15 (总RTP: 2.0)
   rtp_15:
     rtp_no: 15
     rtp_value: 2.0
