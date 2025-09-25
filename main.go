@@ -3249,18 +3249,20 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 		}
 	}
 
-	// 如果数据量超出，随机移除多余数据
+	// 如果数据量超出，优先移除低RTP数据
 	if len(adjustedData) > dataNum {
 		excess := len(adjustedData) - dataNum
 		printf("🔄 数据量超出，需要移除 %d 条数据\n", excess)
 
-		// 随机移除数据
-		perm := rng.Perm(len(adjustedData))
-		var newData []GameResultData
-		for i := 0; i < len(adjustedData)-excess; i++ {
-			newData = append(newData, adjustedData[perm[i]])
-		}
-		adjustedData = newData
+		// 按RTP从低到高排序，优先移除低RTP数据
+		sort.Slice(adjustedData, func(i, j int) bool {
+			rtpI := adjustedData[i].AW / perSpinBet
+			rtpJ := adjustedData[j].AW / perSpinBet
+			return rtpI < rtpJ
+		})
+
+		// 移除前excess个低RTP数据
+		adjustedData = adjustedData[excess:]
 	}
 
 	// 最终统计
