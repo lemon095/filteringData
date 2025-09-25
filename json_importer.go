@@ -960,6 +960,8 @@ func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName str
 		rtpLevelVal := float64(rtpLevel)
 		if mode == "fb" {
 			rtpLevelVal = float64(rtpLevel) + 0.1
+		}else{
+			rtpLevelVal = float64(rtpLevel) + 0.2
 		}
 
 		*globalSrId++ // 递增全局srId

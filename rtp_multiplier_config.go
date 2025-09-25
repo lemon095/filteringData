@@ -226,26 +226,26 @@ func AdjustRTPByReplacement(data []GameResultData, targetRTP float64, totalBet f
 	// 例如：配置不中奖率0.77，允许范围0.75-0.79，对应中奖率0.21-0.25
 	if winRateDeviation <= 0.02 {
 		// 中奖率偏差在可接受范围内，检查RTP是否也满足要求
-		// RTP必须满足最低值（配置值），上浮只允许0.005内的偏差
-		// 例如：目标0.97，允许范围0.97-0.975
-		if currentRTP >= targetRTP && currentRTP <= targetRTP+0.005 {
+		// 为特定RTP档位设置不同的偏差容忍度
+		rtpTolerance := getRTPTolerance(rtpLevel)
+		if currentRTP >= targetRTP && currentRTP <= targetRTP+rtpTolerance {
 			return data, nil
 		}
 	} else {
 		// 中奖率偏差超出2%，需要调整不中奖率
-		fmt.Printf("📊 中奖率偏差超出2%范围，当前偏差: %.4f\n", winRateDeviation)
+		fmt.Printf("📊 中奖率偏差超出2%%范围，当前偏差: %.4f\n", winRateDeviation)
 	}
 
 	// 如果RTP超出目标，优先替换大倍率区间的数据
 	if currentRTP > targetRTP {
-		return adjustRTPDownFlexible(data, targetRTP, totalBet, dataRanges)
+		return adjustRTPDownFlexible(data, targetRTP, totalBet, dataRanges, rtpLevel)
 	}
 
 	// 如果RTP不足，使用灵活的调整策略
 	if currentRTP < targetRTP {
 		fmt.Printf("📈 RTP过低，需要提升...\n")
 		// 优先在1-5倍和5-10倍区间内调整
-		return adjustRTPUpFlexible(data, targetRTP, totalBet, dataRanges)
+		return adjustRTPUpFlexible(data, targetRTP, totalBet, dataRanges, rtpLevel)
 	}
 
 	return data, nil
@@ -432,7 +432,7 @@ func adjustRTPUpAggressive(data []GameResultData, targetRTP float64, totalBet fl
 }
 
 // adjustRTPDownFlexible 灵活的RTP降低策略（跨区间替换大金额为不中奖）
-func adjustRTPDownFlexible(data []GameResultData, targetRTP float64, totalBet float64, dataRanges map[string]MultiplierRange) ([]GameResultData, error) {
+func adjustRTPDownFlexible(data []GameResultData, targetRTP float64, totalBet float64, dataRanges map[string]MultiplierRange, rtpLevel int) ([]GameResultData, error) {
 	result := make([]GameResultData, len(data))
 	copy(result, data)
 
@@ -524,9 +524,10 @@ func adjustRTPDownFlexible(data []GameResultData, targetRTP float64, totalBet fl
 			zeroWinItem := zeroWinData[0] // 使用第一个不中奖数据
 			result[itemInfo.index] = zeroWinItem
 
-			// 检查RTP是否满足要求（必须满足最低值，上浮只允许0.005）
+			// 检查RTP是否满足要求（必须满足最低值，上浮允许根据档位调整）
 			newRTP := CalculateRTP(result, totalBet)
-			if newRTP >= targetRTP && newRTP <= targetRTP+0.005 {
+			rtpTolerance := getRTPTolerance(rtpLevel)
+			if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
 				return result, nil
 			}
 		}
@@ -536,7 +537,7 @@ func adjustRTPDownFlexible(data []GameResultData, targetRTP float64, totalBet fl
 }
 
 // adjustRTPUpFlexible 灵活的RTP提升策略（优先在1-5倍和5-10倍区间调整）
-func adjustRTPUpFlexible(data []GameResultData, targetRTP float64, totalBet float64, dataRanges map[string]MultiplierRange) ([]GameResultData, error) {
+func adjustRTPUpFlexible(data []GameResultData, targetRTP float64, totalBet float64, dataRanges map[string]MultiplierRange, rtpLevel int) ([]GameResultData, error) {
 	result := make([]GameResultData, len(data))
 	copy(result, data)
 
@@ -570,9 +571,10 @@ func adjustRTPUpFlexible(data []GameResultData, targetRTP float64, totalBet floa
 				if highData.AW > item.AW {
 					result[i] = highData
 
-					// 检查RTP是否满足要求（必须满足最低值，上浮只允许0.005）
+					// 检查RTP是否满足要求（必须满足最低值，上浮允许根据档位调整）
 					newRTP := CalculateRTP(result, totalBet)
-					if newRTP >= targetRTP && newRTP <= targetRTP+0.005 {
+					rtpTolerance := getRTPTolerance(rtpLevel)
+					if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
 						return result, nil
 					}
 					break
@@ -608,9 +610,10 @@ func adjustRTPUpFlexible(data []GameResultData, targetRTP float64, totalBet floa
 				if highData.AW > item.AW {
 					result[i] = highData
 
-					// 检查RTP是否满足要求（必须满足最低值，上浮只允许0.005）
+					// 检查RTP是否满足要求（必须满足最低值，上浮允许根据档位调整）
 					newRTP := CalculateRTP(result, totalBet)
-					if newRTP >= targetRTP && newRTP <= targetRTP+0.005 {
+					rtpTolerance := getRTPTolerance(rtpLevel)
+					if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
 						return result, nil
 					}
 					break
@@ -755,6 +758,19 @@ func GetTargetNoWinRateByRtpLevel(config *RtpMultiplierConfig, rtpLevel int) flo
 		return level.MultiplierDistribution.ZeroWin
 	}
 	return 0.77 // 默认值
+}
+
+// getRTPTolerance 根据RTP档位获取RTP偏差容忍度
+func getRTPTolerance(rtpLevel int) float64 {
+	// 特定RTP档位使用更宽松的偏差容忍度（0.05）
+	highToleranceLevels := []int{15, 300, 500, 14, 120, 150, 200}
+	for _, level := range highToleranceLevels {
+		if rtpLevel == level {
+			return 0.05
+		}
+	}
+	// 其他档位使用严格的偏差容忍度（0.005）
+	return 0.005
 }
 
 // GetMultiplierDistributionByRtpLevel 根据RTP档位获取倍率分布配置
