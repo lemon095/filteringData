@@ -536,28 +536,50 @@ func adjustRTPDownFlexible(data []GameResultData, targetRTP float64, totalBet fl
 	return result, nil
 }
 
-// adjustRTPUpFlexible 灵活的RTP提升策略（优先在1-5倍和5-10倍区间调整）
+// adjustRTPUpFlexible 智能的RTP提升策略（根据档位选择调整区间）
 func adjustRTPUpFlexible(data []GameResultData, targetRTP float64, totalBet float64, dataRanges map[string]MultiplierRange, rtpLevel int) ([]GameResultData, error) {
+	// 获取该档位的调整策略
+	strategy := getAdjustmentStrategy(rtpLevel)
+
+	// 计算允许的最大5-10倍数量
+	maxHighMultiplierCount := int(float64(len(data)) * strategy.MaxHighMultiplierRatio)
+
 	result := make([]GameResultData, len(data))
 	copy(result, data)
 
-	// 优先调整的区间：1-5倍和5-10倍
-	priorityRanges := []string{"medium_multiplier", "high_multiplier"}
+	// 优先使用主要调整区间
+	if strategy.PrimaryRange == "medium_multiplier" {
+		// 低档位：主要用1-5倍调整
+		return adjustUsingMediumMultiplier(result, targetRTP, totalBet, dataRanges, rtpLevel, maxHighMultiplierCount)
+	} else {
+		// 高档位：可以用5-10倍调整
+		return adjustUsingHighMultiplier(result, targetRTP, totalBet, dataRanges, rtpLevel, maxHighMultiplierCount)
+	}
+}
 
-	// 收集这些区间的可用数据
-	var availableData []GameResultData
-	for _, rangeName := range priorityRanges {
-		if len(dataRanges[rangeName].Data) > 0 {
-			availableData = append(availableData, dataRanges[rangeName].Data...)
-		}
+// adjustUsingMediumMultiplier 使用1-5倍区间进行RTP调整（适用于低档位）
+func adjustUsingMediumMultiplier(data []GameResultData, targetRTP float64, totalBet float64, dataRanges map[string]MultiplierRange, rtpLevel int, maxHighMultiplierCount int) ([]GameResultData, error) {
+	// 使用新的平衡替换策略
+	return adjustRTPBalanced(data, targetRTP, totalBet, dataRanges, rtpLevel, maxHighMultiplierCount)
+}
+
+// adjustUsingMediumMultiplierOld 旧的RTP调整方法（保留作为备用）
+func adjustUsingMediumMultiplierOld(data []GameResultData, targetRTP float64, totalBet float64, dataRanges map[string]MultiplierRange, rtpLevel int, maxHighMultiplierCount int) ([]GameResultData, error) {
+	result := make([]GameResultData, len(data))
+	copy(result, data)
+
+	// 收集1-5倍区间的可用数据
+	var mediumData []GameResultData
+	if len(dataRanges["medium_multiplier"].Data) > 0 {
+		mediumData = append(mediumData, dataRanges["medium_multiplier"].Data...)
 	}
 
 	// 按金额从大到小排序
-	sort.Slice(availableData, func(i, j int) bool {
-		return availableData[i].AW > availableData[j].AW
+	sort.Slice(mediumData, func(i, j int) bool {
+		return mediumData[i].AW > mediumData[j].AW
 	})
 
-	// 找到低倍率数据并替换
+	// 主要用1-5倍数据替换0-1倍数据
 	for i, item := range result {
 		if item.AW == 0 {
 			continue
@@ -566,12 +588,12 @@ func adjustRTPUpFlexible(data []GameResultData, targetRTP float64, totalBet floa
 		multiplier := item.AW / totalBet
 		// 只替换低倍率数据（0-1倍区间）
 		if multiplier > 0 && multiplier <= 1 {
-			// 寻找合适的高倍率数据替换
-			for _, highData := range availableData {
-				if highData.AW > item.AW {
-					result[i] = highData
+			// 寻找合适的1-5倍数据替换
+			for _, mediumItem := range mediumData {
+				if mediumItem.AW > item.AW {
+					result[i] = mediumItem
 
-					// 检查RTP是否满足要求（必须满足最低值，上浮允许根据档位调整）
+					// 检查RTP是否满足要求
 					newRTP := CalculateRTP(result, totalBet)
 					rtpTolerance := getRTPTolerance(rtpLevel)
 					if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
@@ -583,46 +605,200 @@ func adjustRTPUpFlexible(data []GameResultData, targetRTP float64, totalBet floa
 		}
 	}
 
-	// 如果1-5倍和5-10倍区间调整不够，再考虑其他区间
-	otherRanges := []string{"very_high_multiplier", "mega_multiplier", "super_mega_multiplier", "ultra_mega_multiplier"}
-	var otherData []GameResultData
-	for _, rangeName := range otherRanges {
-		if len(dataRanges[rangeName].Data) > 0 {
-			otherData = append(otherData, dataRanges[rangeName].Data...)
-		}
-	}
-
-	// 按金额从大到小排序
-	sort.Slice(otherData, func(i, j int) bool {
-		return otherData[i].AW > otherData[j].AW
-	})
-
-	// 继续替换低倍率数据
-	for i, item := range result {
-		if item.AW == 0 {
-			continue
+	// 如果1-5倍调整不够，且5-10倍使用量未超限，则使用5-10倍
+	if checkRangeLimit(result, "high_multiplier", maxHighMultiplierCount, totalBet, dataRanges) {
+		var highData []GameResultData
+		if len(dataRanges["high_multiplier"].Data) > 0 {
+			highData = append(highData, dataRanges["high_multiplier"].Data...)
 		}
 
-		multiplier := item.AW / totalBet
-		// 替换1-5倍区间的数据
-		if multiplier > 1 && multiplier <= 5 {
-			for _, highData := range otherData {
-				if highData.AW > item.AW {
-					result[i] = highData
+		// 按金额从大到小排序
+		sort.Slice(highData, func(i, j int) bool {
+			return highData[i].AW > highData[j].AW
+		})
 
-					// 检查RTP是否满足要求（必须满足最低值，上浮允许根据档位调整）
-					newRTP := CalculateRTP(result, totalBet)
-					rtpTolerance := getRTPTolerance(rtpLevel)
-					if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
-						return result, nil
+		// 用5-10倍数据替换0-1倍数据
+		for i, item := range result {
+			if item.AW == 0 {
+				continue
+			}
+
+			multiplier := item.AW / totalBet
+			if multiplier > 0 && multiplier <= 1 {
+				for _, highItem := range highData {
+					if highItem.AW > item.AW {
+						result[i] = highItem
+
+						// 检查RTP是否满足要求
+						newRTP := CalculateRTP(result, totalBet)
+						rtpTolerance := getRTPTolerance(rtpLevel)
+						if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
+							return result, nil
+						}
+						break
 					}
-					break
 				}
 			}
 		}
 	}
 
 	return result, nil
+}
+
+// adjustUsingHighMultiplier 使用5-10倍区间进行RTP调整（适用于高档位）
+func adjustUsingHighMultiplier(data []GameResultData, targetRTP float64, totalBet float64, dataRanges map[string]MultiplierRange, rtpLevel int, maxHighMultiplierCount int) ([]GameResultData, error) {
+	// 使用新的平衡替换策略
+	return adjustRTPBalanced(data, targetRTP, totalBet, dataRanges, rtpLevel, maxHighMultiplierCount)
+}
+
+// adjustUsingHighMultiplierOld 旧的RTP调整方法（保留作为备用）
+func adjustUsingHighMultiplierOld(data []GameResultData, targetRTP float64, totalBet float64, dataRanges map[string]MultiplierRange, rtpLevel int, maxHighMultiplierCount int) ([]GameResultData, error) {
+	result := make([]GameResultData, len(data))
+	copy(result, data)
+
+	// 收集5-10倍区间的可用数据
+	var highData []GameResultData
+	if len(dataRanges["high_multiplier"].Data) > 0 {
+		highData = append(highData, dataRanges["high_multiplier"].Data...)
+	}
+
+	// 按金额从大到小排序
+	sort.Slice(highData, func(i, j int) bool {
+		return highData[i].AW > highData[j].AW
+	})
+
+	// 用5-10倍数据替换低倍率数据
+	for i, item := range result {
+		if item.AW == 0 {
+			continue
+		}
+
+		multiplier := item.AW / totalBet
+		// 替换低倍率数据（0-1倍和1-5倍区间）
+		if multiplier > 0 && multiplier <= 5 {
+			// 检查5-10倍使用量是否超限
+			if checkRangeLimit(result, "high_multiplier", maxHighMultiplierCount, totalBet, dataRanges) {
+				for _, highItem := range highData {
+					if highItem.AW > item.AW {
+						result[i] = highItem
+
+						// 检查RTP是否满足要求
+						newRTP := CalculateRTP(result, totalBet)
+						rtpTolerance := getRTPTolerance(rtpLevel)
+						if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
+							return result, nil
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// AdjustmentStrategy 调整策略结构体
+type AdjustmentStrategy struct {
+	PrimaryRange           string  // 主要调整区间
+	SecondaryRange         string  // 次要调整区间
+	MaxHighMultiplierRatio float64 // 5-10倍最大使用比例
+}
+
+// getAdjustmentStrategy 根据RTP档位获取调整策略
+func getAdjustmentStrategy(rtpLevel int) AdjustmentStrategy {
+	// 低档位：主要用1-5倍调整，5-10倍使用很少
+	lowLevels := []int{1, 2, 3, 4, 5, 20, 30, 40, 50}
+	// 中档位：平衡使用1-5倍和5-10倍
+	midLevels := []int{6, 7, 8, 9, 10, 11, 12, 13}
+	// 高档位：可以使用更多5-10倍
+	highLevels := []int{14, 15, 120, 150, 200, 300, 500}
+
+	for _, level := range lowLevels {
+		if rtpLevel == level {
+			return AdjustmentStrategy{
+				PrimaryRange:           "medium_multiplier", // 主要用1-5倍
+				SecondaryRange:         "high_multiplier",   // 次要用5-10倍
+				MaxHighMultiplierRatio: 0.05,                // 5-10倍最多不超过5%
+			}
+		}
+	}
+
+	for _, level := range midLevels {
+		if rtpLevel == level {
+			return AdjustmentStrategy{
+				PrimaryRange:           "medium_multiplier",
+				SecondaryRange:         "high_multiplier",
+				MaxHighMultiplierRatio: 0.1, // 5-10倍最多不超过10%
+			}
+		}
+	}
+
+	for _, level := range highLevels {
+		if rtpLevel == level {
+			return AdjustmentStrategy{
+				PrimaryRange:           "high_multiplier", // 高档位可以主要用5-10倍
+				SecondaryRange:         "very_high_multiplier",
+				MaxHighMultiplierRatio: 0.3, // 5-10倍最多不超过30%
+			}
+		}
+	}
+
+	// 默认策略
+	return AdjustmentStrategy{
+		PrimaryRange:           "medium_multiplier",
+		SecondaryRange:         "high_multiplier",
+		MaxHighMultiplierRatio: 0.1,
+	}
+}
+
+// calculateRangeCounts 计算当前各区间使用量
+func calculateRangeCounts(data []GameResultData, totalBet float64, dataRanges map[string]MultiplierRange) map[string]int {
+	counts := make(map[string]int)
+
+	for _, item := range data {
+		if item.AW == 0 {
+			counts["zero_win"]++
+			continue
+		}
+
+		multiplier := item.AW / totalBet
+		if multiplier > 0 && multiplier <= 1 {
+			counts["low_multiplier"]++
+		} else if multiplier > 1 && multiplier <= 5 {
+			counts["medium_multiplier"]++
+		} else if multiplier > 5 && multiplier <= 10 {
+			counts["high_multiplier"]++
+		} else if multiplier > 10 && multiplier <= 20 {
+			counts["very_high_multiplier"]++
+		} else if multiplier > 20 && multiplier <= 50 {
+			counts["mega_multiplier"]++
+		} else if multiplier > 50 && multiplier <= 100 {
+			counts["super_mega_multiplier"]++
+		} else if multiplier > 100 && multiplier <= 500 {
+			counts["ultra_mega_multiplier"]++
+		}
+	}
+
+	return counts
+}
+
+// checkRangeLimit 检查区间使用量是否超过限制
+func checkRangeLimit(data []GameResultData, rangeName string, maxCount int, totalBet float64, dataRanges map[string]MultiplierRange) bool {
+	count := 0
+	for _, item := range data {
+		if item.AW == 0 {
+			if rangeName == "zero_win" {
+				count++
+			}
+			continue
+		}
+		multiplier := item.AW / totalBet
+		if isInRange(multiplier, dataRanges[rangeName].Min, dataRanges[rangeName].Max) {
+			count++
+		}
+	}
+	return count < maxCount
 }
 
 // isInRange 检查倍率是否在指定范围内

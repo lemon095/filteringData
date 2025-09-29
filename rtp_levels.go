@@ -25,13 +25,13 @@ var RtpLevels = []RtpLevel{
 	{RtpNo: 30, Rtp: 0.3},
 	{RtpNo: 40, Rtp: 0.4},
 	{RtpNo: 50, Rtp: 0.5},
-	{RtpNo: 15, Rtp: 2},
-	{RtpNo: 300, Rtp: 3.0},
-	{RtpNo: 500, Rtp: 5.0},
 	{RtpNo: 14, Rtp: 1.5},
+	{RtpNo: 15, Rtp: 2},
 	{RtpNo: 120, Rtp: 1.2},
 	{RtpNo: 150, Rtp: 1.5},
 	{RtpNo: 200, Rtp: 2.0},
+	{RtpNo: 300, Rtp: 3.0},
+	{RtpNo: 500, Rtp: 5.0},
 }
 
 // RtpLevelsTest 测试RTP等级配置

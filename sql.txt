@@ -1,0 +1,78 @@
+SELECT 
+    -- 总记录数
+    COUNT(*) as total_records,
+    
+    -- 不中奖的记录数（win <= 0）
+    COUNT(CASE WHEN ("totalBet"" + "profit") <= 0 THEN 1 END) as no_win_count,
+    
+    -- 中奖的记录数（win > 0）
+    COUNT(CASE WHEN ("totalBet" + "profit") > 0 THEN 1 END) as win_count,
+    
+    -- 中一倍奖励的记录数（0 < win <= "totalBet"）
+    COUNT(CASE WHEN ("totalBet" + "profit") > 0 AND ("totalBet" + "profit") <= "totalBet" THEN 1 END) as one_multiple_count,
+    
+    -- 大于1倍，小于等于5倍的记录数（"totalBet" < win <= 5*"totalBet"）
+    COUNT(CASE WHEN ("totalBet" + "profit") > "totalBet" AND ("totalBet" + "profit") <= 5 * "totalBet" THEN 1 END) as one_to_five_multiple_count,
+    
+    -- 5-10倍的记录数（5*"totalBet" < win <= 10*"totalBet"）
+    COUNT(CASE WHEN ("totalBet" + "profit") > 5 * "totalBet" AND ("totalBet" + "profit") <= 10 * "totalBet" THEN 1 END) as five_to_ten_multiple_count,
+    
+    -- 10-20倍的记录数（10*"totalBet" < win <= 20*"totalBet"）
+    COUNT(CASE WHEN ("totalBet" + "profit") > 10 * "totalBet" AND ("totalBet" + "profit") <= 20 * "totalBet" THEN 1 END) as ten_to_twenty_multiple_count,
+    
+    -- 20-50倍的记录数（20*"totalBet" < win <= 50*"totalBet"）
+    COUNT(CASE WHEN ("totalBet" + "profit") > 20 * "totalBet" AND ("totalBet" + "profit") <= 50 * "totalBet" THEN 1 END) as twenty_to_fifty_multiple_count,
+    
+    -- 50倍以上的记录数（win > 50*"totalBet"）
+    COUNT(CASE WHEN ("totalBet" + "profit") > 50 * "totalBet" THEN 1 END) as fifty_plus_multiple_count,
+    
+    -- 不中奖占比（保留4位小数）
+    ROUND(
+        COUNT(CASE WHEN ("totalBet" + "profit") <= 0 THEN 1 END) * 100.0 / COUNT(*), 
+        4
+    ) as no_win_percentage,
+    
+    -- 中奖占比（保留4位小数）
+    ROUND(
+        COUNT(CASE WHEN ("totalBet" + "profit") > 0 THEN 1 END) * 100.0 / COUNT(*), 
+        4
+    ) as win_percentage,
+    
+    -- 中一倍奖励的占比（保留4位小数）
+    ROUND(
+        COUNT(CASE WHEN ("totalBet" + "profit") > 0 AND ("totalBet" + "profit") <= "totalBet" THEN 1 END) * 100.0 / COUNT(*), 
+        4
+    ) as one_multiple_percentage,
+    
+    -- 大于1倍，小于等于5倍的占比（保留4位小数）
+    ROUND(
+        COUNT(CASE WHEN ("totalBet" + "profit") > "totalBet" AND ("totalBet" + "profit") <= 5 * "totalBet" THEN 1 END) * 100.0 / COUNT(*), 
+        4
+    ) as one_to_five_multiple_percentage,
+    
+    -- 5-10倍占比（保留4位小数）
+    ROUND(
+        COUNT(CASE WHEN ("totalBet" + "profit") > 5 * "totalBet" AND ("totalBet" + "profit") <= 10 * "totalBet" THEN 1 END) * 100.0 / COUNT(*), 
+        4
+    ) as five_to_ten_multiple_percentage,
+    
+    -- 10-20倍占比（保留4位小数）
+    ROUND(
+        COUNT(CASE WHEN ("totalBet" + "profit") > 10 * "totalBet" AND ("totalBet" + "profit") <= 20 * "totalBet" THEN 1 END) * 100.0 / COUNT(*), 
+        4
+    ) as ten_to_twenty_multiple_percentage,
+    
+    -- 20-50倍占比（保留4位小数）
+    ROUND(
+        COUNT(CASE WHEN ("totalBet" + "profit") > 20 * "totalBet" AND ("totalBet" + "profit") <= 50 * "totalBet" THEN 1 END) * 100.0 / COUNT(*), 
+        4
+    ) as twenty_to_fifty_multiple_percentage,
+    
+    -- 50倍以上占比（保留4位小数）
+    ROUND(
+        COUNT(CASE WHEN ("totalBet" + "profit") > 50 * "totalBet" THEN 1 END) * 100.0 / COUNT(*), 
+        4
+    ) as fifty_plus_multiple_percentage
+
+FROM public."GameHistory_20250928"
+WHERE "gameID" = 1513328;
