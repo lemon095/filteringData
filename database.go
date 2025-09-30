@@ -251,13 +251,13 @@ func (d *Database) GetProfitData() ([]GameResultData, error) {
 	return data, nil
 }
 
-// GetWinDataFb 获取购买模式的中奖但是亏损的数据 (aw > 0&aw<tb, gwt <= 1, fb = 2, sp = true, aw < tb*100)
+// GetWinDataFb 获取购买模式的中奖但是亏损的数据 (aw > 0&aw<tb, gwt <= 3, fb = 2, sp = true, aw < tb*100)
 func (d *Database) GetWinDataFb() ([]GameResultData, error) {
 	tableName := d.GetTableName()
 	query := fmt.Sprintf(`
         SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
         FROM %s 
-        WHERE aw > 0 AND aw <= tb AND gwt <= 1 AND fb = 2 AND sp = true
+        WHERE aw > 0 AND aw <= tb AND gwt <= 3 AND fb = 2 AND sp = true
         ORDER BY id
     `, tableName)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
@@ -291,7 +291,7 @@ func (d *Database) GetProfitDataFb() ([]GameResultData, error) {
 	query := fmt.Sprintf(`
         SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
         FROM %s 
-        WHERE aw > 0 AND aw > tb AND gwt <= 1 AND fb = 2 AND sp = true
+        WHERE aw > 0 AND aw > tb AND gwt <= 3 AND fb = 2 AND sp = true
         ORDER BY id
     `, tableName)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
@@ -454,7 +454,7 @@ func (d *Database) GetWinDataForFilling(remainingWin float64, excludeIds []int, 
 }
 
 // GetWinDataForFillingFb 获取用于填充的购买模式中奖数据
-// 条件：aw > 0 且 aw < tb*100 且 aw <= remainingWin，gwt <= 1，fb = 2，sp = true
+// 条件：aw > 0 且 aw < tb*100 且 aw <= remainingWin，gwt <= 3，fb = 2，sp = true
 // 排除 excludeIds，按金额从大到小排序，限制返回条数
 func (d *Database) GetWinDataForFillingFb(remainingWin float64, excludeIds []int, limit int) ([]GameResultData, error) {
 	tableName := d.GetTableName()
@@ -479,7 +479,7 @@ func (d *Database) GetWinDataForFillingFb(remainingWin float64, excludeIds []int
         WHERE aw > 0 
         AND aw < tb * 100
         AND aw <= $%d
-        AND gwt <= 1
+        AND gwt <= 3
         AND fb = 2
         AND sp = true
         %s

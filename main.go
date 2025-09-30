@@ -1714,6 +1714,332 @@ func runImportModeWithGameId(gameId int, levelId string, env string) {
 	fmt.Println("✅ 导入完成！")
 }
 
+// smartFillFbData 智能填充购买夺宝数据（动态平衡数量和RTP）
+func smartFillFbData(data []GameResultData, totalWin, totalBet float64, targetCount int,
+	targetRTP, rtpLowerLimit, maxAllowWin float64, unusedData []GameResultData,
+	usedIds map[int]bool, rng *rand.Rand) ([]GameResultData, float64) {
+
+	printf := func(format string, args ...interface{}) {
+		fmt.Printf(format, args...)
+	}
+
+	// 第一阶段：智能填充到目标数量
+	printf("\n🎯 阶段1：智能填充数据到目标数量\n")
+	currentRTP := totalWin / totalBet
+	rtpGap := targetRTP - currentRTP
+	needCount := targetCount - len(data)
+
+	printf("需要填充: %d 条, 当前RTP: %.6f, 目标RTP: %.6f, RTP差距: %.6f\n",
+		needCount, currentRTP, targetRTP, rtpGap)
+
+	// 按金额排序，准备分级数据
+	sortedData := make([]GameResultData, len(unusedData))
+	copy(sortedData, unusedData)
+	sort.Slice(sortedData, func(i, j int) bool {
+		return sortedData[i].AW < sortedData[j].AW
+	})
+
+	// 将数据分为三档：小金额、中金额、大金额
+	smallThreshold := len(sortedData) / 3
+	largeThreshold := len(sortedData) * 2 / 3
+
+	var smallAW, mediumAW, largeAW []GameResultData
+	for i, item := range sortedData {
+		if i < smallThreshold {
+			smallAW = append(smallAW, item)
+		} else if i < largeThreshold {
+			mediumAW = append(mediumAW, item)
+		} else {
+			largeAW = append(largeAW, item)
+		}
+	}
+
+	printf("数据分级 - 小金额: %d 条, 中金额: %d 条, 大金额: %d 条\n",
+		len(smallAW), len(mediumAW), len(largeAW))
+
+	// 根据RTP差距选择填充策略
+	var fillSource []GameResultData
+	var strategyName string
+
+	if rtpGap > 0.02 {
+		// RTP严重不足（差距>2%），主要使用大金额数据
+		strategyName = "大金额为主"
+		fillSource = append(fillSource, largeAW...)
+		fillSource = append(fillSource, mediumAW...)
+		fillSource = append(fillSource, smallAW...)
+	} else if rtpGap > 0.005 {
+		// RTP略微不足（0.5%-2%），主要使用中金额数据
+		strategyName = "中金额为主"
+		fillSource = append(fillSource, mediumAW...)
+		fillSource = append(fillSource, largeAW...)
+		fillSource = append(fillSource, smallAW...)
+	} else if rtpGap > -0.005 {
+		// RTP接近目标（±0.5%），混合使用
+		strategyName = "混合策略"
+		fillSource = append(fillSource, mediumAW...)
+		fillSource = append(fillSource, smallAW...)
+		fillSource = append(fillSource, largeAW...)
+	} else {
+		// RTP超标（差距<-0.5%），主要使用小金额数据
+		strategyName = "小金额为主"
+		fillSource = append(fillSource, smallAW...)
+		fillSource = append(fillSource, mediumAW...)
+		fillSource = append(fillSource, largeAW...)
+	}
+
+	printf("选择策略: %s (RTP差距: %.6f)\n", strategyName, rtpGap)
+
+	// 执行智能填充
+	filled := 0
+	perm := rng.Perm(len(fillSource))
+	for i := 0; i < needCount && i < len(perm); i++ {
+		idx := perm[i]
+		item := fillSource[idx]
+
+		// 检查是否已使用
+		if usedIds[item.ID] {
+			continue
+		}
+
+		// 检查RTP上限
+		newTotalWin := totalWin + item.AW
+		if newTotalWin <= maxAllowWin {
+			data = append(data, item)
+			totalWin += item.AW
+			usedIds[item.ID] = true
+			filled++
+		}
+	}
+
+	printf("✅ 阶段1完成: 填充 %d 条, 当前数量: %d/%d, 当前RTP: %.6f\n",
+		filled, len(data), targetCount, totalWin/totalBet)
+
+	// 预处理：如果RTP超标且金额接近上限，先替换大金额为小金额
+	currentRTPBeforeFill := totalWin / totalBet
+	if len(data) < targetCount && currentRTPBeforeFill > targetRTP && totalWin >= maxAllowWin*0.99 {
+		stillNeed := targetCount - len(data)
+		printf("⚠️ RTP超标且金额接近上限，先替换 %d 条大金额为小金额\n", min(stillNeed, len(data)/10))
+
+		// 对现有数据按金额从大到小排序
+		sort.Slice(data, func(i, j int) bool {
+			return data[i].AW > data[j].AW
+		})
+
+		// 准备小金额替换数据
+		var smallReplacements []GameResultData
+		for _, item := range smallAW {
+			if !usedIds[item.ID] {
+				smallReplacements = append(smallReplacements, item)
+			}
+		}
+		sort.Slice(smallReplacements, func(i, j int) bool {
+			return smallReplacements[i].AW < smallReplacements[j].AW
+		})
+
+		// 执行预替换（最多替换10%）
+		replaceCount := min(stillNeed, len(data)/10)
+		if replaceCount > len(smallReplacements) {
+			replaceCount = len(smallReplacements)
+		}
+
+		replaced := 0
+		for i := 0; i < replaceCount && i < len(data) && i < len(smallReplacements); i++ {
+			oldItem := data[i]
+			newItem := smallReplacements[i]
+
+			if newItem.AW < oldItem.AW {
+				data[i] = newItem
+				totalWin = totalWin - oldItem.AW + newItem.AW
+				delete(usedIds, oldItem.ID)
+				usedIds[newItem.ID] = true
+				replaced++
+			}
+		}
+		printf("✅ 预替换完成: %d 条, 新RTP: %.6f, 释放空间: %.2f\n",
+			replaced, totalWin/totalBet, maxAllowWin-totalWin)
+	}
+
+	// 如果数据量还不够，重复使用
+	if len(data) < targetCount {
+		stillNeed := targetCount - len(data)
+		printf("🔄 数据量仍不足 %d 条，重复使用数据填充...\n", stillNeed)
+
+		// 如果当前RTP已经超标，优先使用最小金额的数据
+		currentRTPNow := totalWin / totalBet
+		if currentRTPNow > targetRTP {
+			printf("⚠️ 当前RTP已超标 (%.6f > %.6f)，使用最小金额数据填充\n", currentRTPNow, targetRTP)
+			// 使用smallAW（最小金额数据）
+			sort.Slice(fillSource, func(i, j int) bool {
+				return fillSource[i].AW < fillSource[j].AW
+			})
+		}
+
+		// 重复填充，放宽RTP上限检查
+		relaxedUpperBound := maxAllowWin * 1.01 // 允许超出1%
+		for i := 0; i < stillNeed; i++ {
+			idx := i % len(fillSource)
+			item := fillSource[idx]
+
+			newTotalWin := totalWin + item.AW
+			// 如果数量严重不足且RTP接近目标，放宽限制
+			if newTotalWin <= relaxedUpperBound || (stillNeed > 100 && math.Abs(currentRTPNow-targetRTP) < 0.01) {
+				data = append(data, item)
+				totalWin += item.AW
+			} else if newTotalWin <= maxAllowWin {
+				data = append(data, item)
+				totalWin += item.AW
+			}
+		}
+		printf("✅ 重复填充完成, 当前数量: %d/%d, RTP: %.6f\n", len(data), targetCount, totalWin/totalBet)
+	}
+
+	// 第二阶段：数量足够后，进行RTP精确调整
+	printf("\n🎯 阶段2：RTP精确调整（数量已达标）\n")
+	finalRTP := totalWin / totalBet
+	finalRtpGap := targetRTP - finalRTP
+	printf("当前RTP: %.6f, 目标RTP: %.6f, RTP差距: %.6f\n", finalRTP, targetRTP, finalRtpGap)
+
+	// 如果RTP偏差超过0.5%，进行智能替换调整
+	if math.Abs(finalRtpGap) > 0.005 {
+		printf("⚠️ RTP偏差较大，开始智能替换调整...\n")
+
+		// 计算需要调整的次数（最多替换20%的数据）
+		maxReplacements := targetCount / 5
+		replaced := 0
+
+		if finalRtpGap > 0 {
+			// RTP不足，需要替换小金额为大金额
+			printf("📈 RTP不足，替换小金额为大金额数据\n")
+
+			// 对当前数据按金额排序
+			sort.Slice(data, func(i, j int) bool {
+				return data[i].AW < data[j].AW
+			})
+
+			// 准备大金额替换数据
+			var largeReplacements []GameResultData
+			for _, item := range largeAW {
+				if !usedIds[item.ID] {
+					largeReplacements = append(largeReplacements, item)
+				}
+			}
+			for _, item := range mediumAW {
+				if !usedIds[item.ID] {
+					largeReplacements = append(largeReplacements, item)
+				}
+			}
+
+			// 按金额从大到小排序
+			sort.Slice(largeReplacements, func(i, j int) bool {
+				return largeReplacements[i].AW > largeReplacements[j].AW
+			})
+
+			printf("可用的大金额替换数据: %d 条\n", len(largeReplacements))
+
+			// 执行替换
+			for i := 0; i < maxReplacements && i < len(data) && replaced < len(largeReplacements); i++ {
+				oldItem := data[i]
+				newItem := largeReplacements[replaced]
+
+				// 确保新数据的金额确实更大
+				if newItem.AW > oldItem.AW {
+					newTotalWin := totalWin - oldItem.AW + newItem.AW
+					newRTP := newTotalWin / totalBet
+
+					// 检查替换后RTP是否更接近目标，且不超过上限
+					if newTotalWin <= maxAllowWin && newRTP <= targetRTP+0.01 {
+						data[i] = newItem
+						totalWin = newTotalWin
+						delete(usedIds, oldItem.ID)
+						usedIds[newItem.ID] = true
+						replaced++
+
+						// 如果已经接近目标，提前停止
+						if math.Abs(targetRTP-newRTP) < 0.003 {
+							printf("✅ 已接近目标RTP，提前结束替换\n")
+							break
+						}
+					}
+				}
+			}
+
+			printf("✅ 替换完成: %d 条小金额→大金额, 新RTP: %.6f, 偏差: %.6f\n",
+				replaced, totalWin/totalBet, math.Abs(targetRTP-totalWin/totalBet))
+
+		} else {
+			// RTP超标，需要替换大金额为小金额
+			printf("📉 RTP超标，替换大金额为小金额数据\n")
+
+			// 对当前数据按金额从大到小排序
+			sort.Slice(data, func(i, j int) bool {
+				return data[i].AW > data[j].AW
+			})
+
+			// 准备小金额替换数据
+			var smallReplacements []GameResultData
+			for _, item := range smallAW {
+				if !usedIds[item.ID] {
+					smallReplacements = append(smallReplacements, item)
+				}
+			}
+			for _, item := range mediumAW {
+				if !usedIds[item.ID] {
+					smallReplacements = append(smallReplacements, item)
+				}
+			}
+
+			// 按金额从小到大排序
+			sort.Slice(smallReplacements, func(i, j int) bool {
+				return smallReplacements[i].AW < smallReplacements[j].AW
+			})
+
+			printf("可用的小金额替换数据: %d 条\n", len(smallReplacements))
+
+			// 执行替换
+			for i := 0; i < maxReplacements && i < len(data) && replaced < len(smallReplacements); i++ {
+				oldItem := data[i]
+				newItem := smallReplacements[replaced]
+
+				// 确保新数据的金额确实更小
+				if newItem.AW < oldItem.AW {
+					newTotalWin := totalWin - oldItem.AW + newItem.AW
+					newRTP := newTotalWin / totalBet
+
+					// 检查替换后RTP是否更接近目标，且不低于下限
+					if newRTP >= rtpLowerLimit && newRTP >= targetRTP-0.01 {
+						data[i] = newItem
+						totalWin = newTotalWin
+						delete(usedIds, oldItem.ID)
+						usedIds[newItem.ID] = true
+						replaced++
+
+						// 如果已经接近目标，提前停止
+						if math.Abs(targetRTP-newRTP) < 0.003 {
+							printf("✅ 已接近目标RTP，提前结束替换\n")
+							break
+						}
+					}
+				}
+			}
+
+			printf("✅ 替换完成: %d 条大金额→小金额, 新RTP: %.6f, 偏差: %.6f\n",
+				replaced, totalWin/totalBet, math.Abs(targetRTP-totalWin/totalBet))
+		}
+
+	} else {
+		printf("✅ RTP已在合理范围内 (偏差: %.6f < 0.005)，无需调整\n", math.Abs(finalRtpGap))
+	}
+
+	// 最终状态报告
+	printf("\n📊 最终状态：\n")
+	printf("  数据量: %d/%d (%.1f%%)\n", len(data), targetCount, float64(len(data))/float64(targetCount)*100)
+	printf("  RTP: %.6f (目标: %.6f, 下限: %.6f)\n", totalWin/totalBet, targetRTP, rtpLowerLimit)
+	printf("  RTP偏差: %.6f\n", math.Abs(targetRTP-totalWin/totalBet))
+	printf("  总中奖金额: %.2f (上限: %.2f)\n", totalWin, maxAllowWin)
+
+	return data, totalWin
+}
+
 // runGenerateFbMode 运行购买夺宝生成模式
 func runGenerateFbMode() {
 	// 加载配置
@@ -1763,7 +2089,7 @@ func runGenerateFbMode() {
 	fmt.Printf("✅ [generateFb] 购买模式不中奖数据条数: %d\n", len(noWinDataAll))
 
 	if len(winDataAll) == 0 {
-		fmt.Println("⚠️ [generateFb] 未获取到购买模式中奖数据，无法继续。请检查数据条件 (aw>0, gwt<=1, fb=2, sp=true)。")
+		fmt.Println("⚠️ [generateFb] 未获取到购买模式中奖数据，无法继续。请检查数据条件 (aw>0, gwt<=3, fb=2, sp=true)。")
 		return
 	}
 	if len(noWinDataAll) == 0 {
@@ -1863,13 +2189,13 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	// 已使用ID，避免单文件内重复
 	used := make(map[int]struct{}, targetCount)
 
-	// 辅助函数：尝试加入一条记录（不超过上限，过滤大奖/巨奖/超巨奖，去重）
+	// 辅助函数：尝试加入一条记录（不超过上限，过滤超巨奖gwt=4，去重）
 	tryAppend := func(item GameResultData) bool {
 		if _, ok := used[item.ID]; ok {
 			return false
 		}
-		switch item.GWT {
-		case 2, 3, 4:
+		// 只过滤超级巨奖（gwt=4），允许大奖和巨奖（gwt=2,3）
+		if item.GWT >= 4 {
 			return false
 		}
 		if item.AW <= 0 {
@@ -2037,26 +2363,61 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	}
 
 	// 阶段4：数量兜底，优先无放回补不中奖；若仍不足，再允许重复不中奖补满
-	if len(data) < targetCount && len(noWinDataAll) > 0 {
-		need := targetCount - len(data)
-		// 先无放回
-		perm := rng.Perm(len(noWinDataAll))
-		for _, idx := range perm {
-			if need == 0 {
-				break
+	if len(data) < targetCount {
+		if len(noWinDataAll) > 0 {
+			// 有不中奖数据，优先使用
+			need := targetCount - len(data)
+			// 先无放回
+			perm := rng.Perm(len(noWinDataAll))
+			for _, idx := range perm {
+				if need == 0 {
+					break
+				}
+				item := noWinDataAll[idx]
+				if _, ok := used[item.ID]; ok {
+					continue
+				}
+				data = append(data, item)
+				used[item.ID] = struct{}{}
+				need--
 			}
-			item := noWinDataAll[idx]
-			if _, ok := used[item.ID]; ok {
-				continue
+			// 再重复补齐（仅对不中奖允许重复，以保证条数）
+			if need > 0 {
+				for i := 0; i < need; i++ {
+					data = append(data, noWinDataAll[i%len(noWinDataAll)])
+				}
 			}
-			data = append(data, item)
-			used[item.ID] = struct{}{}
-			need--
-		}
-		// 再重复补齐（仅对不中奖允许重复，以保证条数）
-		if need > 0 {
-			for i := 0; i < need; i++ {
-				data = append(data, noWinDataAll[i%len(noWinDataAll)])
+		} else {
+			// 没有不中奖数据，使用智能填充机制
+			printf("⚠️ [FB] 没有不中奖数据，使用智能填充机制补足到目标数量...\n")
+
+			// 收集未使用的购买夺宝数据
+			var unusedFbData []GameResultData
+			for _, item := range winDataAll {
+				if _, ok := used[item.ID]; !ok {
+					unusedFbData = append(unusedFbData, item)
+				}
+			}
+			for _, item := range profitDataAll {
+				if _, ok := used[item.ID]; !ok {
+					unusedFbData = append(unusedFbData, item)
+				}
+			}
+
+			if len(unusedFbData) > 0 {
+				// 转换used为map[int]bool格式
+				usedIds := make(map[int]bool)
+				for id := range used {
+					usedIds[id] = true
+				}
+
+				// 调用智能填充函数
+				rtpLowerLimit := rtp * 0.98 // RTP下限为目标的98%
+				data, totalWin = smartFillFbData(data, totalWin, totalBet, targetCount,
+					rtp, rtpLowerLimit, upperBound, unusedFbData, usedIds, rng)
+
+			} else {
+				printf("⚠️ [FB] 没有可用的购买夺宝数据，无法补足\n")
 			}
 		}
 	}
@@ -2898,14 +3259,58 @@ func runRtpTestV3(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		// 如果还是不够，用不中奖数据填充（确保数量达标）
 		if len(data) < totalCount {
 			remaining := totalCount - len(data)
-			printf("🎯 还需要 %d 条数据，用不中奖数据填充确保数量达标\n", remaining)
+			printf("🎯 还需要 %d 条数据填充确保数量达标\n", remaining)
 
-			permNo := rng.Perm(len(noWinDataAll))
-			for i := 0; i < remaining && i < len(permNo); i++ {
-				idx := permNo[i]
-				data = append(data, noWinDataAll[idx])
+			if len(noWinDataAll) > 0 {
+				// 优先使用不中奖数据
+				printf("使用不中奖数据填充...\n")
+				permNo := rng.Perm(len(noWinDataAll))
+				for i := 0; i < remaining && i < len(permNo); i++ {
+					idx := permNo[i]
+					data = append(data, noWinDataAll[idx])
+				}
+				printf("✅ 不中奖数据填充: %d 条\n", remaining)
+			} else {
+				// 如果没有不中奖数据，使用购买夺宝的中奖数据（智能动态调整）
+				printf("⚠️ 没有不中奖数据，使用购买夺宝中奖数据（智能填充）...\n")
+
+				// 收集所有未使用的购买夺宝中奖数据
+				usedIds := make(map[int]bool)
+				for _, item := range data {
+					usedIds[item.ID] = true
+				}
+
+				var unusedFbWinData []GameResultData
+				// 先添加不盈利数据
+				for _, item := range notProfitData {
+					if !usedIds[item.ID] {
+						unusedFbWinData = append(unusedFbWinData, item)
+					}
+				}
+				// 再添加盈利数据
+				for _, item := range suitableProfitData {
+					if !usedIds[item.ID] {
+						unusedFbWinData = append(unusedFbWinData, item)
+					}
+				}
+
+				if len(unusedFbWinData) > 0 {
+					printf("📊 可用的购买夺宝数据: %d 条\n", len(unusedFbWinData))
+
+					// 计算当前RTP状态
+					currentRTP := totalWin / totalBet
+					rtpGap := rtp - currentRTP
+					printf("当前状态 - 数据量: %d/%d, RTP: %.6f/%.6f, RTP差距: %.6f\n",
+						len(data), totalCount, currentRTP, rtp, rtpGap)
+
+					// 智能填充策略
+					data, totalWin = smartFillFbData(data, totalWin, totalBet, totalCount,
+						rtp, rtpLowerLimit, maxAllowWin, unusedFbWinData, usedIds, rng)
+
+				} else {
+					printf("⚠️ 没有可用的购买夺宝数据，数据量不足: %d/%d\n", len(data), totalCount)
+				}
 			}
-			printf("✅ 不中奖数据填充: %d 条\n", remaining)
 		}
 	}
 
