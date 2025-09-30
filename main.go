@@ -2150,286 +2150,183 @@ func runGenerateFbMode() {
 	fmt.Printf("⏱️  [generateFb] 整体总耗时: %v\n", time.Since(fbStartTime))
 }
 
-// runRtpFbTest 生成购买夺宝 RTP 数据
+// runRtpFbTest 生成购买夺宝 RTP 数据（新策略：先随机选择，后调整RTP）
 func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData, profitDataAll []GameResultData) error {
 	var logBuf bytes.Buffer
 	printf := func(format string, a ...interface{}) {
 		fmt.Fprintf(&logBuf, format, a...)
 	}
 
-	//
 	const (
-		upperDeviation    = 0.005 // 允许上偏差
-		stage1MinRatio    = 0.60  // 第一阶段占比下限
-		stage1MaxRatio    = 0.80  // 第一阶段占比上限
-		stage3WinTopRatio = 0.90  // 第三阶段用 winDataAll 大额补齐比例
+		rtpTolerance    = 0.01 // RTP偏差容忍度（1%）
+		maxReplaceRatio = 0.30 // 最大替换比例（30%）
 	)
 
 	// 目标金额与边界
 	allowWin := totalBet * rtp
-	upperBound := allowWin * (1 + upperDeviation)
-	perSpinBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB
+	targetCount := config.Tables.DataNumFb
+	maxReplaceIterations := int(float64(targetCount) * maxReplaceRatio) // 最大替换次数为数据量的30%
 
 	printf("\n========== [FB TASK BEGIN] RtpNo: %.0f | Test: %d | %s =========\n", rtpLevel, testNumber, time.Now().Format(time.RFC3339))
-	printf("[FB] allowWin=%.4f (cs=%.2f ml=%.2f bl=%.2f fb=%.2f rtp=%.4f)\n", allowWin, config.Bet.CS, config.Bet.ML, config.Bet.BL, config.Bet.FB, rtp)
+	printf("[FB] 目标RTP=%.4f, 目标中奖=%.2f, 目标数量=%d\n", rtp, allowWin, targetCount)
 	printf("候选: win(not-profit)=%d, profit=%d, nowin=%d\n", len(winDataAll), len(profitDataAll), len(noWinDataAll))
 
 	// 随机源
 	seed := time.Now().UnixNano() ^ int64(config.Game.ID)*1_000_003 ^ int64(testNumber)*1_000_033 ^ int64(rtpLevel)*1_000_037
 	rng := rand.New(rand.NewSource(seed))
 
-	// 结果容器
+	// 合并所有候选数据（排除gwt>=4的超巨奖）
+	var allCandidates []GameResultData
+	for _, item := range profitDataAll {
+		if item.GWT < 4 && item.AW > 0 {
+			allCandidates = append(allCandidates, item)
+		}
+	}
+	for _, item := range winDataAll {
+		if item.GWT < 4 && item.AW > 0 {
+			allCandidates = append(allCandidates, item)
+		}
+	}
+
+	if len(allCandidates) < targetCount {
+		return fmt.Errorf("可用候选数据不足：需要%d条，实际%d条", targetCount, len(allCandidates))
+	}
+
+	printf("[FB] 步骤1：随机选择%d条数据...\n", targetCount)
+
+	// 步骤1：随机选择目标数量的数据
+	perm := rng.Perm(len(allCandidates))
 	var data []GameResultData
-	var totalWin float64
-	targetCount := config.Tables.DataNumFb
-	// 随机化阶段1比例 [60%, 80%]
-	stage1Ratio := stage1MinRatio + rng.Float64()*(stage1MaxRatio-stage1MinRatio)
-	stage1Count := int(math.Round(float64(targetCount) * stage1Ratio))
+	used := make(map[int]bool)
 
-	// 已使用ID，避免单文件内重复
-	used := make(map[int]struct{}, targetCount)
-
-	// 辅助函数：尝试加入一条记录（不超过上限，过滤超巨奖gwt=4，去重）
-	tryAppend := func(item GameResultData) bool {
-		if _, ok := used[item.ID]; ok {
-			return false
-		}
-		// 只过滤超级巨奖（gwt=4），允许大奖和巨奖（gwt=2,3）
-		if item.GWT >= 4 {
-			return false
-		}
-		if item.AW <= 0 {
-			return false
-		}
-		if totalWin+item.AW > upperBound {
-			return false
-		}
+	for i := 0; i < targetCount && i < len(perm); i++ {
+		item := allCandidates[perm[i]]
 		data = append(data, item)
+		used[item.ID] = true
+	}
+
+	// 计算初始RTP
+	var totalWin float64
+	for _, item := range data {
 		totalWin += item.AW
-		used[item.ID] = struct{}{}
-		return true
 	}
+	currentRTP := totalWin / totalBet
+	printf("[FB] 初始RTP=%.6f (目标=%.6f, 偏差=%.6f)\n", currentRTP, rtp, currentRTP-rtp)
 
-	// 阶段1：打乱 winDataAll，单轮无放回采样至 80%
-	if len(winDataAll) > 0 && stage1Count > 0 {
-		perm := rng.Perm(len(winDataAll))
-		for _, idx := range perm {
-			if len(data) >= stage1Count {
-				break
+	// 步骤2：根据RTP偏差进行调整
+	if math.Abs(currentRTP-rtp) > rtpTolerance {
+		printf("[FB] 步骤2：RTP偏差超出容忍度，开始调整...\n")
+
+		// 准备未使用的候选数据
+		var unusedCandidates []GameResultData
+		for _, item := range allCandidates {
+			if !used[item.ID] {
+				unusedCandidates = append(unusedCandidates, item)
 			}
-			_ = tryAppend(winDataAll[idx])
 		}
-		printf("[FB] 阶段1：已加入 %d 条（目标 %.0f%%=%d），累计中奖=%.2f\n", len(data), stage1Ratio*100, stage1Count, totalWin)
-	}
 
-	// 阶段2：动态占比（profit vs win），根据缺口/剩余名额决定倾向，直到达到 allowWin 或数量上限
-	if totalWin < allowWin && len(data) < targetCount && (len(profitDataAll) > 0 || len(winDataAll) > 0) {
-		permProfit := rng.Perm(len(profitDataAll))
-		permWin2 := rng.Perm(len(winDataAll))
-		pi, wi := 0, 0
+		replacedCount := 0
 
-		// 估算初始倾向
-		remainingSlots := targetCount - len(data)
-		remainingWin := allowWin - totalWin
-		needFactor := 0.0
-		if remainingSlots > 0 {
-			needFactor = remainingWin / (perSpinBet * float64(remainingSlots))
-		}
-		basePProfit := needFactor
-		if basePProfit < 0.2 {
-			basePProfit = 0.2
-		}
-		if basePProfit > 0.8 {
-			basePProfit = 0.8
-		}
-		printf("[FB] 阶段2：动态占比起始 pProfit=%.3f (needFactor=%.3f)\n", basePProfit, needFactor)
+		if currentRTP < rtp {
+			// RTP过低：用高金额数据替换低金额数据
+			printf("[FB] RTP过低，用高金额替换低金额...\n")
 
-		maxOuter := len(profitDataAll) + len(winDataAll) + 1024
-		for outer := 0; outer < maxOuter; outer++ {
-			if totalWin >= allowWin || len(data) >= targetCount {
-				break
-			}
-			// 实时更新占比
-			remainingSlots = targetCount - len(data)
-			remainingWin = allowWin - totalWin
-			if remainingSlots <= 0 || remainingWin <= 0 {
-				break
-			}
-			needFactor = remainingWin / (perSpinBet * float64(remainingSlots))
-			pProfit := needFactor
-			if pProfit < 0.2 {
-				pProfit = 0.2
-			}
-			if pProfit > 0.8 {
-				pProfit = 0.8
-			}
+			// 对当前数据按aw升序排序（低金额在前）
+			sort.Slice(data, func(i, j int) bool {
+				return data[i].AW < data[j].AW
+			})
 
-			chooseProfit := rng.Float64() < pProfit
-			appended := false
+			// 对未使用数据按aw降序排序（高金额在前）
+			sort.Slice(unusedCandidates, func(i, j int) bool {
+				return unusedCandidates[i].AW > unusedCandidates[j].AW
+			})
 
-			if chooseProfit && pi < len(permProfit) {
-				for pi < len(permProfit) {
-					cand := profitDataAll[permProfit[pi]]
-					pi++
-					if tryAppend(cand) {
-						appended = true
-						break
+			// 随机替换
+			for i := 0; i < maxReplaceIterations && i < len(data) && replacedCount < len(unusedCandidates); i++ {
+				replaceIdx := rng.Intn(len(data))
+				oldItem := data[replaceIdx]
+				newItem := unusedCandidates[replacedCount]
+
+				// 只有当新数据的aw更大时才替换
+				if newItem.AW > oldItem.AW {
+					newTotalWin := totalWin - oldItem.AW + newItem.AW
+					newRTP := newTotalWin / totalBet
+
+					// 确保不会超过目标太多
+					if newRTP <= rtp+rtpTolerance {
+						data[replaceIdx] = newItem
+						totalWin = newTotalWin
+						delete(used, oldItem.ID)
+						used[newItem.ID] = true
+						replacedCount++
+
+						// 如果已经达到目标，提前退出
+						if math.Abs(newRTP-rtp) <= rtpTolerance {
+							printf("[FB] 已达到目标RTP，提前结束替换\n")
+							break
+						}
 					}
 				}
 			}
-			// 若未能加入或无可用 profit，则尝试 win
-			if !appended && wi < len(permWin2) {
-				for wi < len(permWin2) {
-					cand := winDataAll[permWin2[wi]]
-					wi++
-					if tryAppend(cand) {
-						appended = true
-						break
-					}
-				}
-			}
-			// 若先选 win 失败，再尝试 profit 兜底
-			if !appended && !chooseProfit && pi < len(permProfit) {
-				for pi < len(permProfit) {
-					cand := profitDataAll[permProfit[pi]]
-					pi++
-					if tryAppend(cand) {
-						appended = true
-						break
-					}
-				}
-			}
-			// 两边都无法加入，提前退出
-			if !appended {
-				break
-			}
-		}
-		printf("[FB] 阶段2完成：累计中奖=%.2f, 目标=%.2f, 数量=%d/%d\n", totalWin, allowWin, len(data), targetCount)
-	}
 
-	// 阶段3：若还需要补充（数量未达标），先用 winDataAll 的大额补 90% 的剩余名额
-	if len(data) < targetCount {
-		remainingSlots := targetCount - len(data)
-		stage3aSlots := int(math.Ceil(float64(remainingSlots) * stage3WinTopRatio))
+		} else {
+			// RTP过高：用低金额数据替换高金额数据
+			printf("[FB] RTP过高，用低金额替换高金额...\n")
 
-		if stage3aSlots > 0 && len(winDataAll) > 0 {
-			// winDataAll 按 aw DESC
-			winDesc := make([]GameResultData, len(winDataAll))
-			copy(winDesc, winDataAll)
-			sort.Slice(winDesc, func(i, j int) bool { return winDesc[i].AW > winDesc[j].AW })
-			for _, it := range winDesc {
-				if stage3aSlots == 0 || len(data) >= targetCount {
-					break
-				}
-				if tryAppend(it) {
-					stage3aSlots--
-				}
-			}
-		}
+			// 对当前数据按aw降序排序（高金额在前）
+			sort.Slice(data, func(i, j int) bool {
+				return data[i].AW > data[j].AW
+			})
 
-		// 阶段3b：剩余名额根据缺口大小，用 profitDataAll 小额或大额补齐
-		if len(data) < targetCount {
-			remainingSlots = targetCount - len(data)
-			remainingWin := allowWin - totalWin
-			gapSmallThreshold := math.Max(perSpinBet, allowWin*0.02) // 小缺口阈值
+			// 对未使用数据按aw升序排序（低金额在前）
+			sort.Slice(unusedCandidates, func(i, j int) bool {
+				return unusedCandidates[i].AW < unusedCandidates[j].AW
+			})
 
-			// 若金额已足或接近上限，则直接跳过到数量兜底
-			if remainingWin > 0 && len(profitDataAll) > 0 {
-				// 按需选择排序方向
-				profit := make([]GameResultData, len(profitDataAll))
-				copy(profit, profitDataAll)
-				if remainingWin <= gapSmallThreshold {
-					sort.Slice(profit, func(i, j int) bool { return profit[i].AW < profit[j].AW }) // 小额优先
-				} else {
-					sort.Slice(profit, func(i, j int) bool { return profit[i].AW > profit[j].AW }) // 大额优先
-				}
+			// 随机替换
+			for i := 0; i < maxReplaceIterations && i < len(data) && replacedCount < len(unusedCandidates); i++ {
+				replaceIdx := rng.Intn(len(data))
+				oldItem := data[replaceIdx]
+				newItem := unusedCandidates[replacedCount]
 
-				for _, it := range profit {
-					if remainingSlots == 0 || len(data) >= targetCount {
-						break
-					}
-					// 若已经达到目标金额，仅在不超过上限时允许继续；核心由上限约束
-					if tryAppend(it) {
-						remainingSlots--
-						remainingWin = allowWin - totalWin
-						if remainingWin <= 0 {
-							// 金额已达标，后续数量不足交由阶段4处理
+				// 只有当新数据的aw更小时才替换
+				if newItem.AW < oldItem.AW {
+					newTotalWin := totalWin - oldItem.AW + newItem.AW
+					newRTP := newTotalWin / totalBet
+
+					// 确保不会低于目标太多
+					if newRTP >= rtp-rtpTolerance {
+						data[replaceIdx] = newItem
+						totalWin = newTotalWin
+						delete(used, oldItem.ID)
+						used[newItem.ID] = true
+						replacedCount++
+
+						// 如果已经达到目标，提前退出
+						if math.Abs(newRTP-rtp) <= rtpTolerance {
+							printf("[FB] 已达到目标RTP，提前结束替换\n")
 							break
 						}
 					}
 				}
 			}
 		}
-	}
 
-	// 阶段4：数量兜底，优先无放回补不中奖；若仍不足，再允许重复不中奖补满
-	if len(data) < targetCount {
-		if len(noWinDataAll) > 0 {
-			// 有不中奖数据，优先使用
-			need := targetCount - len(data)
-			// 先无放回
-			perm := rng.Perm(len(noWinDataAll))
-			for _, idx := range perm {
-				if need == 0 {
-					break
-				}
-				item := noWinDataAll[idx]
-				if _, ok := used[item.ID]; ok {
-					continue
-				}
-				data = append(data, item)
-				used[item.ID] = struct{}{}
-				need--
-			}
-			// 再重复补齐（仅对不中奖允许重复，以保证条数）
-			if need > 0 {
-				for i := 0; i < need; i++ {
-					data = append(data, noWinDataAll[i%len(noWinDataAll)])
-				}
-			}
-		} else {
-			// 没有不中奖数据，使用智能填充机制
-			printf("⚠️ [FB] 没有不中奖数据，使用智能填充机制补足到目标数量...\n")
-
-			// 收集未使用的购买夺宝数据
-			var unusedFbData []GameResultData
-			for _, item := range winDataAll {
-				if _, ok := used[item.ID]; !ok {
-					unusedFbData = append(unusedFbData, item)
-				}
-			}
-			for _, item := range profitDataAll {
-				if _, ok := used[item.ID]; !ok {
-					unusedFbData = append(unusedFbData, item)
-				}
-			}
-
-			if len(unusedFbData) > 0 {
-				// 转换used为map[int]bool格式
-				usedIds := make(map[int]bool)
-				for id := range used {
-					usedIds[id] = true
-				}
-
-				// 调用智能填充函数
-				rtpLowerLimit := rtp * 0.98 // RTP下限为目标的98%
-				data, totalWin = smartFillFbData(data, totalWin, totalBet, targetCount,
-					rtp, rtpLowerLimit, upperBound, unusedFbData, usedIds, rng)
-
-			} else {
-				printf("⚠️ [FB] 没有可用的购买夺宝数据，无法补足\n")
-			}
-		}
+		currentRTP = totalWin / totalBet
+		printf("[FB] 替换完成：替换了%d条数据，当前RTP=%.6f\n", replacedCount, currentRTP)
 	}
 
 	// 最终统计与保存
 	printf("📊 [FB] 最终验证: 期望 %d 条, 实际 %d 条\n", targetCount, len(data))
+	var finalTotalBet float64
 	var finalTotalWin float64
 	for _, it := range data {
+		finalTotalBet += float64(it.TB)
 		finalTotalWin += it.AW
 	}
-	finalRTP := finalTotalWin / totalBet
+	finalRTP := finalTotalWin / finalTotalBet
 	printf("✅ [FB] 档位: %.0f, 目标RTP: %.6f, 实际RTP: %.6f, 偏差: %.6f\n", rtpLevel, rtp, finalRTP, math.Abs(finalRTP-rtp))
+	printf("📊 [FB] 实际投注总额: %.2f (假设值: %.2f), 实际中奖总额: %.2f\n", finalTotalBet, totalBet, finalTotalWin)
 
 	// 重复率统计（按 id 去重）
 	uniq := make(map[int]int, len(data))
