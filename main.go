@@ -1290,6 +1290,7 @@ func main() {
 		fmt.Println("  ./filteringData import-s3 <gameIds> [level] [env] # 从S3智能导入（自动检测normal和fb模式）")
 		fmt.Println("  ./filteringData import-s3-normal <gameIds> [level] [env] # 从S3导入普通模式文件")
 		fmt.Println("  ./filteringData import-s3-fb <gameIds> [level] [env] # 从S3导入购买夺宝模式文件")
+		fmt.Println("  ./filteringData sp-stats <gameId>              # 统计指定游戏JSON文件的SP数据")
 		fmt.Println("  ./filteringData importFb-s3 <gameIds> [level] [env] # 从S3导入多个游戏的购买夺宝模式文件")
 		fmt.Println("     gameIds: 逗号分隔的游戏ID列表，如: 112,103,105")
 		fmt.Println("     level: 可选的RTP等级过滤")
@@ -1462,9 +1463,12 @@ func main() {
 		// S3购买夺宝模式导入命令：./filteringData import-s3-fb <gameIds> [level] [env]
 		// 只导入fb模式文件
 		handleS3ImportCommand("fb")
+	case "sp-stats":
+		// SP统计命令：./filteringData sp-stats <gameId>
+		runSpStatisticsFromJSON()
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate, generate2, generate3, generate4, multi-game, import, importFb, import-s3, import-s3-normal, import-s3-fb")
+		fmt.Println("支持的命令: generate, generate2, generate3, generate4, multi-game, import, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats")
 		os.Exit(1)
 	}
 }
@@ -2150,59 +2154,93 @@ func runGenerateFbMode() {
 	fmt.Printf("⏱️  [generateFb] 整体总耗时: %v\n", time.Since(fbStartTime))
 }
 
-// runRtpFbTest 生成购买夺宝 RTP 数据（新策略：先随机选择，后调整RTP）
+// runRtpFbTest 生成购买夺宝 RTP 数据（智能替换策略：精确贪心算法）
 func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData, profitDataAll []GameResultData) error {
 	var logBuf bytes.Buffer
 	printf := func(format string, a ...interface{}) {
 		fmt.Fprintf(&logBuf, format, a...)
 	}
 
-	const (
-		rtpTolerance    = 0.01 // RTP偏差容忍度（1%）
-		maxReplaceRatio = 0.30 // 最大替换比例（30%）
-	)
+	// 统一使用更严格的容忍度，提高精度
+	rtpTolerance := 0.005  // 0.5%，更精确
+	maxReplaceRatio := 0.6 // 60%，允许更多替换次数
 
-	// 目标金额与边界
-	allowWin := totalBet * rtp
+	// 目标参数
 	targetCount := config.Tables.DataNumFb
-	maxReplaceIterations := int(float64(targetCount) * maxReplaceRatio) // 最大替换次数为数据量的30%
+	maxReplaceIterations := int(float64(targetCount) * maxReplaceRatio)
 
 	printf("\n========== [FB TASK BEGIN] RtpNo: %.0f | Test: %d | %s =========\n", rtpLevel, testNumber, time.Now().Format(time.RFC3339))
-	printf("[FB] 目标RTP=%.4f, 目标中奖=%.2f, 目标数量=%d\n", rtp, allowWin, targetCount)
-	printf("候选: win(not-profit)=%d, profit=%d, nowin=%d\n", len(winDataAll), len(profitDataAll), len(noWinDataAll))
+	printf("[FB] 🎯 目标RTP=%.4f, 精度容忍度=%.2f%% (智能替换算法v2.0)\n", rtp, rtpTolerance*100)
+	printf("候选: win(aw<tb)=%d, profit(aw>tb)=%d, nowin=%d\n", len(winDataAll), len(profitDataAll), len(noWinDataAll))
 
 	// 随机源
 	seed := time.Now().UnixNano() ^ int64(config.Game.ID)*1_000_003 ^ int64(testNumber)*1_000_033 ^ int64(rtpLevel)*1_000_037
 	rng := rand.New(rand.NewSource(seed))
 
-	// 合并所有候选数据（排除gwt>=4的超巨奖）
-	var allCandidates []GameResultData
+	// 准备候选数据池（排除gwt>=4的超巨奖）
+	var profitCandidates []GameResultData // aw > tb 盈利数据
+	var winCandidates []GameResultData    // aw <= tb 不盈利中奖数据
+
 	for _, item := range profitDataAll {
 		if item.GWT < 4 && item.AW > 0 {
-			allCandidates = append(allCandidates, item)
+			profitCandidates = append(profitCandidates, item)
 		}
 	}
 	for _, item := range winDataAll {
 		if item.GWT < 4 && item.AW > 0 {
-			allCandidates = append(allCandidates, item)
+			winCandidates = append(winCandidates, item)
 		}
 	}
 
-	if len(allCandidates) < targetCount {
-		return fmt.Errorf("可用候选数据不足：需要%d条，实际%d条", targetCount, len(allCandidates))
-	}
+	printf("[FB] 步骤1：智能选择%d条数据（根据RTP档位）...\n", targetCount)
 
-	printf("[FB] 步骤1：随机选择%d条数据...\n", targetCount)
-
-	// 步骤1：随机选择目标数量的数据
-	perm := rng.Perm(len(allCandidates))
+	// 步骤1：根据目标RTP智能选择初始数据
+	var primaryPool, secondaryPool []GameResultData
 	var data []GameResultData
 	used := make(map[int]bool)
 
-	for i := 0; i < targetCount && i < len(perm); i++ {
-		item := allCandidates[perm[i]]
-		data = append(data, item)
-		used[item.ID] = true
+	if rtp < 1.0 {
+		// 低RTP档位：优先使用不盈利数据（aw < tb）
+		primaryPool = winCandidates
+		secondaryPool = profitCandidates
+		printf("[FB] 低RTP档位：优先选择不盈利数据(aw<tb)\n")
+	} else {
+		// 高RTP档位：优先使用盈利数据（aw > tb）
+		primaryPool = profitCandidates
+		secondaryPool = winCandidates
+		printf("[FB] 高RTP档位：优先选择盈利数据(aw>tb)\n")
+	}
+
+	// 从主池随机选择
+	if len(primaryPool) > 0 {
+		perm := rng.Perm(len(primaryPool))
+		for _, idx := range perm {
+			if len(data) >= targetCount {
+				break
+			}
+			item := primaryPool[idx]
+			data = append(data, item)
+			used[item.ID] = true
+		}
+	}
+
+	// 如果主池不够，从副池补充
+	if len(data) < targetCount && len(secondaryPool) > 0 {
+		perm := rng.Perm(len(secondaryPool))
+		for _, idx := range perm {
+			if len(data) >= targetCount {
+				break
+			}
+			item := secondaryPool[idx]
+			if !used[item.ID] {
+				data = append(data, item)
+				used[item.ID] = true
+			}
+		}
+	}
+
+	if len(data) < targetCount {
+		return fmt.Errorf("可用候选数据不足：需要%d条，实际%d条", targetCount, len(data))
 	}
 
 	// 计算初始RTP
@@ -2213,107 +2251,234 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	currentRTP := totalWin / totalBet
 	printf("[FB] 初始RTP=%.6f (目标=%.6f, 偏差=%.6f)\n", currentRTP, rtp, currentRTP-rtp)
 
-	// 步骤2：根据RTP偏差进行调整
+	// 步骤2：智能RTP精确调整（贪心算法）
 	if math.Abs(currentRTP-rtp) > rtpTolerance {
-		printf("[FB] 步骤2：RTP偏差超出容忍度，开始调整...\n")
-
-		// 准备未使用的候选数据
-		var unusedCandidates []GameResultData
-		for _, item := range allCandidates {
-			if !used[item.ID] {
-				unusedCandidates = append(unusedCandidates, item)
-			}
-		}
+		printf("[FB] 步骤2：RTP偏差超出容忍度(%.2f%%)，开始智能调整...\n", rtpTolerance*100)
 
 		replacedCount := 0
+		targetWin := totalBet * rtp
+		winGap := targetWin - totalWin
 
 		if currentRTP < rtp {
 			// RTP过低：用高金额数据替换低金额数据
-			printf("[FB] RTP过低，用高金额替换低金额...\n")
+			printf("[FB] 🔼 RTP过低，需增加%.2f中奖金额 (智能贪心替换)...\n", winGap)
 
-			// 对当前数据按aw升序排序（低金额在前）
-			sort.Slice(data, func(i, j int) bool {
-				return data[i].AW < data[j].AW
+			// 准备未使用的替换候选数据：优先profit，然后win
+			var unusedHighCandidates []GameResultData
+			for _, item := range profitCandidates {
+				if !used[item.ID] {
+					unusedHighCandidates = append(unusedHighCandidates, item)
+				}
+			}
+			for _, item := range winCandidates {
+				if !used[item.ID] {
+					unusedHighCandidates = append(unusedHighCandidates, item)
+				}
+			}
+
+			// 按aw降序排序（高金额在前）
+			sort.Slice(unusedHighCandidates, func(i, j int) bool {
+				return unusedHighCandidates[i].AW > unusedHighCandidates[j].AW
 			})
 
-			// 对未使用数据按aw降序排序（高金额在前）
-			sort.Slice(unusedCandidates, func(i, j int) bool {
-				return unusedCandidates[i].AW > unusedCandidates[j].AW
+			// 对当前数据构建索引数组并按aw升序排序
+			type indexedData struct {
+				idx  int
+				item GameResultData
+			}
+			indexedItems := make([]indexedData, len(data))
+			for i, item := range data {
+				indexedItems[i] = indexedData{idx: i, item: item}
+			}
+			sort.Slice(indexedItems, func(i, j int) bool {
+				return indexedItems[i].item.AW < indexedItems[j].item.AW
 			})
 
-			// 随机替换
-			for i := 0; i < maxReplaceIterations && i < len(data) && replacedCount < len(unusedCandidates); i++ {
-				replaceIdx := rng.Intn(len(data))
-				oldItem := data[replaceIdx]
-				newItem := unusedCandidates[replacedCount]
+			// 智能贪心替换：寻找最接近目标的替换组合
+			candidateIdx := 0
+			for dataIdx := 0; dataIdx < len(indexedItems) && candidateIdx < len(unusedHighCandidates) && replacedCount < maxReplaceIterations; dataIdx++ {
+				oldItem := indexedItems[dataIdx].item
 
-				// 只有当新数据的aw更大时才替换
-				if newItem.AW > oldItem.AW {
-					newTotalWin := totalWin - oldItem.AW + newItem.AW
+				// 寻找最佳替换候选（最接近目标增量的）
+				bestCandidateIdx := -1
+				bestDelta := math.MaxFloat64
+
+				for j := candidateIdx; j < len(unusedHighCandidates) && j < candidateIdx+50; j++ {
+					newItem := unusedHighCandidates[j]
+					if newItem.AW <= oldItem.AW {
+						continue
+					}
+
+					awDelta := newItem.AW - oldItem.AW
+					newTotalWin := totalWin + awDelta
 					newRTP := newTotalWin / totalBet
 
-					// 确保不会超过目标太多
-					if newRTP <= rtp+rtpTolerance {
-						data[replaceIdx] = newItem
-						totalWin = newTotalWin
-						delete(used, oldItem.ID)
-						used[newItem.ID] = true
-						replacedCount++
-
-						// 如果已经达到目标，提前退出
-						if math.Abs(newRTP-rtp) <= rtpTolerance {
-							printf("[FB] 已达到目标RTP，提前结束替换\n")
-							break
-						}
+					// 不能超过目标太多
+					if newRTP > rtp+rtpTolerance*2 {
+						continue
 					}
+
+					// 计算与目标的距离
+					rtpDelta := math.Abs(newRTP - rtp)
+					if rtpDelta < bestDelta {
+						bestDelta = rtpDelta
+						bestCandidateIdx = j
+					}
+
+					// 如果找到完美匹配，立即使用
+					if rtpDelta <= rtpTolerance {
+						break
+					}
+				}
+
+				// 执行最佳替换
+				if bestCandidateIdx >= 0 {
+					newItem := unusedHighCandidates[bestCandidateIdx]
+					realIdx := indexedItems[dataIdx].idx
+
+					data[realIdx] = newItem
+					totalWin = totalWin - oldItem.AW + newItem.AW
+					delete(used, oldItem.ID)
+					used[newItem.ID] = true
+					replacedCount++
+
+					// 移除已使用的候选
+					unusedHighCandidates = append(unusedHighCandidates[:bestCandidateIdx], unusedHighCandidates[bestCandidateIdx+1:]...)
+
+					currentRTP = totalWin / totalBet
+
+					// 如果已经达到目标，提前退出
+					if math.Abs(currentRTP-rtp) <= rtpTolerance {
+						printf("[FB] ✅ 已达到目标RTP，提前结束替换\n")
+						break
+					}
+				} else {
+					candidateIdx++
 				}
 			}
 
 		} else {
 			// RTP过高：用低金额数据替换高金额数据
-			printf("[FB] RTP过高，用低金额替换高金额...\n")
+			printf("[FB] 🔽 RTP过高，需减少%.2f中奖金额 (智能贪心替换)...\n", -winGap)
 
-			// 对当前数据按aw降序排序（高金额在前）
-			sort.Slice(data, func(i, j int) bool {
-				return data[i].AW > data[j].AW
+			// 准备替换候选数据：按优先级：nowin > 低aw的win > 低aw的profit
+			var replacementCandidates []GameResultData
+
+			// 1. 优先使用不中奖数据（aw=0）
+			for _, item := range noWinDataAll {
+				if !used[item.ID] {
+					replacementCandidates = append(replacementCandidates, item)
+				}
+			}
+
+			// 2. 补充低金额的不盈利中奖数据（aw < tb）
+			var unusedWinCandidates []GameResultData
+			for _, item := range winCandidates {
+				if !used[item.ID] {
+					unusedWinCandidates = append(unusedWinCandidates, item)
+				}
+			}
+			sort.Slice(unusedWinCandidates, func(i, j int) bool {
+				return unusedWinCandidates[i].AW < unusedWinCandidates[j].AW
+			})
+			replacementCandidates = append(replacementCandidates, unusedWinCandidates...)
+
+			// 3. 补充低金额的盈利数据（aw > tb）
+			var unusedProfitCandidates []GameResultData
+			for _, item := range profitCandidates {
+				if !used[item.ID] {
+					unusedProfitCandidates = append(unusedProfitCandidates, item)
+				}
+			}
+			sort.Slice(unusedProfitCandidates, func(i, j int) bool {
+				return unusedProfitCandidates[i].AW < unusedProfitCandidates[j].AW
+			})
+			replacementCandidates = append(replacementCandidates, unusedProfitCandidates...)
+
+			printf("[FB] 可用低金额替换数据: %d条\n", len(replacementCandidates))
+
+			// 对当前数据构建索引数组并按aw降序排序
+			type indexedData struct {
+				idx  int
+				item GameResultData
+			}
+			indexedItems := make([]indexedData, len(data))
+			for i, item := range data {
+				indexedItems[i] = indexedData{idx: i, item: item}
+			}
+			sort.Slice(indexedItems, func(i, j int) bool {
+				return indexedItems[i].item.AW > indexedItems[j].item.AW
 			})
 
-			// 对未使用数据按aw升序排序（低金额在前）
-			sort.Slice(unusedCandidates, func(i, j int) bool {
-				return unusedCandidates[i].AW < unusedCandidates[j].AW
-			})
+			// 智能贪心替换：寻找最接近目标的替换组合
+			candidateIdx := 0
+			for dataIdx := 0; dataIdx < len(indexedItems) && candidateIdx < len(replacementCandidates) && replacedCount < maxReplaceIterations; dataIdx++ {
+				oldItem := indexedItems[dataIdx].item
 
-			// 随机替换
-			for i := 0; i < maxReplaceIterations && i < len(data) && replacedCount < len(unusedCandidates); i++ {
-				replaceIdx := rng.Intn(len(data))
-				oldItem := data[replaceIdx]
-				newItem := unusedCandidates[replacedCount]
+				// 寻找最佳替换候选（最接近目标减量的）
+				bestCandidateIdx := -1
+				bestDelta := math.MaxFloat64
 
-				// 只有当新数据的aw更小时才替换
-				if newItem.AW < oldItem.AW {
-					newTotalWin := totalWin - oldItem.AW + newItem.AW
+				for j := candidateIdx; j < len(replacementCandidates) && j < candidateIdx+50; j++ {
+					newItem := replacementCandidates[j]
+					if newItem.AW >= oldItem.AW {
+						continue
+					}
+
+					awDelta := oldItem.AW - newItem.AW
+					newTotalWin := totalWin - awDelta
 					newRTP := newTotalWin / totalBet
 
-					// 确保不会低于目标太多
-					if newRTP >= rtp-rtpTolerance {
-						data[replaceIdx] = newItem
-						totalWin = newTotalWin
-						delete(used, oldItem.ID)
-						used[newItem.ID] = true
-						replacedCount++
-
-						// 如果已经达到目标，提前退出
-						if math.Abs(newRTP-rtp) <= rtpTolerance {
-							printf("[FB] 已达到目标RTP，提前结束替换\n")
-							break
-						}
+					// 不能低于目标太多
+					if newRTP < rtp-rtpTolerance*2 {
+						continue
 					}
+
+					// 计算与目标的距离
+					rtpDelta := math.Abs(newRTP - rtp)
+					if rtpDelta < bestDelta {
+						bestDelta = rtpDelta
+						bestCandidateIdx = j
+					}
+
+					// 如果找到完美匹配，立即使用
+					if rtpDelta <= rtpTolerance {
+						break
+					}
+				}
+
+				// 执行最佳替换
+				if bestCandidateIdx >= 0 {
+					newItem := replacementCandidates[bestCandidateIdx]
+					realIdx := indexedItems[dataIdx].idx
+
+					data[realIdx] = newItem
+					totalWin = totalWin - oldItem.AW + newItem.AW
+					delete(used, oldItem.ID)
+					used[newItem.ID] = true
+					replacedCount++
+
+					// 移除已使用的候选
+					replacementCandidates = append(replacementCandidates[:bestCandidateIdx], replacementCandidates[bestCandidateIdx+1:]...)
+
+					currentRTP = totalWin / totalBet
+
+					// 如果已经达到目标，提前退出
+					if math.Abs(currentRTP-rtp) <= rtpTolerance {
+						printf("[FB] ✅ 已达到目标RTP，提前结束替换\n")
+						break
+					}
+				} else {
+					candidateIdx++
 				}
 			}
 		}
 
 		currentRTP = totalWin / totalBet
-		printf("[FB] 替换完成：替换了%d条数据，当前RTP=%.6f\n", replacedCount, currentRTP)
+		rtpDeviation := currentRTP - rtp
+		deviationPercent := (rtpDeviation / rtp) * 100
+		printf("[FB] 替换完成：替换了%d条数据，当前RTP=%.6f (偏差=%.6f, %.2f%%)\n",
+			replacedCount, currentRTP, math.Abs(rtpDeviation), math.Abs(deviationPercent))
 	}
 
 	// 最终统计与保存
@@ -3849,4 +4014,209 @@ func runGenerateMode4() {
 	totalDuration := time.Since(startTime)
 	fmt.Printf("\n🎉 RTP数据筛选和保存完成（V4模式）！\n")
 	fmt.Printf("⏱️  整个程序总耗时: %v\n", totalDuration)
+}
+
+// runSpStatisticsFromJSON 从JSON文件统计SP数据
+func runSpStatisticsFromJSON() {
+	if len(os.Args) < 3 {
+		fmt.Println("❌ 缺少游戏ID参数")
+		fmt.Println("用法: ./filteringData sp-stats <gameId>")
+		fmt.Println("示例: ./filteringData sp-stats 93")
+		fmt.Println("\n💡 功能说明:")
+		fmt.Println("   - 读取 output/<gameId> 目录下的所有 JSON 文件")
+		fmt.Println("   - 统计每个档位的每张表中 sp=true 的次数")
+		fmt.Println("   - 显示详细的统计报告")
+		os.Exit(1)
+	}
+
+	// 解析游戏ID
+	gameIdStr := os.Args[2]
+	gameId, err := strconv.Atoi(gameIdStr)
+	if err != nil {
+		log.Fatalf("无效的游戏ID: %s", gameIdStr)
+	}
+
+	// 构建输出目录路径
+	outputDir := filepath.Join("output", fmt.Sprintf("%d", gameId))
+
+	// 检查目录是否存在
+	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
+		fmt.Printf("❌ 目录不存在: %s\n", outputDir)
+		fmt.Printf("💡 请先运行 generate4 命令生成数据\n")
+		os.Exit(1)
+	}
+
+	fmt.Printf("🔄 正在读取目录: %s\n", outputDir)
+
+	// 读取目录下的所有JSON文件
+	files, err := os.ReadDir(outputDir)
+	if err != nil {
+		log.Fatalf("读取目录失败: %v", err)
+	}
+
+	// 按档位分组统计
+	type LevelStats struct {
+		RtpLevel     float64
+		TableCount   int
+		TotalRecords int
+		SpTrueCount  int
+		SpFalseCount int
+		Tables       map[int]struct {
+			Records      int
+			SpTrueCount  int
+			SpFalseCount int
+		}
+	}
+
+	levelStatsMap := make(map[float64]*LevelStats)
+
+	// 遍历所有JSON文件
+	jsonCount := 0
+	for _, file := range files {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".json") {
+			continue
+		}
+
+		jsonCount++
+		filePath := filepath.Join(outputDir, file.Name())
+
+		// 读取JSON文件
+		fileData, err := os.ReadFile(filePath)
+		if err != nil {
+			fmt.Printf("⚠️ 读取文件失败 %s: %v\n", file.Name(), err)
+			continue
+		}
+
+		// 解析JSON
+		var jsonData struct {
+			RtpLevel int `json:"rtpLevel"`
+			SrNumber int `json:"srNumber"`
+			Data     []struct {
+				SP bool `json:"sp"`
+			} `json:"data"`
+		}
+
+		err = json.Unmarshal(fileData, &jsonData)
+		if err != nil {
+			fmt.Printf("⚠️ 解析JSON失败 %s: %v\n", file.Name(), err)
+			continue
+		}
+
+		rtpLevel := float64(jsonData.RtpLevel)
+
+		// 初始化档位统计
+		if levelStatsMap[rtpLevel] == nil {
+			levelStatsMap[rtpLevel] = &LevelStats{
+				RtpLevel: rtpLevel,
+				Tables: make(map[int]struct {
+					Records      int
+					SpTrueCount  int
+					SpFalseCount int
+				}),
+			}
+		}
+
+		stats := levelStatsMap[rtpLevel]
+
+		// 统计当前文件的SP数据
+		spTrueCount := 0
+		spFalseCount := 0
+		for _, item := range jsonData.Data {
+			if item.SP {
+				spTrueCount++
+			} else {
+				spFalseCount++
+			}
+		}
+
+		// 更新表统计
+		stats.Tables[jsonData.SrNumber] = struct {
+			Records      int
+			SpTrueCount  int
+			SpFalseCount int
+		}{
+			Records:      len(jsonData.Data),
+			SpTrueCount:  spTrueCount,
+			SpFalseCount: spFalseCount,
+		}
+
+		// 更新档位总计
+		stats.TotalRecords += len(jsonData.Data)
+		stats.SpTrueCount += spTrueCount
+		stats.SpFalseCount += spFalseCount
+	}
+
+	if jsonCount == 0 {
+		fmt.Printf("❌ 目录中没有找到JSON文件\n")
+		os.Exit(1)
+	}
+
+	// 打印统计报告
+	fmt.Printf("\n📊 游戏 %d 的 SP 统计报告\n", gameId)
+	fmt.Printf("============================================================\n")
+	fmt.Printf("📁 目录: %s\n", outputDir)
+	fmt.Printf("📄 JSON文件数: %d\n", jsonCount)
+
+	// 按档位排序输出
+	var levels []float64
+	for level := range levelStatsMap {
+		levels = append(levels, level)
+	}
+	sort.Float64s(levels)
+
+	totalRecords := 0
+	totalSpTrue := 0
+	totalSpFalse := 0
+	totalTables := 0
+
+	for _, level := range levels {
+		stats := levelStatsMap[level]
+		stats.TableCount = len(stats.Tables)
+
+		fmt.Printf("\n🎯 RTP 档位: %.0f\n", stats.RtpLevel)
+		fmt.Printf("   📋 总表数: %d\n", stats.TableCount)
+		fmt.Printf("   📊 总记录数: %d\n", stats.TotalRecords)
+
+		if stats.TotalRecords > 0 {
+			spTrueRatio := float64(stats.SpTrueCount) / float64(stats.TotalRecords) * 100
+			spFalseRatio := float64(stats.SpFalseCount) / float64(stats.TotalRecords) * 100
+			fmt.Printf("   🎲 SP=True: %d (%.2f%%)\n", stats.SpTrueCount, spTrueRatio)
+			fmt.Printf("   🎮 SP=False: %d (%.2f%%)\n", stats.SpFalseCount, spFalseRatio)
+		}
+
+		// 按表编号排序
+		var tableNumbers []int
+		for tableNum := range stats.Tables {
+			tableNumbers = append(tableNumbers, tableNum)
+		}
+		sort.Ints(tableNumbers)
+
+		fmt.Printf("\n   📝 各表详细统计:\n")
+		for _, tableNum := range tableNumbers {
+			tableStats := stats.Tables[tableNum]
+			if tableStats.Records > 0 {
+				ratio := float64(tableStats.SpTrueCount) / float64(tableStats.Records) * 100
+				fmt.Printf("     表 %d: 总记录 %d, SP=True %d (%.2f%%)\n",
+					tableNum, tableStats.Records, tableStats.SpTrueCount, ratio)
+			}
+		}
+
+		totalRecords += stats.TotalRecords
+		totalSpTrue += stats.SpTrueCount
+		totalSpFalse += stats.SpFalseCount
+		totalTables += stats.TableCount
+	}
+
+	// 总体统计
+	fmt.Printf("\n============================================================\n")
+	fmt.Printf("📈 总体统计:\n")
+	fmt.Printf("   总档位数: %d\n", len(levels))
+	fmt.Printf("   总表数: %d\n", totalTables)
+	fmt.Printf("   总记录数: %d\n", totalRecords)
+	if totalRecords > 0 {
+		totalSpRatio := float64(totalSpTrue) / float64(totalRecords) * 100
+		fmt.Printf("   总 SP=True: %d (%.2f%%)\n", totalSpTrue, totalSpRatio)
+		fmt.Printf("   总 SP=False: %d (%.2f%%)\n", totalSpFalse, 100-totalSpRatio)
+	}
+	fmt.Printf("============================================================\n")
 }
