@@ -1495,6 +1495,11 @@ func runGenerateMode() {
 	}
 	defer db.Close()
 
+	// 清理 sp=true 且 aw=0 的数据
+	if err := db.CleanSpZeroAwData(); err != nil {
+		log.Fatalf("清理数据失败: %v", err)
+	}
+
 	//计算总投注
 	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNum)
 
@@ -1574,6 +1579,11 @@ func runGenerateMode2() {
 		log.Fatalf("数据库连接失败: %v", err)
 	}
 	defer db.Close()
+
+	// 清理 sp=true 且 aw=0 的数据
+	if err := db.CleanSpZeroAwData(); err != nil {
+		log.Fatalf("清理数据失败: %v", err)
+	}
 
 	//计算总投注
 	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNum)
@@ -2063,6 +2073,11 @@ func runGenerateFbMode() {
 		log.Fatalf("数据库连接失败: %v", err)
 	}
 	defer db.Close()
+
+	// 清理 sp=true 且 aw=0 的数据
+	if err := db.CleanSpZeroAwData(); err != nil {
+		log.Fatalf("清理数据失败: %v", err)
+	}
 
 	// 计算总投注：cs * ml * bl * bet.fb * 数据条数
 	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB * float64(config.Tables.DataNumFb)
@@ -3028,6 +3043,11 @@ func runGenerateMode3() {
 	}
 	defer db.Close()
 
+	// 清理 sp=true 且 aw=0 的数据
+	if err := db.CleanSpZeroAwData(); err != nil {
+		log.Fatalf("清理数据失败: %v", err)
+	}
+
 	// 计算总投注
 	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNumV3)
 
@@ -3943,6 +3963,11 @@ func runGenerateMode4() {
 		log.Fatalf("数据库连接失败: %v", err)
 	}
 	defer db.Close()
+
+	// 清理 sp=true 且 aw=0 的数据
+	if err := db.CleanSpZeroAwData(); err != nil {
+		log.Fatalf("清理数据失败: %v", err)
+	}
 
 	// 预取共享只读数据
 	winDataAll, err := db.GetWinData()

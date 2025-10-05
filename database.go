@@ -572,3 +572,24 @@ func (d *Database) GetBestSingleMatch(targetWin float64, excludeIds []int, maxDe
 
 	return &item, nil
 }
+
+// CleanSpZeroAwData 清理表中 sp=true 且 aw=0 的数据
+func (d *Database) CleanSpZeroAwData() error {
+	tableName := d.GetTableName()
+	query := fmt.Sprintf(`DELETE FROM %s WHERE "sp" = true AND "aw" = 0`, tableName)
+
+	log.Printf("🧹 开始清理表 %s 中 sp=true 且 aw=0 的数据...", tableName)
+
+	result, err := d.DB.Exec(query)
+	if err != nil {
+		return fmt.Errorf("清理数据失败: %v", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("获取影响行数失败: %v", err)
+	}
+
+	log.Printf("✅ 清理完成，删除了 %d 条记录", rowsAffected)
+	return nil
+}
