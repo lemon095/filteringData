@@ -57,6 +57,7 @@ func NewS3Importer(db *Database, config *Config) (*S3Importer, error) {
 type FileInfo struct {
 	Path     string
 	Name     string
+	Mode     int // 模式信息
 	RtpLevel int
 	TestNum  int
 	SortKey  string // 用于排序的键
@@ -178,10 +179,13 @@ func (ji *JSONImporter) ImportAllFilesWithGameId(gameId int, levelFilter string)
 // filterFilesByFileLevelId 根据fileLevelId过滤文件
 func (ji *JSONImporter) filterFilesByFileLevelId(files []FileInfo, fileLevelId string) []FileInfo {
 	var filteredFiles []FileInfo
-	prefix := fmt.Sprintf("GameResults_%s_", fileLevelId)
+	// 新的文件名格式：GameResults_mode_rtpLevel_testNum.json
+	// 所以需要匹配：GameResults_*_fileLevelId_*.json
+	pattern := fmt.Sprintf("GameResults_\\d+_%s_\\d+\\.json", fileLevelId)
+	re := regexp.MustCompile(pattern)
 
 	for _, file := range files {
-		if strings.HasPrefix(file.Name, prefix) {
+		if re.MatchString(file.Name) {
 			filteredFiles = append(filteredFiles, file)
 		}
 	}
@@ -209,16 +213,17 @@ func (ji *JSONImporter) getJSONFiles(dir string) ([]FileInfo, error) {
 			return nil
 		}
 
-		// 解析文件名：GameResults_15_1.json -> RtpLevel=15, TestNum=1
-		re := regexp.MustCompile(`GameResults_(\d+)_(\d+)\.json`)
+		// 解析文件名：GameResults_2_200_1.json -> Mode=2, RtpLevel=200, TestNum=1
+		re := regexp.MustCompile(`GameResults_(\d+)_(\d+)_(\d+)\.json`)
 		matches := re.FindStringSubmatch(d.Name())
-		if len(matches) != 3 {
+		if len(matches) != 4 {
 			log.Printf("⚠️ 跳过不符合命名规则的文件: %s", d.Name())
 			return nil
 		}
 
-		rtpLevel, _ := strconv.Atoi(matches[1])
-		testNum, _ := strconv.Atoi(matches[2])
+		mode, _ := strconv.Atoi(matches[1])
+		rtpLevel, _ := strconv.Atoi(matches[2])
+		testNum, _ := strconv.Atoi(matches[3])
 
 		// 创建排序键，确保正确的处理顺序
 		sortKey := fmt.Sprintf("%02d_%02d", rtpLevel, testNum)
@@ -226,6 +231,7 @@ func (ji *JSONImporter) getJSONFiles(dir string) ([]FileInfo, error) {
 		fileInfo := FileInfo{
 			Path:     path,
 			Name:     d.Name(),
+			Mode:     mode,
 			RtpLevel: rtpLevel,
 			TestNum:  testNum,
 			SortKey:  sortKey,
@@ -340,7 +346,7 @@ func (ji *JSONImporter) importFile(file FileInfo, tableName string) error {
 			batchCount++
 			fmt.Printf("  🔄 处理批次 %d (记录 %d-%d)\n", batchCount, totalProcessed-len(batch)+1, totalProcessed)
 			fmt.Print("导入档位: ", file.RtpLevel)
-			if err := ji.insertBatch(batch, tableName, file.RtpLevel, file.TestNum, batchCount); err != nil {
+			if err := ji.insertBatch(batch, tableName, file.RtpLevel, file.TestNum, batchCount, file.Mode); err != nil {
 				return fmt.Errorf("插入批次 %d 失败: %v", batchCount, err)
 			}
 
@@ -354,7 +360,7 @@ func (ji *JSONImporter) importFile(file FileInfo, tableName string) error {
 		batchCount++
 		fmt.Printf("  🔄 处理最后批次 %d (记录 %d-%d)\n", batchCount, totalProcessed-len(batch)+1, totalProcessed)
 
-		if err := ji.insertBatch(batch, tableName, file.RtpLevel, file.TestNum, batchCount); err != nil {
+		if err := ji.insertBatch(batch, tableName, file.RtpLevel, file.TestNum, batchCount, file.Mode); err != nil {
 			return fmt.Errorf("插入最后批次失败: %v", err)
 		}
 	}
@@ -476,7 +482,7 @@ func (ji *JSONImporter) skipToDataArray(file *os.File) (*bufio.Reader, error) {
 }
 
 // insertBatch 批量插入数据
-func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName string, rtpLevel, testNum int, batchNum int) error {
+func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName string, rtpLevel, testNum int, batchNum int, mode int) error {
 	if len(data) == 0 {
 		return nil
 	}
@@ -535,7 +541,8 @@ func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName str
 		} else {
 			totalBet = 0.0
 		}
-		rtpLevelVal := float64(rtpLevel)
+		// 根据文件mode计算rtpLevel：rtpLevel + mode/10 (如档位200+mode2=200.2)
+		rtpLevelVal := float64(rtpLevel) + float64(mode)/10.0
 		_, err := stmt.Exec(
 			rtpLevelVal, // rtpLevel
 			testNum,     // srNumber
@@ -966,7 +973,8 @@ func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName str
 			// 如果没有mode字段，使用默认值0
 			fileMode = 0
 		}
-		rtpLevelVal := float64(rtpLevel) + fileMode
+		// 根据文件mode计算rtpLevel：rtpLevel + mode/10 (如档位200+mode2=200.2)
+		rtpLevelVal := float64(rtpLevel) + fileMode/10.0
 
 		*globalSrId++ // 递增全局srId
 
