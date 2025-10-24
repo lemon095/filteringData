@@ -46,6 +46,7 @@ type GameConfig struct {
 	ID   int     `yaml:"id"`   // 游戏ID
 	BL   float64 `yaml:"bl"`   // 投注线数
 	IsFb bool    `yaml:"isFb"` // 是否启用购买夺宝
+	Mode int     `yaml:"mode"` // 模式配置
 }
 
 // Config 配置结构体
@@ -63,6 +64,7 @@ type Config struct {
 	Game struct {
 		ID   int  `yaml:"id"`
 		IsFb bool `yaml:"isFb"`
+		Mode int  `yaml:"mode"`
 	} `yaml:"game"`
 
 	// 多游戏配置

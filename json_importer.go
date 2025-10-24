@@ -956,13 +956,17 @@ func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName str
 			totalBet = 0.0
 		}
 
-		// 根据模式处理rtpLevel：fb模式需要+0.1
-		rtpLevelVal := float64(rtpLevel)
-		if mode == "fb" {
-			rtpLevelVal = float64(rtpLevel) + 0.1
-		}else{
-			rtpLevelVal = float64(rtpLevel) + 0.2
+		// 根据文件mode处理rtpLevel：rtpLevel + mode
+		var fileMode float64
+		if modeFloat, ok := item["mode"].(float64); ok {
+			fileMode = modeFloat
+		} else if modeInt, ok := item["mode"].(int); ok {
+			fileMode = float64(modeInt)
+		} else {
+			// 如果没有mode字段，使用默认值0
+			fileMode = 0
 		}
+		rtpLevelVal := float64(rtpLevel) + fileMode
 
 		*globalSrId++ // 递增全局srId
 

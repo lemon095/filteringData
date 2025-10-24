@@ -189,9 +189,9 @@ func (d *Database) GetWinData() ([]GameResultData, error) {
 		SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
 		FROM %s 
 		WHERE aw > 0 AND aw < tb * 100
-		And fb !=2
+		AND fb = %d
 		ORDER BY id
-	`, tableName)
+	`, tableName, d.Config.Game.Mode)
 
 	rows, err := d.DB.Query(query)
 	if err != nil {
@@ -216,15 +216,15 @@ func (d *Database) GetWinData() ([]GameResultData, error) {
 	return data, nil
 }
 
-// GetProfitData 获取普通模式的中奖且盈利的数据 (aw > tb, fb != 2)
+// GetProfitData 获取普通模式的中奖且盈利的数据 (aw > tb, fb = mode)
 func (d *Database) GetProfitData() ([]GameResultData, error) {
 	tableName := d.GetTableName()
 	query := fmt.Sprintf(`
 		SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
 		FROM %s 
-		WHERE aw > 0 AND aw > tb AND fb != 2
+		WHERE aw > 0 AND aw > tb AND fb = %d
 		ORDER BY id
-	`, tableName)
+	`, tableName, d.Config.Game.Mode)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
 	defer cancel()
@@ -251,15 +251,15 @@ func (d *Database) GetProfitData() ([]GameResultData, error) {
 	return data, nil
 }
 
-// GetWinDataFb 获取购买模式的中奖但是亏损的数据 (aw > 0&aw<tb, gwt <= 3, fb = 2, sp = true, aw < tb*100)
+// GetWinDataFb 获取购买模式的中奖但是亏损的数据 (aw > 0&aw<tb, fb = mode, sp = true, aw < tb*100)
 func (d *Database) GetWinDataFb() ([]GameResultData, error) {
 	tableName := d.GetTableName()
 	query := fmt.Sprintf(`
         SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
         FROM %s 
-        WHERE aw > 0 AND aw <= tb AND gwt <= 3 AND fb = 2 AND sp = true
+        WHERE aw > 0 AND aw <= tb AND fb = %d AND sp = true
         ORDER BY id
-    `, tableName)
+    `, tableName, d.Config.Game.Mode)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
 	defer cancel()
 	rows, err := d.DB.QueryContext(ctx, query)
@@ -291,9 +291,9 @@ func (d *Database) GetProfitDataFb() ([]GameResultData, error) {
 	query := fmt.Sprintf(`
         SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
         FROM %s 
-        WHERE aw > 0 AND aw > tb AND gwt <= 3 AND fb = 2 AND sp = true
+        WHERE aw > 0 AND aw > tb AND fb = %d AND sp = true
         ORDER BY id
-    `, tableName)
+    `, tableName, d.Config.Game.Mode)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
 	defer cancel()
 	rows, err := d.DB.QueryContext(ctx, query)
@@ -326,9 +326,9 @@ func (d *Database) GetNoWinData() ([]GameResultData, error) {
 		SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
 		FROM %s 
 		WHERE aw = 0 And sp != true
-		And fb !=2
+		AND fb = %d
 		ORDER BY id
-	`, tableName)
+	`, tableName, d.Config.Game.Mode)
 
 	rows, err := d.DB.Query(query)
 	if err != nil {
@@ -353,15 +353,15 @@ func (d *Database) GetNoWinData() ([]GameResultData, error) {
 	return data, nil
 }
 
-// GetNoWinDataFb 获取购买模式的不中奖数据 (aw = 0, fb = 2, sp = true)
+// GetNoWinDataFb 获取购买模式的不中奖数据 (aw = 0, fb = mode, sp = true)
 func (d *Database) GetNoWinDataFb() ([]GameResultData, error) {
 	tableName := d.GetTableName()
 	query := fmt.Sprintf(`
         SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
         FROM %s 
-        WHERE aw = 0 AND sp = true AND fb = 2
+        WHERE aw = 0 AND sp = true AND fb = %d
         ORDER BY id
-    `, tableName)
+    `, tableName, d.Config.Game.Mode)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
 	defer cancel()
@@ -420,13 +420,13 @@ func (d *Database) GetWinDataForFilling(remainingWin float64, excludeIds []int, 
         SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
         FROM %s 
         WHERE aw > 0 
-				And fb != 2
+        AND fb = %d
         AND aw < tb * 100
         AND aw <= $%d
         %s
-        ORDER BY (CASE WHEN gwt IN (2,3,4) THEN 1 ELSE 0 END), aw DESC
+        ORDER BY aw DESC
         LIMIT $%d
-    `, tableName, argIndex, excludeCondition, argIndex+1)
+    `, tableName, d.Config.Game.Mode, argIndex, excludeCondition, argIndex+1)
 
 	args = append(args, remainingWin, limit)
 
@@ -454,7 +454,7 @@ func (d *Database) GetWinDataForFilling(remainingWin float64, excludeIds []int, 
 }
 
 // GetWinDataForFillingFb 获取用于填充的购买模式中奖数据
-// 条件：aw > 0 且 aw < tb*100 且 aw <= remainingWin，gwt <= 3，fb = 2，sp = true
+// 条件：aw > 0 且 aw < tb*100 且 aw <= remainingWin，fb = mode，sp = true
 // 排除 excludeIds，按金额从大到小排序，限制返回条数
 func (d *Database) GetWinDataForFillingFb(remainingWin float64, excludeIds []int, limit int) ([]GameResultData, error) {
 	tableName := d.GetTableName()
@@ -479,13 +479,12 @@ func (d *Database) GetWinDataForFillingFb(remainingWin float64, excludeIds []int
         WHERE aw > 0 
         AND aw < tb * 100
         AND aw <= $%d
-        AND gwt <= 3
-        AND fb = 2
+        AND fb = %d
         AND sp = true
         %s
         ORDER BY aw DESC
         LIMIT $%d
-    `, tableName, argIndex, excludeCondition, argIndex+1)
+    `, tableName, argIndex, d.Config.Game.Mode, excludeCondition, argIndex+1)
 
 	args = append(args, remainingWin, limit)
 
@@ -545,14 +544,14 @@ func (d *Database) GetBestSingleMatch(targetWin float64, excludeIds []int, maxDe
 		SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
 		FROM %s 
 		WHERE aw > 0
-		And fb != 2
+		AND fb = %d
 		AND aw < tb * 100
 		AND aw >= $%d * (1 - $%d)
 		AND aw <= $%d * (1 + $%d)
 		%s
 		ORDER BY ABS(aw - $%d)
 		LIMIT 1
-	`, tableName, argIndex, argIndex+1, argIndex+2, argIndex+3, excludeCondition, argIndex+4)
+	`, tableName, d.Config.Game.Mode, argIndex, argIndex+1, argIndex+2, argIndex+3, excludeCondition, argIndex+4)
 
 	args = append(args, targetWin, maxDeviation, targetWin, maxDeviation, targetWin)
 
