@@ -9,7 +9,7 @@ import (
 // GameResultData 游戏结果数据结构
 type GameResultData struct {
 	ID        int       `json:"id" db:"id"`
-	TB        int       `json:"tb" db:"tb"`   // 投注额
+  TB        float64   `json:"tb" db:"tb"`   // 投注额
 	AW        float64   `json:"aw" db:"aw"`   // 盈利额
 	GWT       int       `json:"gwt" db:"gwt"` // 奖励类型 (2=大奖, 3=巨奖, 4=超巨奖)
 	SP        bool      `json:"sp" db:"sp"`   // 是否特殊玩法
