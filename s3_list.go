@@ -21,6 +21,7 @@ type S3FileInfo struct {
 	LastModified string // 最后修改时间
 	GameID       int    // 游戏ID
 	Mode         string // 模式：normal 或 fb
+	FileMode     int    // 文件名解析出的mode值（如 0, 1, 2）
 	RtpLevel     int    // RTP等级
 	TestNum      int    // 测试编号
 }
@@ -145,9 +146,9 @@ func (s3c *S3Client) ListS3Files(gameIDs []int, mode string) ([]S3FileInfo, erro
 				key := *obj.Key
 				// 只处理JSON文件
 				if strings.HasSuffix(key, ".json") {
-					// 解析文件名获取RTP等级和测试编号
+					// 解析文件名获取mode、RTP等级和测试编号
 					fileName := key[strings.LastIndex(key, "/")+1:]
-					rtpLevel, testNum := parseFileName(fileName)
+					fileMode, rtpLevel, testNum := parseFileName(fileName)
 
 					fileInfo := S3FileInfo{
 						Key:          key,
@@ -155,6 +156,7 @@ func (s3c *S3Client) ListS3Files(gameIDs []int, mode string) ([]S3FileInfo, erro
 						LastModified: obj.LastModified.Format("2006-01-02 15:04:05"),
 						GameID:       gameID,
 						Mode:         mode,
+						FileMode:     fileMode,
 						RtpLevel:     rtpLevel,
 						TestNum:      testNum,
 					}
@@ -207,20 +209,32 @@ func (s3c *S3Client) GetObjectStream(key string) (*s3.GetObjectOutput, error) {
 
 // parseFileName 解析文件名获取RTP等级和测试编号
 // 例如: GameResults_50_1.json -> rtpLevel=50, testNum=1
-func parseFileName(fileName string) (int, int) {
+func parseFileName(fileName string) (int, int, int) {
 	// 移除.json后缀
 	name := strings.TrimSuffix(fileName, ".json")
 
 	// 按_分割
 	parts := strings.Split(name, "_")
-	if len(parts) >= 3 {
-		// 尝试解析RTP等级和测试编号
+
+	// 支持新格式：GameResults_{mode}_{rtpLevel}_{testNum}.json
+	if len(parts) >= 4 && parts[0] == "GameResults" {
+		// 新格式：GameResults_2_200_1.json
+		if mode, err := strconv.Atoi(parts[1]); err == nil {
+			if rtpLevel, err := strconv.Atoi(parts[2]); err == nil {
+				if testNum, err := strconv.Atoi(parts[3]); err == nil {
+					return mode, rtpLevel, testNum
+				}
+			}
+		}
+	} else if len(parts) >= 3 {
+		// 兼容旧格式：GameResults_{rtpLevel}_{testNum}.json
+		// 默认mode为0
 		if rtpLevel, err := strconv.Atoi(parts[1]); err == nil {
 			if testNum, err := strconv.Atoi(parts[2]); err == nil {
-				return rtpLevel, testNum
+				return 0, rtpLevel, testNum
 			}
 		}
 	}
 
-	return 0, 0
+	return 0, 0, 0
 }

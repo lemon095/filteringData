@@ -841,7 +841,7 @@ func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) erro
 					if len(batch) >= batchSize {
 						batchCount++
 						fmt.Printf("  🔄 处理批次 %d (记录 %d-%d)\n", batchCount, totalRecords-len(batch)+1, totalRecords)
-						if err := si.insertS3Batch(batch, tableName, rtpLevel, srNumber, batchCount, file.Mode, &globalSrId); err != nil {
+						if err := si.insertS3Batch(batch, tableName, rtpLevel, srNumber, batchCount, file.FileMode, &globalSrId); err != nil {
 							return fmt.Errorf("批量插入失败: %v", err)
 						}
 						batch = batch[:0] // 清空批次
@@ -865,7 +865,7 @@ func (si *S3Importer) importS3FileStream(file S3FileInfo, tableName string) erro
 	if len(batch) > 0 {
 		batchCount++
 		fmt.Printf("  🔄 处理最后批次 %d (记录 %d-%d)\n", batchCount, totalRecords-len(batch)+1, totalRecords)
-		if err := si.insertS3Batch(batch, tableName, rtpLevel, srNumber, batchCount, file.Mode, &globalSrId); err != nil {
+		if err := si.insertS3Batch(batch, tableName, rtpLevel, srNumber, batchCount, file.FileMode, &globalSrId); err != nil {
 			return fmt.Errorf("批量插入剩余数据失败: %v", err)
 		}
 	}
@@ -914,7 +914,7 @@ func (si *S3Importer) insertBatch(data []GameResultData, tableName string, rtpLe
 }
 
 // insertS3Batch 批量插入S3数据到数据库
-func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName string, rtpLevel int, testNum int, batchNum int, mode string, globalSrId *int) error {
+func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName string, rtpLevel int, testNum int, batchNum int, fileMode int, globalSrId *int) error {
 	if len(data) == 0 {
 		return nil
 	}
@@ -963,18 +963,8 @@ func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName str
 			totalBet = 0.0
 		}
 
-		// 根据文件mode处理rtpLevel：rtpLevel + mode
-		var fileMode float64
-		if modeFloat, ok := item["mode"].(float64); ok {
-			fileMode = modeFloat
-		} else if modeInt, ok := item["mode"].(int); ok {
-			fileMode = float64(modeInt)
-		} else {
-			// 如果没有mode字段，使用默认值0
-			fileMode = 0
-		}
-		// 根据文件mode计算rtpLevel：rtpLevel + mode/10 (如档位200+mode2=200.2)
-		rtpLevelVal := float64(rtpLevel) + fileMode/10.0
+		// 根据文件名解析的mode计算rtpLevel：rtpLevel + fileMode/10 (如档位200+mode2=200.2)
+		rtpLevelVal := float64(rtpLevel) + float64(fileMode)/10.0
 
 		*globalSrId++ // 递增全局srId
 
