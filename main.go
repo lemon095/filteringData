@@ -128,11 +128,11 @@ func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, tes
 		// 判断本条是什么奖励配额（基于aw < tb * 100条件）
 		// 根据中奖金额判断奖励类型
 		var rewardType int
-		if item.AW < float64(item.TB)*100 {
+		if item.AW < item.TB*100 {
 			// 根据中奖金额范围判断奖励类型
-			if item.AW >= float64(item.TB)*50 {
+			if item.AW >= item.TB*50 {
 				rewardType = 4 // 超级巨奖
-			} else if item.AW >= float64(item.TB)*20 {
+			} else if item.AW >= item.TB*20 {
 				rewardType = 3 // 巨奖
 			} else {
 				rewardType = 2 // 大奖
@@ -2690,12 +2690,12 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	var winCandidates []GameResultData    // aw <= tb 不盈利中奖数据
 
 	for _, item := range profitDataAll {
-		if item.AW <= float64(item.TB)*50 && item.AW > 0 {
+		if item.AW <= item.TB*50 && item.AW > 0 {
 			profitCandidates = append(profitCandidates, item)
 		}
 	}
 	for _, item := range winDataAll {
-		if item.AW <= float64(item.TB)*50 && item.AW > 0 {
+		if item.AW <= item.TB*50 && item.AW > 0 {
 			winCandidates = append(winCandidates, item)
 		}
 	}
