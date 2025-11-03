@@ -1043,3 +1043,101 @@ func adjustRTPToLowerLimit(data []GameResultData, targetRTP float64, totalBet fl
 
 	return result, nil
 }
+
+// ShuffleDataWithMultiplierDistribution 智能打乱数据，确保大倍率数据均匀分布在整个序列中
+// 方案：将数据分成若干区间，然后将大倍率数据随机插入到每个区间的随机位置
+func ShuffleDataWithMultiplierDistribution(data []GameResultData, betAmount float64, rng *rand.Rand) {
+	totalSize := len(data)
+	if totalSize == 0 {
+		return
+	}
+
+	// 按倍率分类，提取大倍率数据（20-100倍）
+	var bigMultiplierData []GameResultData // 20-50倍、50-100倍等高倍率数据
+	var normalData []GameResultData        // 其他数据
+
+	for _, item := range data {
+		multiplier := item.AW / betAmount
+
+		// 提取20-100倍的数据
+		if multiplier > 20 && multiplier <= 100 {
+			bigMultiplierData = append(bigMultiplierData, item)
+		} else {
+			normalData = append(normalData, item)
+		}
+	}
+
+	// 如果没有大倍率数据，直接整体打乱返回
+	if len(bigMultiplierData) == 0 {
+		rand.Shuffle(len(data), func(i, j int) {
+			data[i], data[j] = data[j], data[i]
+		})
+		return
+	}
+
+	// 先打乱普通数据
+	rand.Shuffle(len(normalData), func(i, j int) {
+		normalData[i], normalData[j] = normalData[j], normalData[i]
+	})
+
+	// 先打乱大倍率数据
+	rand.Shuffle(len(bigMultiplierData), func(i, j int) {
+		bigMultiplierData[i], bigMultiplierData[j] = bigMultiplierData[j], bigMultiplierData[i]
+	})
+
+	// 计算区间数量：大倍率数据数量
+	segmentCount := len(bigMultiplierData)
+
+	// 计算每个区间的平均大小
+	avgSegmentSize := float64(len(normalData)) / float64(segmentCount)
+
+	// 创建结果数组
+	result := make([]GameResultData, 0, totalSize)
+
+	// 遍历每个区间，在每个区间内随机插入一条大倍率数据
+	for seg := 0; seg < segmentCount; seg++ {
+		// 计算当前区间的起始和结束位置
+		segmentStart := int(float64(seg) * avgSegmentSize)
+		segmentEnd := int(float64(seg+1) * avgSegmentSize)
+		if seg == segmentCount-1 {
+			segmentEnd = len(normalData) // 最后一个区间包含所有剩余数据
+		}
+
+		segmentSize := segmentEnd - segmentStart
+
+		// 先添加这个区间的普通数据
+		result = append(result, normalData[segmentStart:segmentEnd]...)
+
+		// 如果还有大倍率数据，在这个区间内随机选择一个位置插入
+		if seg < len(bigMultiplierData) {
+			// 计算当前结果数组的长度（作为插入位置的参考点）
+			currentResultLen := len(result)
+
+			// 在区间内随机选择一个相对位置（0 到 segmentSize-1）
+			relativePos := 0
+			if segmentSize > 1 {
+				relativePos = rng.Intn(segmentSize)
+			}
+
+			// 计算绝对插入位置：需要在已经添加的数据中找到位置
+			insertPos := currentResultLen - segmentSize + relativePos
+
+			// 确保插入位置有效
+			if insertPos < 0 {
+				insertPos = 0
+			}
+			if insertPos > currentResultLen {
+				insertPos = currentResultLen
+			}
+
+			// 插入大倍率数据
+			result = append(result, GameResultData{})
+			copy(result[insertPos+1:], result[insertPos:])
+			result[insertPos] = bigMultiplierData[seg]
+		}
+	}
+
+	// 不再整体打乱，保持均匀分布的效果
+	// 将结果复制回原数组
+	copy(data, result)
+}
