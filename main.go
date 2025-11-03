@@ -1468,12 +1468,12 @@ func main() {
 	case "sp-stats":
 		// SP统计命令：./filteringData sp-stats <gameId>
 		runSpStatisticsFromJSON()
-	case "generateLevels":
-		// 生成13档位数据命令：./filteringData generateLevels <id1,id2,id3,...>
-		runGenerateLevelsMode()
+	// case "generateLevels":
+	// 	// 生成13档位数据命令：./filteringData generateLevels <id1,id2,id3,...>
+	// 	runGenerateLevelsMode()
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate, generate2, generate3, generate4, generateFb, generateFb2, multi-game, import, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats, generateLevels")
+		fmt.Println("支持的命令: generate, generate2, generate3, generate4, generateFb, generateFb2, multi-game, import, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats")
 		os.Exit(1)
 	}
 }
@@ -4687,153 +4687,4 @@ func runSpStatisticsFromJSON() {
 		fmt.Printf("   总 SP=False: %d (%.2f%%)\n", totalSpFalse, 100-totalSpRatio)
 	}
 	fmt.Printf("============================================================\n")
-}
-
-// runGenerateLevelsMode 运行生成13档位数据模式
-func runGenerateLevelsMode() {
-	fmt.Println("▶️ [generateLevels] 生成13档位数据模式启动")
-
-	// 从命令行参数获取ID列表
-	if len(os.Args) < 3 {
-		fmt.Println("❌ 用法: ./filteringData generateLevels <id1,id2,id3,...>")
-		fmt.Println("示例: ./filteringData generateLevels 9793,9782,9779")
-		os.Exit(1)
-	}
-
-	// 解析ID列表
-	idStr := os.Args[2]
-	idStrings := strings.Split(idStr, ",")
-	var ids []int
-	for _, idStr := range idStrings {
-		id, err := strconv.Atoi(strings.TrimSpace(idStr))
-		if err != nil {
-			fmt.Printf("❌ 无效的ID: %s\n", idStr)
-			os.Exit(1)
-		}
-		ids = append(ids, id)
-	}
-
-	fmt.Printf("📋 共获取到 %d 个ID\n", len(ids))
-
-	// 加载配置
-	config, err := LoadConfig("config.yaml")
-	if err != nil {
-		log.Fatalf("加载配置文件失败: %v", err)
-	}
-
-	// 连接数据库
-	db, err := NewDatabase(config, "")
-	if err != nil {
-		log.Fatalf("数据库连接失败: %v", err)
-	}
-	defer db.Close()
-
-	// 从数据库获取这些ID的数据
-	fmt.Println("🔄 正在从数据库获取数据...")
-	dataList, err := db.GetDataByIds(ids)
-	if err != nil {
-		log.Fatalf("获取数据失败: %v", err)
-	}
-
-	fmt.Printf("✅ 成功获取 %d 条数据\n", len(dataList))
-
-	// 定义13档位（RtpNo 1-13）
-	normal13Levels := []RtpLevel{}
-	fb13Levels := []RtpLevel{}
-
-	for _, level := range RtpLevels {
-		if level.RtpNo >= 1 && level.RtpNo <= 13 {
-			normal13Levels = append(normal13Levels, level)
-		}
-	}
-
-	for _, level := range FbRtpLevels {
-		if level.RtpNo >= 1 && level.RtpNo <= 13 {
-			fb13Levels = append(fb13Levels, level)
-		}
-	}
-
-	fmt.Printf("📊 普通模式13档位: %d 个\n", len(normal13Levels))
-	fmt.Printf("📊 购买模式13档位: %d 个\n", len(fb13Levels))
-
-	// 为每条数据生成13档位
-	for i, data := range dataList {
-		fmt.Printf("\n🔄 处理数据 %d/%d: ID=%d, FB=%d\n", i+1, len(dataList), data.ID, data.FB)
-
-		// 判断是购买模式还是普通模式
-		var levels []RtpLevel
-		var outputDir string
-		if data.FB == 2 {
-			// 购买模式
-			levels = fb13Levels
-			outputDir = filepath.Join("output", fmt.Sprintf("%d_fb", config.Game.ID))
-			fmt.Printf("   模式: 购买夺宝 (fb=2)\n")
-		} else {
-			// 普通模式
-			levels = normal13Levels
-			outputDir = filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
-			fmt.Printf("   模式: 普通 (fb!=2)\n")
-		}
-
-		// 为每个档位生成数据
-		for _, level := range levels {
-			// 创建只有一条数据的数组（使用当前数据）
-			singleData := []GameResultData{data}
-
-			// 保存为JSON文件
-			// 文件名格式: output_table_prefix_RtpNo_dataId.json
-			fileName := fmt.Sprintf("%s%.0f_%d.json", config.Tables.OutputTablePrefix, level.RtpNo, data.ID)
-			filePath := filepath.Join(outputDir, fileName)
-
-			if err := os.MkdirAll(outputDir, 0755); err != nil {
-				fmt.Printf("❌ 创建输出目录失败: %v\n", err)
-				continue
-			}
-
-			// 准备要保存的数据结构
-			type OutputData struct {
-				RtpLevel int                      `json:"rtpLevel"`
-				SrNumber int                      `json:"srNumber"`
-				Data     []map[string]interface{} `json:"data"`
-			}
-
-			// 转换数据为字典数组格式
-			var jsonData []map[string]interface{}
-			for _, item := range singleData {
-				row := map[string]interface{}{
-					"tb":  item.TB,
-					"aw":  item.AW,
-					"gwt": item.GWT,
-					"sp":  item.SP,
-					"fb":  item.FB,
-					"gd":  item.GD.Data,
-				}
-				jsonData = append(jsonData, row)
-			}
-
-			// 构建输出数据
-			outputData := OutputData{
-				RtpLevel: int(level.RtpNo),
-				SrNumber: data.ID, // 使用数据ID作为SrNumber
-				Data:     jsonData,
-			}
-
-			// 将数据转换为JSON
-			jsonBytes, err := json.Marshal(outputData)
-			if err != nil {
-				fmt.Printf("❌ JSON序列化失败: %v\n", err)
-				continue
-			}
-
-			// 写入文件
-			if err := os.WriteFile(filePath, jsonBytes, 0644); err != nil {
-				fmt.Printf("❌ 写入JSON文件失败: %v\n", err)
-				continue
-			}
-
-			fmt.Printf("   ✅ 档位 %.0f 已保存: %s\n", level.RtpNo, fileName)
-		}
-	}
-
-	fmt.Printf("\n🎉 所有13档位数据生成完成！\n")
 }
