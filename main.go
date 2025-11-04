@@ -2180,10 +2180,8 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 		return fmt.Errorf("❌ 数据量不匹配：期望 %d 条, 实际 %d 条", dataNum, len(adjustedData))
 	}
 
-	// 打乱输出顺序
-	rand.Shuffle(len(adjustedData), func(i, j int) {
-		adjustedData[i], adjustedData[j] = adjustedData[j], adjustedData[i]
-	})
+	// 智能打乱输出顺序，确保大倍率数据在整个序列中均匀分布
+	ShuffleDataWithMultiplierDistribution(adjustedData, perSpinBet, rng)
 
 	// 保存到JSON文件
 	var outputDir string = filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
