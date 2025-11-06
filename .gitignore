@@ -48,3 +48,5 @@ config.yaml
 /output/
 /output/**
 config copy.yaml
+/sql/
+/sql/**
