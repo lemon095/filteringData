@@ -702,7 +702,7 @@ func (d *Database) ExportTableToSQL(outputFile string) error {
 		}
 
 		// 转义JSONB字段
-		gdStr := "NULL"
+		gdStr := "'[]'"
 		if item.GD.Data != nil {
 			gdJSON, err := json.Marshal(item.GD.Data)
 			if err != nil {
