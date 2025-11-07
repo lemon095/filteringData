@@ -843,13 +843,11 @@ func (d *Database) ImportSQLFile(sqlFile string) error {
 			continue
 		}
 
-		// 检查是否是INSERT语句开始
-		if strings.HasPrefix(strings.ToUpper(line), "INSERT") {
+		if !inStatement {
 			inStatement = true
 			currentSQL.Reset()
 			currentSQL.WriteString(line)
-		} else if inStatement {
-			// 继续构建SQL语句
+		} else {
 			currentSQL.WriteString(" ")
 			currentSQL.WriteString(line)
 		}
@@ -861,14 +859,18 @@ func (d *Database) ImportSQLFile(sqlFile string) error {
 			sql = strings.TrimSuffix(sql, ";")
 			sql = strings.TrimSpace(sql)
 
-			// 执行SQL语句（使用文件中的ID值）
-			// 注意：INSERT语句明确指定了ID字段，PostgreSQL会使用文件中的ID值，而不是序列值
+			// 执行SQL语句
 			result, err := d.DB.Exec(sql)
 			if err != nil {
-				// 检查是否是主键冲突错误
+				upperSQL := strings.ToUpper(sql)
 				if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "violates unique constraint") {
 					log.Printf("⚠️ 主键冲突（ID已存在）: %v", err)
 					log.Printf("   💡 提示：如需重新导入，请先清空表或删除已存在的记录")
+				} else if strings.Contains(err.Error(), "already exists") && (strings.HasPrefix(upperSQL, "CREATE TABLE") || strings.HasPrefix(upperSQL, "CREATE SEQUENCE")) {
+					log.Printf("ℹ️ 建表语句已存在，跳过: %v", err)
+					currentSQL.Reset()
+					inStatement = false
+					continue
 				} else {
 					log.Printf("⚠️ 执行SQL语句失败: %v", err)
 				}
@@ -886,18 +888,16 @@ func (d *Database) ImportSQLFile(sqlFile string) error {
 
 			// 尝试从INSERT语句中提取ID值（用于跟踪最大ID）
 			rowsAffected, _ := result.RowsAffected()
-			if rowsAffected > 0 {
-				// 从VALUES子句中提取ID值范围（简化版）
-				if idMatch := extractFirstIDFromInsert(sql); idMatch > 0 {
-					if idMatch > maxImportedID {
-						maxImportedID = idMatch
-					}
+			upperSQL := strings.ToUpper(sql)
+			if rowsAffected > 0 && strings.HasPrefix(upperSQL, "INSERT") {
+				if idMatch := extractFirstIDFromInsert(sql); idMatch > 0 && idMatch > maxImportedID {
+					maxImportedID = idMatch
 				}
 			}
 
 			count++
 			if count%100 == 0 {
-				log.Printf("  📊 已执行 %d 条INSERT语句，当前最大ID: %d...", count, maxImportedID)
+				log.Printf("  📊 已执行 %d 条SQL语句，当前最大ID: %d...", count, maxImportedID)
 			}
 
 			currentSQL.Reset()
@@ -912,7 +912,7 @@ func (d *Database) ImportSQLFile(sqlFile string) error {
 	// 注意：序列更新将在所有文件导入完成后统一进行（由调用方处理）
 	// 这样可以确保分割文件导入时序列的一致性
 
-	log.Printf("✅ 文件导入完成！共执行 %d 条INSERT语句", count)
+	log.Printf("✅ 文件导入完成！共执行 %d 条SQL语句", count)
 	return nil
 }
 
@@ -1002,5 +1002,56 @@ func (d *Database) SyncSequenceWithMaxID() error {
 		log.Printf("ℹ️ 表为空，已将序列 %s 重置为 1", sequenceName)
 	}
 
+	return nil
+}
+
+// ExportTableSchema 导出当前游戏ID对应数据表的建表SQL（包含 IF NOT EXISTS）
+func (d *Database) ExportTableSchema(outputFile string) error {
+	gameID := d.Config.Game.ID
+	tablePrefix := d.Config.Tables.SourceTablePrefix
+	tableName := fmt.Sprintf("%s%d", tablePrefix, gameID)
+	sequenceName := fmt.Sprintf("%s%d_id_seq", tablePrefix, gameID)
+
+	schemaSQL := fmt.Sprintf(`-- SQL 建表文件
+-- 表名: %s
+-- 生成时间: %s
+
+CREATE SEQUENCE IF NOT EXISTS "%s";
+
+CREATE TABLE IF NOT EXISTS "%s" (
+	id INTEGER PRIMARY KEY DEFAULT nextval('"%s"'),
+	tb DOUBLE PRECISION NOT NULL,
+	aw DOUBLE PRECISION NOT NULL,
+	gwt INTEGER NOT NULL,
+	sp BOOLEAN NOT NULL DEFAULT false,
+	fb INTEGER NOT NULL DEFAULT 0,
+	gd JSONB,
+	"createdAt" TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
+	"updatedAt" TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE "%s"
+	ALTER COLUMN id SET DEFAULT nextval('"%s"');
+`,
+		tableName,
+		time.Now().Format("2006-01-02 15:04:05"),
+		sequenceName,
+		tableName,
+		sequenceName,
+		tableName,
+		sequenceName,
+	)
+
+	file, err := os.Create(outputFile)
+	if err != nil {
+		return fmt.Errorf("创建建表SQL文件失败: %v", err)
+	}
+	defer file.Close()
+
+	if _, err := file.WriteString(schemaSQL); err != nil {
+		return fmt.Errorf("写入建表SQL失败: %v", err)
+	}
+
+	log.Printf("✅ 已生成建表SQL: %s", outputFile)
 	return nil
 }

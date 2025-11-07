@@ -18,6 +18,37 @@ import (
 	"time"
 )
 
+func parseDataID(value interface{}) (int64, error) {
+	if value == nil {
+		return 0, fmt.Errorf("记录缺少 id 字段")
+	}
+	switch v := value.(type) {
+	case float64:
+		return int64(v), nil
+	case int:
+		return int64(v), nil
+	case int64:
+		return v, nil
+	case json.Number:
+		i, err := v.Int64()
+		if err != nil {
+			return 0, err
+		}
+		return i, nil
+	case string:
+		if v == "" {
+			return 0, fmt.Errorf("id 字段为空字符串")
+		}
+		i, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		return i, nil
+	default:
+		return 0, fmt.Errorf("无法解析 id 字段类型: %T", value)
+	}
+}
+
 // isGameId 检查参数是否为gameId（对应目录存在）
 func isGameId(arg string) bool {
 	if gid, err := strconv.Atoi(arg); err == nil {
@@ -847,6 +878,7 @@ func saveToJSON(data []GameResultData, config *Config, rtpLevel float64, testNum
 	var jsonData []map[string]interface{}
 	for _, item := range data {
 		row := map[string]interface{}{
+			"id":  item.ID,
 			"tb":  item.TB,
 			"aw":  item.AW,
 			"gwt": item.GWT,
@@ -1510,17 +1542,18 @@ func runImportFbMode(fileLevelId string, env string) {
 	// 构建目标表（与普通导入相同：rtpLevel 为 NUMERIC，表名不带 _fb）
 	tableName := fmt.Sprintf("%s%d", config.Tables.OutputTablePrefix, config.Game.ID)
 	createTable := fmt.Sprintf(`
-        CREATE TABLE IF NOT EXISTS "%s" (
-            "id" SERIAL PRIMARY KEY,
-            "rtpLevel" REAL NOT NULL,
-            "srNumber" INTEGER NOT NULL,
-            "srId" SERIAL NOT NULL,
-            "bet" NUMERIC NOT NULL,
-            "win" NUMERIC NOT NULL,
-            "detail" JSONB,
-            "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    `, tableName)
+	    CREATE TABLE IF NOT EXISTS "%s" (
+	        "id" SERIAL PRIMARY KEY,
+	        "rtpLevel" REAL NOT NULL,
+	        "srNumber" INTEGER NOT NULL,
+	        "srId" SERIAL NOT NULL,
+	        "dataId" INTEGER NOT NULL,
+	        "bet" NUMERIC NOT NULL,
+	        "win" NUMERIC NOT NULL,
+	        "detail" JSONB NOT NULL DEFAULT '[]'::jsonb,
+	        "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	    );
+	`, tableName)
 	if _, err := db.DB.Exec(createTable); err != nil {
 		log.Fatalf("❌ 创建FB目标表失败: %v", err)
 	}
@@ -1638,9 +1671,9 @@ func runImportFbMode(fileLevelId string, env string) {
 					return fmt.Errorf("开启事务失败: %w", err)
 				}
 				stmt, err := tx.Prepare(fmt.Sprintf(`
-                    INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "bet", "win", "detail")
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                `, tableName))
+                    INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "dataId", "bet", "win", "detail")
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+	                `, tableName))
 				if err != nil {
 					_ = tx.Rollback()
 					return fmt.Errorf("准备语句失败: %w", err)
@@ -1670,8 +1703,8 @@ func runImportFbMode(fileLevelId string, env string) {
 						totalBet = math.Round(tb*100) / 100
 					}
 
-					// detail 序列化 gd
-					var detailVal interface{}
+					// detail 序列化 gd，默认存储空数组
+					detailVal := "[]"
 					if item["gd"] != nil {
 						gdJSON, err := json.Marshal(item["gd"])
 						if err != nil {
@@ -1682,7 +1715,14 @@ func runImportFbMode(fileLevelId string, env string) {
 						detailVal = string(gdJSON)
 					}
 
-					if _, err := stmt.Exec(rtpLevelVal, srNumber, srId, totalBet, winValue, detailVal); err != nil {
+					dataID, err := parseDataID(item["id"])
+					if err != nil {
+						_ = stmt.Close()
+						_ = tx.Rollback()
+						return fmt.Errorf("解析dataId失败: %w", err)
+					}
+
+					if _, err := stmt.Exec(rtpLevelVal, srNumber, srId, dataID, totalBet, winValue, detailVal); err != nil {
 						_ = stmt.Close()
 						_ = tx.Rollback()
 						return fmt.Errorf("插入失败: %w", err)
@@ -1764,17 +1804,18 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 	// 目标表仍为不带 _fb 的表名（与现有实现一致）
 	tableName := fmt.Sprintf("%s%d", config.Tables.OutputTablePrefix, gameId)
 	createTable := fmt.Sprintf(`
-        CREATE TABLE IF NOT EXISTS "%s" (
-            "id" SERIAL PRIMARY KEY,
-            "rtpLevel" REAL NOT NULL,
-            "srNumber" INTEGER NOT NULL,
-            "srId" SERIAL NOT NULL,
-            "bet" NUMERIC NOT NULL,
-            "win" NUMERIC NOT NULL,
-            "detail" JSONB,
-            "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    `, tableName)
+	    CREATE TABLE IF NOT EXISTS "%s" (
+	        "id" SERIAL PRIMARY KEY,
+	        "rtpLevel" REAL NOT NULL,
+	        "srNumber" INTEGER NOT NULL,
+	        "srId" SERIAL NOT NULL,
+	        "dataId" INTEGER NOT NULL,
+	        "bet" NUMERIC NOT NULL,
+	        "win" NUMERIC NOT NULL,
+	        "detail" JSONB NOT NULL DEFAULT '[]'::jsonb,
+	        "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	    );
+	`, tableName)
 	if _, err := db.DB.Exec(createTable); err != nil {
 		log.Fatalf("❌ 创建FB目标表失败: %v", err)
 	}
@@ -1883,9 +1924,9 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 					return fmt.Errorf("开启事务失败: %w", err)
 				}
 				stmt, err := tx.Prepare(fmt.Sprintf(`
-                    INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "bet", "win", "detail")
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                `, tableName))
+                    INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "dataId", "bet", "win", "detail")
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+	                `, tableName))
 				if err != nil {
 					_ = tx.Rollback()
 					return fmt.Errorf("准备语句失败: %w", err)
@@ -1904,7 +1945,7 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 					if aw, ok := item["aw"].(float64); ok {
 						winValue = math.Round(aw*100) / 100
 					}
-					var detailVal interface{}
+					detailVal := "[]"
 					if item["gd"] != nil {
 						gdJSON, err := json.Marshal(item["gd"])
 						if err != nil {
@@ -1914,7 +1955,15 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 						}
 						detailVal = string(gdJSON)
 					}
-					if _, err := stmt.Exec(rtpLevelVal, srNumber, srId, bet, winValue, detailVal); err != nil {
+
+					dataID, err := parseDataID(item["id"])
+					if err != nil {
+						_ = stmt.Close()
+						_ = tx.Rollback()
+						return fmt.Errorf("解析dataId失败: %w", err)
+					}
+
+					if _, err := stmt.Exec(rtpLevelVal, srNumber, srId, dataID, bet, winValue, detailVal); err != nil {
 						_ = stmt.Close()
 						_ = tx.Rollback()
 						return fmt.Errorf("插入失败: %w", err)
@@ -3097,7 +3146,7 @@ func runExportCommand() {
 	defer db.Close()
 
 	// 创建sql目录（如果不存在）
-	sqlDir := "sql"
+	sqlDir := filepath.Join("sql", fmt.Sprintf("%d", config.Game.ID))
 	if err := os.MkdirAll(sqlDir, 0755); err != nil {
 		log.Fatalf("❌ 创建sql目录失败: %v", err)
 	}
@@ -3114,7 +3163,7 @@ func runExportCommand() {
 	// 否则将其放入sql目录
 	if !filepath.IsAbs(outputFile) && filepath.Dir(outputFile) == "." {
 		outputFile = filepath.Join(sqlDir, outputFile)
-	} else if !filepath.IsAbs(outputFile) && filepath.Dir(outputFile) != sqlDir {
+	} else if !filepath.IsAbs(outputFile) && !strings.HasPrefix(filepath.Clean(outputFile), sqlDir) {
 		// 如果用户提供了相对路径但不在sql目录，提取文件名放入sql目录
 		outputFile = filepath.Join(sqlDir, filepath.Base(outputFile))
 	}
@@ -3131,7 +3180,14 @@ func runExportCommand() {
 		log.Fatalf("❌ 导出失败: %v", err)
 	}
 
-	fmt.Printf("✅ 导出完成！文件已保存到: %s\n", outputFile)
+	// 导出建表SQL（与数据SQL放在同一目录）
+	schemaFile := filepath.Join(sqlDir, "schema.sql")
+	if err := db.ExportTableSchema(schemaFile); err != nil {
+		log.Fatalf("❌ 导出建表SQL失败: %v", err)
+	}
+
+	fmt.Printf("✅ 导出完成！数据文件: %s\n", outputFile)
+	fmt.Printf("📄 建表文件: %s\n", schemaFile)
 }
 
 // runImportSQLCommand 运行本地导入SQL命令
@@ -3166,23 +3222,39 @@ func runImportSQLCommand() {
 		log.Fatalf("❌ 加载配置失败: %v", err)
 	}
 
-	// 本地导入：从sql目录读取
-	sqlDir := "sql"
+	primarySqlDir := filepath.Join("sql", fmt.Sprintf("%d", config.Game.ID))
+	legacySqlDir := "sql"
+	searchDirs := []string{primarySqlDir, legacySqlDir}
 
-	// 如果文件路径不是绝对路径且不在sql目录中，尝试在sql目录中查找
-	if !filepath.IsAbs(sqlFile) && filepath.Dir(sqlFile) == "." {
-		// 先尝试在sql目录中查找
-		sqlDirPath := filepath.Join(sqlDir, sqlFile)
-		if _, err := os.Stat(sqlDirPath); err == nil {
-			sqlFile = sqlDirPath
-			fmt.Printf("📁 在sql目录中找到文件: %s\n", sqlFile)
+	// 如果文件路径不是绝对路径，尝试在常用目录中查找
+	if !filepath.IsAbs(sqlFile) {
+		cleanInput := filepath.Clean(sqlFile)
+		found := false
+		if filepath.Dir(cleanInput) == "." {
+			for _, dir := range searchDirs {
+				candidate := filepath.Join(dir, filepath.Base(cleanInput))
+				if _, err := os.Stat(candidate); err == nil {
+					sqlFile = candidate
+					fmt.Printf("📁 在目录 %s 中找到文件: %s\n", dir, sqlFile)
+					found = true
+					break
+				}
+			}
+			if !found {
+				sqlFile = filepath.Join(primarySqlDir, filepath.Base(cleanInput))
+			}
 		} else {
-			// 如果sql目录中不存在，尝试使用完整路径
-			sqlFile = sqlDirPath
+			for _, dir := range searchDirs {
+				if strings.HasPrefix(cleanInput, dir) {
+					sqlFile = cleanInput
+					found = true
+					break
+				}
+			}
+			if !found {
+				sqlFile = filepath.Join(primarySqlDir, filepath.Base(cleanInput))
+			}
 		}
-	} else if !filepath.IsAbs(sqlFile) && filepath.Dir(sqlFile) != sqlDir {
-		// 如果用户提供了相对路径但不在sql目录，提取文件名
-		sqlFile = filepath.Join(sqlDir, filepath.Base(sqlFile))
 	}
 
 	// 检查文件是否存在
@@ -3200,6 +3272,30 @@ func runImportSQLCommand() {
 	envDisplay := ""
 	if env != "" {
 		envDisplay = fmt.Sprintf(" [环境: %s]", env)
+	}
+
+	// 导入前先执行建表SQL（如果存在）
+	schemaCandidates := []string{
+		filepath.Join(filepath.Dir(sqlFile), "schema.sql"),
+		filepath.Join(primarySqlDir, "schema.sql"),
+		filepath.Join(legacySqlDir, "schema.sql"),
+	}
+	executedSchema := false
+	for _, schemaPath := range schemaCandidates {
+		if schemaPath == "" {
+			continue
+		}
+		if _, err := os.Stat(schemaPath); err == nil {
+			fmt.Printf("📄 先执行建表SQL: %s\n", schemaPath)
+			if err := db.ImportSQLFile(schemaPath); err != nil {
+				log.Fatalf("❌ 执行建表SQL失败: %v", err)
+			}
+			executedSchema = true
+			break
+		}
+	}
+	if !executedSchema {
+		fmt.Printf("ℹ️ 未找到建表SQL，直接导入数据\n")
 	}
 
 	// 检查是否有分割文件（part文件）
@@ -3362,6 +3458,18 @@ func importS3SQLForGame(config *Config, s3Client *S3Client, env string, gameID i
 
 	fmt.Printf("🌐 S3 路径: %s%s\n", baseKey, envDisplay)
 	fmt.Printf("📁 目标表: %s\n", db.GetTableName())
+
+	// 先执行建表SQL（如果存在）
+	schemaKey := fmt.Sprintf("mpg-slot-data/%d/sql/schema.sql", gameID)
+	if err := db.ImportSQLFileFromS3(s3Client, schemaKey); err != nil {
+		if isS3ObjectNotFound(err) {
+			fmt.Printf("ℹ️ 未在S3找到建表SQL: %s\n", schemaKey)
+		} else {
+			return fmt.Errorf("执行建表SQL失败: %v", err)
+		}
+	} else {
+		fmt.Printf("✅ 已执行建表SQL: %s\n", schemaKey)
+	}
 
 	importedFiles := 0
 	for part := 1; part <= 999; part++ {

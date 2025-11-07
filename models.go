@@ -23,6 +23,7 @@ type GameResult struct {
 	RtpLevel float64 //rtp等级
 	SrNumber int     // 第几次
 	SrId     int
+	DataID   int
 	Bet      float64
 	Win      float64
 	Detail   json.RawMessage

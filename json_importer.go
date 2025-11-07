@@ -253,12 +253,13 @@ func (ji *JSONImporter) createTargetTable(tableName string) error {
 	query := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS "%s" (
 			"id" SERIAL PRIMARY KEY,
-			"rtpLevel" REAL NOT NULL,
-			"srNumber" INTEGER NOT NULL,
-			"srId" SERIAL NOT NULL,
-			"bet" NUMERIC NOT NULL,
-			"win" NUMERIC NOT NULL,
-			"detail" JSONB,
+		"rtpLevel" REAL NOT NULL,
+		"srNumber" INTEGER NOT NULL,
+		"srId" SERIAL NOT NULL,
+		"dataId" INTEGER NOT NULL,
+		"bet" NUMERIC NOT NULL,
+		"win" NUMERIC NOT NULL,
+		"detail" JSONB NOT NULL DEFAULT '[]'::jsonb,
 			"created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 	`, tableName)
@@ -499,8 +500,8 @@ func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName str
 
 	// 准备插入语句
 	query := fmt.Sprintf(`
-		INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "bet", "win", "detail")
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "dataId", "bet", "win", "detail")
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, tableName)
 
 	stmt, err := tx.Prepare(query)
@@ -515,7 +516,7 @@ func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName str
 	// 批量插入数据
 	for i, item := range data {
 		// 将gd字段转换为JSON字符串以适配JSONB类型
-		var detailVal interface{}
+		detailVal := "[]"
 		if item["gd"] != nil {
 			// 将gd字段转换为JSON字符串
 			gdJSON, err := json.Marshal(item["gd"])
@@ -543,10 +544,15 @@ func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName str
 		}
 		// 根据文件mode计算rtpLevel：rtpLevel + mode/10 (如档位200+mode2=200.2)
 		rtpLevelVal := float64(rtpLevel) + float64(mode)/10.0
-		_, err := stmt.Exec(
+		dataID, err := parseDataID(item["id"])
+		if err != nil {
+			return fmt.Errorf("解析dataId失败: %v", err)
+		}
+		_, err = stmt.Exec(
 			rtpLevelVal, // rtpLevel
 			testNum,     // srNumber
 			i+1,         // srId (从1开始)
+			dataID,      // dataId 源数据id
 			totalBet,    // bet
 			winValue,    // win (精度修正后)
 			detailVal,   // detail (JSONB)
@@ -882,14 +888,22 @@ func (si *S3Importer) insertBatch(data []GameResultData, tableName string, rtpLe
 
 	// 使用批量插入SQL - 优化版本
 	query := fmt.Sprintf(`
-		INSERT INTO "%s" (rtpLevel, srNumber, srId, bet, win, detail) 
+		INSERT INTO "%s" (rtpLevel, srNumber, srId, dataId, bet, win, detail) 
 		VALUES %s
 	`, tableName, si.generatePlaceholders(len(data)))
 
 	// 准备参数
-	args := make([]interface{}, 0, len(data)*6)
+	args := make([]interface{}, 0, len(data)*7)
 	for i, item := range data {
-		args = append(args, rtpLevel, testNum, i+1, item.TB, item.AW, item.GD)
+		detailVal := "[]"
+		if item.GD.Data != nil {
+			gdBytes, err := json.Marshal(item.GD.Data)
+			if err != nil {
+				return fmt.Errorf("序列化gd字段失败: %v", err)
+			}
+			detailVal = string(gdBytes)
+		}
+		args = append(args, rtpLevel, testNum, i+1, item.ID, item.TB, item.AW, detailVal)
 	}
 
 	// 开始事务 - 使用带重试机制的事务开始
@@ -931,12 +945,12 @@ func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName str
 
 	// 准备批量插入数据
 	values := make([]string, 0, len(data))
-	args := make([]interface{}, 0, len(data)*6)
+	args := make([]interface{}, 0, len(data)*7)
 	argIndex := 1
 
 	for _, item := range data {
 		// 将gd字段转换为JSON字符串以适配JSONB类型
-		var detailVal interface{}
+		detailVal := "[]"
 		if item["gd"] != nil {
 			// 将gd字段转换为JSON字符串
 			gdJSON, err := json.Marshal(item["gd"])
@@ -969,17 +983,21 @@ func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName str
 		*globalSrId++ // 递增全局srId
 
 		// 构建VALUES子句
-		values = append(values, fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d)",
-			argIndex, argIndex+1, argIndex+2, argIndex+3, argIndex+4, argIndex+5))
+		values = append(values, fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			argIndex, argIndex+1, argIndex+2, argIndex+3, argIndex+4, argIndex+5, argIndex+6))
 
 		// 添加参数
-		args = append(args, rtpLevelVal, testNum, *globalSrId, totalBet, winValue, detailVal)
-		argIndex += 6
+		dataID, err := parseDataID(item["id"])
+		if err != nil {
+			return fmt.Errorf("解析dataId失败: %v", err)
+		}
+		args = append(args, rtpLevelVal, testNum, *globalSrId, dataID, totalBet, winValue, detailVal)
+		argIndex += 7
 	}
 
 	// 构建批量插入SQL
 	query := fmt.Sprintf(`
-		INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "bet", "win", "detail")
+		INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "dataId", "bet", "win", "detail")
 		VALUES %s
 	`, tableName, strings.Join(values, ", "))
 
@@ -1004,14 +1022,14 @@ func (si *S3Importer) generatePlaceholders(count int) string {
 		return ""
 	}
 
-	// 生成 (?, ?, ?, ?, ?, ?) 格式的占位符
-	placeholder := "($1, $2, $3, $4, $5, $6)"
+	// 生成 (?, ?, ?, ?, ?, ?, ?) 格式的占位符
+	placeholder := "($1, $2, $3, $4, $5, $6, $7)"
 	result := placeholder
 
 	for i := 1; i < count; i++ {
-		offset := i * 6
-		result += fmt.Sprintf(", ($%d, $%d, $%d, $%d, $%d, $%d)",
-			offset+1, offset+2, offset+3, offset+4, offset+5, offset+6)
+		offset := i * 7
+		result += fmt.Sprintf(", ($%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			offset+1, offset+2, offset+3, offset+4, offset+5, offset+6, offset+7)
 	}
 
 	return result
@@ -1170,12 +1188,13 @@ func (si *S3Importer) createS3TargetTable(tableName string) error {
 	query := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS "%s" (
 			"id" SERIAL PRIMARY KEY,
-			"rtpLevel" REAL NOT NULL,
-			"srNumber" INTEGER NOT NULL,
-			"srId" SERIAL NOT NULL,
-			"bet" NUMERIC NOT NULL,
-			"win" NUMERIC NOT NULL,
-			"detail" JSONB,
+		"rtpLevel" REAL NOT NULL,
+		"srNumber" INTEGER NOT NULL,
+		"srId" SERIAL NOT NULL,
+		"dataId" INTEGER NOT NULL,
+		"bet" NUMERIC NOT NULL,
+		"win" NUMERIC NOT NULL,
+		"detail" JSONB NOT NULL DEFAULT '[]'::jsonb,
 			"created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 	`, tableName)
