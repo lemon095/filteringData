@@ -877,6 +877,10 @@ func saveToJSON(data []GameResultData, config *Config, rtpLevel float64, testNum
 	// 转换数据为字典数组格式
 	var jsonData []map[string]interface{}
 	for _, item := range data {
+		gdValue := item.GD.Data
+		if gdValue == nil {
+			gdValue = []interface{}{}
+		}
 		row := map[string]interface{}{
 			"id":  item.ID,
 			"tb":  item.TB,
@@ -884,7 +888,7 @@ func saveToJSON(data []GameResultData, config *Config, rtpLevel float64, testNum
 			"gwt": item.GWT,
 			"sp":  item.SP,
 			"fb":  item.FB,
-			"gd":  item.GD.Data,
+			"gd":  gdValue,
 		}
 		jsonData = append(jsonData, row)
 	}
