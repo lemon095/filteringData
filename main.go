@@ -891,9 +891,15 @@ func main() {
 		fmt.Println("  ./filteringData import-s3-fb <gameIds> [level] [env] # 从S3导入购买夺宝模式文件")
 		fmt.Println("  ./filteringData sp-stats <gameId>              # 统计指定游戏JSON文件的SP数据")
 		fmt.Println("  ./filteringData importFb-s3 <gameIds> [level] [env] # 从S3导入多个游戏的购买夺宝模式文件")
+		fmt.Println("  ./filteringData export [outputFile] [env]     # 导出source_table_prefix表的数据到SQL文件")
+		fmt.Println("  ./filteringData import-sql <sqlFile> [env]    # 从本地SQL文件导入数据到source_table_prefix表")
+		fmt.Println("  ./filteringData import-s3-sql [gameId] [env]  # 从S3的SQL文件导入数据到source_table_prefix表")
 		fmt.Println("     gameIds: 逗号分隔的游戏ID列表，如: 112,103,105")
 		fmt.Println("     level: 可选的RTP等级过滤")
 		fmt.Println("     env: 可选的数据库环境 (local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp)")
+		fmt.Println("     outputFile: 可选的输出SQL文件路径（默认: sql/{前缀}_{游戏ID}.sql）")
+		fmt.Println("     sqlFile: SQL文件路径（默认: sql/{前缀}_{游戏ID}.sql）")
+		fmt.Println("     --s3: 从S3导入SQL文件（路径: sql/xxx.sql）")
 		fmt.Println("")
 		fmt.Println("示例:")
 		fmt.Println("  ./filteringData import                     # 导入所有文件")
@@ -904,6 +910,14 @@ func main() {
 		fmt.Println("  ./filteringData import-s3-fb 112,103       # 只导入游戏112,103的购买夺宝模式文件")
 		fmt.Println("  ./filteringData import-s3 112,103 50       # 智能导入RTP等级50的文件")
 		fmt.Println("  ./filteringData import-s3 112,103 50 hp    # 智能导入到生产环境")
+		fmt.Println("  ./filteringData export                     # 导出到 sql/{前缀}_{游戏ID}.sql")
+		fmt.Println("  ./filteringData export custom.sql          # 导出到 sql/custom.sql")
+		fmt.Println("  ./filteringData export hp                  # 导出指定环境的数据")
+		fmt.Println("  ./filteringData import-sql custom.sql      # 从本地 sql/custom.sql 导入")
+		fmt.Println("  ./filteringData import-sql custom.sql hp   # 从本地导入到指定环境")
+		fmt.Println("  ./filteringData import-s3-sql              # 从S3导入（使用配置文件中的gameId）")
+		fmt.Println("  ./filteringData import-s3-sql 20063        # 从S3导入指定游戏ID的SQL文件")
+		fmt.Println("  ./filteringData import-s3-sql 20063 hp     # 从S3导入到指定环境")
 		os.Exit(1)
 	}
 
@@ -1052,9 +1066,21 @@ func main() {
 	case "sp-stats":
 		// SP统计命令：./filteringData sp-stats <gameId>
 		runSpStatisticsFromJSON()
+	case "export":
+		// 导出命令：./filteringData export [outputFile] [env]
+		// 导出source_table_prefix表的数据到SQL文件
+		runExportCommand()
+	case "import-sql":
+		// 本地导入SQL命令：./filteringData import-sql <sqlFile> [env]
+		// 从本地SQL文件导入数据到source_table_prefix表
+		runImportSQLCommand()
+	case "import-s3-sql":
+		// S3导入SQL命令：./filteringData import-s3-sql [gameId] [env]
+		// 从S3的SQL文件导入数据到source_table_prefix表
+		handleS3SQLImportCommand()
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate4, import, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats")
+		fmt.Println("支持的命令: generate4, import, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats, export, import-sql, import-s3-sql")
 		os.Exit(1)
 	}
 }
@@ -3027,6 +3053,368 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	fmt.Print(logBuf.String())
 	outputMu.Unlock()
 	return nil
+}
+
+// runExportCommand 运行导出命令
+func runExportCommand() {
+	// 解析参数: ./filteringData export [outputFile] [env]
+	var outputFile string
+	var env string
+
+	if len(os.Args) >= 3 {
+		arg2 := os.Args[2]
+		if IsEnv(arg2) {
+			// 第二个参数是环境
+			env = ResolveEnv(arg2)
+		} else {
+			// 第二个参数是输出文件
+			outputFile = arg2
+			// 检查第三个参数是否是环境
+			if len(os.Args) >= 4 {
+				arg3 := os.Args[3]
+				if IsEnv(arg3) {
+					env = ResolveEnv(arg3)
+				} else {
+					fmt.Printf("❌ 无效的环境参数: %s\n", arg3)
+					fmt.Println("支持的环境: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp")
+					os.Exit(1)
+				}
+			}
+		}
+	}
+
+	// 加载配置
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("❌ 加载配置失败: %v", err)
+	}
+
+	// 连接数据库
+	db, err := NewDatabase(config, env)
+	if err != nil {
+		log.Fatalf("❌ 连接数据库失败: %v", err)
+	}
+	defer db.Close()
+
+	// 创建sql目录（如果不存在）
+	sqlDir := "sql"
+	if err := os.MkdirAll(sqlDir, 0755); err != nil {
+		log.Fatalf("❌ 创建sql目录失败: %v", err)
+	}
+
+	// 如果没有指定输出文件，生成默认文件名：sql/{前缀}_{游戏ID}.sql
+	if outputFile == "" {
+		tablePrefix := config.Tables.SourceTablePrefix
+		gameID := config.Game.ID
+		outputFile = fmt.Sprintf("%s_%d.sql", tablePrefix, gameID)
+	}
+
+	// 确保输出文件路径在sql目录中
+	// 如果用户提供的路径已经是绝对路径或包含目录，则使用原路径
+	// 否则将其放入sql目录
+	if !filepath.IsAbs(outputFile) && filepath.Dir(outputFile) == "." {
+		outputFile = filepath.Join(sqlDir, outputFile)
+	} else if !filepath.IsAbs(outputFile) && filepath.Dir(outputFile) != sqlDir {
+		// 如果用户提供了相对路径但不在sql目录，提取文件名放入sql目录
+		outputFile = filepath.Join(sqlDir, filepath.Base(outputFile))
+	}
+
+	envDisplay := ""
+	if env != "" {
+		envDisplay = fmt.Sprintf(" [环境: %s]", env)
+	}
+	fmt.Printf("🔄 开始导出表数据%s...\n", envDisplay)
+	fmt.Printf("📁 输出目录: %s\n", sqlDir)
+
+	// 执行导出
+	if err := db.ExportTableToSQL(outputFile); err != nil {
+		log.Fatalf("❌ 导出失败: %v", err)
+	}
+
+	fmt.Printf("✅ 导出完成！文件已保存到: %s\n", outputFile)
+}
+
+// runImportSQLCommand 运行本地导入SQL命令
+func runImportSQLCommand() {
+	// 解析参数: ./filteringData import-sql <sqlFile> [env]
+	if len(os.Args) < 3 {
+		fmt.Println("❌ 缺少SQL文件参数")
+		fmt.Println("用法: ./filteringData import-sql <sqlFile> [env]")
+		fmt.Println("示例: ./filteringData import-sql data.sql")
+		fmt.Println("示例: ./filteringData import-sql data.sql hp")
+		os.Exit(1)
+	}
+
+	sqlFile := os.Args[2]
+	var env string
+
+	// 检查第三个参数是否是环境
+	if len(os.Args) >= 4 {
+		arg3 := os.Args[3]
+		if IsEnv(arg3) {
+			env = ResolveEnv(arg3)
+		} else {
+			fmt.Printf("❌ 无效的环境参数: %s\n", arg3)
+			fmt.Println("支持的环境: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp")
+			os.Exit(1)
+		}
+	}
+
+	// 加载配置
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("❌ 加载配置失败: %v", err)
+	}
+
+	// 本地导入：从sql目录读取
+	sqlDir := "sql"
+
+	// 如果文件路径不是绝对路径且不在sql目录中，尝试在sql目录中查找
+	if !filepath.IsAbs(sqlFile) && filepath.Dir(sqlFile) == "." {
+		// 先尝试在sql目录中查找
+		sqlDirPath := filepath.Join(sqlDir, sqlFile)
+		if _, err := os.Stat(sqlDirPath); err == nil {
+			sqlFile = sqlDirPath
+			fmt.Printf("📁 在sql目录中找到文件: %s\n", sqlFile)
+		} else {
+			// 如果sql目录中不存在，尝试使用完整路径
+			sqlFile = sqlDirPath
+		}
+	} else if !filepath.IsAbs(sqlFile) && filepath.Dir(sqlFile) != sqlDir {
+		// 如果用户提供了相对路径但不在sql目录，提取文件名
+		sqlFile = filepath.Join(sqlDir, filepath.Base(sqlFile))
+	}
+
+	// 检查文件是否存在
+	if _, err := os.Stat(sqlFile); os.IsNotExist(err) {
+		log.Fatalf("❌ SQL文件不存在: %s", sqlFile)
+	}
+
+	// 连接数据库
+	db, err := NewDatabase(config, env)
+	if err != nil {
+		log.Fatalf("❌ 连接数据库失败: %v", err)
+	}
+	defer db.Close()
+
+	envDisplay := ""
+	if env != "" {
+		envDisplay = fmt.Sprintf(" [环境: %s]", env)
+	}
+
+	// 检查是否有分割文件（part文件）
+	baseDir := filepath.Dir(sqlFile)
+	baseName := filepath.Base(sqlFile)
+	ext := filepath.Ext(baseName)
+	baseNameWithoutExt := strings.TrimSuffix(baseName, ext)
+
+	// 查找所有part文件
+	var sqlFiles []string
+
+	// 先检查主文件是否存在
+	if _, err := os.Stat(sqlFile); err == nil {
+		sqlFiles = append(sqlFiles, sqlFile)
+	}
+
+	// 查找part文件（part001, part002, ...）
+	for i := 2; i <= 999; i++ {
+		partFileName := fmt.Sprintf("%s_part%03d%s", baseNameWithoutExt, i, ext)
+		partFilePath := filepath.Join(baseDir, partFileName)
+		if _, err := os.Stat(partFilePath); err == nil {
+			sqlFiles = append(sqlFiles, partFilePath)
+		} else {
+			// 如果这个part文件不存在，说明后面的也不存在了
+			break
+		}
+	}
+
+	if len(sqlFiles) > 1 {
+		fmt.Printf("🔄 发现 %d 个分割文件，将按顺序导入%s...\n", len(sqlFiles), envDisplay)
+		for i, file := range sqlFiles {
+			fmt.Printf("  📄 [%d/%d] 导入文件: %s\n", i+1, len(sqlFiles), filepath.Base(file))
+			if err := db.ImportSQLFile(file); err != nil {
+				log.Fatalf("❌ 导入文件 %s 失败: %v", file, err)
+			}
+		}
+		if err := db.SyncSequenceWithMaxID(); err != nil {
+			log.Printf("⚠️ 同步序列失败: %v（数据已导入，但序列未更新）", err)
+		}
+		fmt.Printf("✅ 所有文件导入完成！\n")
+	} else {
+		fmt.Printf("🔄 开始导入SQL文件%s...\n", envDisplay)
+		fmt.Printf("📁 文件路径: %s\n", sqlFile)
+		if err := db.ImportSQLFile(sqlFile); err != nil {
+			log.Fatalf("❌ 导入失败: %v", err)
+		}
+		if err := db.SyncSequenceWithMaxID(); err != nil {
+			log.Printf("⚠️ 同步序列失败: %v", err)
+		}
+		fmt.Printf("✅ 导入完成！\n")
+	}
+}
+
+// handleS3SQLImportCommand 处理S3 SQL导入命令
+func handleS3SQLImportCommand() {
+	// 解析参数: ./filteringData import-s3-sql [gameIds] [env]
+	args := os.Args[2:]
+
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("❌ 加载配置失败: %v", err)
+	}
+
+	var env string
+	var gameIDs []int
+
+	if len(args) == 0 {
+		gameIDs = []int{config.Game.ID}
+	} else if len(args) == 1 && IsEnv(args[0]) {
+		env = ResolveEnv(args[0])
+		gameIDs = []int{config.Game.ID}
+	} else {
+		argIndex := 0
+		if IsEnv(args[0]) {
+			env = ResolveEnv(args[0])
+			argIndex++
+		}
+
+		if argIndex >= len(args) {
+			gameIDs = []int{config.Game.ID}
+		} else {
+			ids, err := parseGameIds(args[argIndex])
+			if err != nil {
+				fmt.Printf("❌ 解析游戏ID失败: %v\n", err)
+				fmt.Println("用法: ./filteringData import-s3-sql [gameIds] [env]")
+				fmt.Println("示例: ./filteringData import-s3-sql")
+				fmt.Println("示例: ./filteringData import-s3-sql 20063")
+				fmt.Println("示例: ./filteringData import-s3-sql 20063,20064 hp")
+				os.Exit(1)
+			}
+			gameIDs = ids
+			argIndex++
+
+			if argIndex < len(args) {
+				if IsEnv(args[argIndex]) {
+					env = ResolveEnv(args[argIndex])
+					argIndex++
+				} else {
+					fmt.Printf("❌ 无效的环境参数: %s\n", args[argIndex])
+					fmt.Println("支持的环境: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp")
+					os.Exit(1)
+				}
+			}
+
+			if argIndex < len(args) {
+				fmt.Println("❌ 参数过多，请按照: ./filteringData import-s3-sql [gameIds] [env] 的格式使用")
+				os.Exit(1)
+			}
+		}
+	}
+
+	if len(gameIDs) == 0 {
+		gameIDs = []int{config.Game.ID}
+	}
+
+	// 创建S3客户端（复用一个客户端）
+	s3Client, err := NewS3Client(config)
+	if err != nil {
+		log.Fatalf("❌ 创建S3客户端失败: %v", err)
+	}
+
+	originalGameID := config.Game.ID
+	defer func() {
+		config.Game.ID = originalGameID
+	}()
+
+	totalGames := len(gameIDs)
+	fmt.Printf("🔁 准备从S3导入 %d 个游戏的SQL文件...\n", totalGames)
+
+	for idx, gameID := range gameIDs {
+		config.Game.ID = gameID
+		fmt.Printf("\n==============================\n")
+		fmt.Printf("🎯 正在导入游戏 %d (%d/%d)\n", gameID, idx+1, totalGames)
+		fmt.Printf("==============================\n")
+
+		if err := importS3SQLForGame(config, s3Client, env, gameID); err != nil {
+			log.Fatalf("❌ 导入游戏 %d 失败: %v", gameID, err)
+		}
+	}
+
+	fmt.Printf("\n✅ 所有游戏的SQL导入完成！\n")
+}
+
+// importS3SQLForGame 从S3导入指定游戏ID的SQL文件（自动处理分割文件）
+func importS3SQLForGame(config *Config, s3Client *S3Client, env string, gameID int) error {
+	db, err := NewDatabase(config, env)
+	if err != nil {
+		return fmt.Errorf("连接数据库失败: %v", err)
+	}
+	defer db.Close()
+
+	envDisplay := ""
+	if env != "" {
+		envDisplay = fmt.Sprintf(" [环境: %s]", env)
+	}
+
+	tablePrefix := config.Tables.SourceTablePrefix
+	baseKey := fmt.Sprintf("mpg-slot-data/%d/sql/%s_%d.sql", gameID, tablePrefix, gameID)
+	baseName := fmt.Sprintf("%s_%d", tablePrefix, gameID)
+
+	fmt.Printf("🌐 S3 路径: %s%s\n", baseKey, envDisplay)
+	fmt.Printf("📁 目标表: %s\n", db.GetTableName())
+
+	importedFiles := 0
+	for part := 1; part <= 999; part++ {
+		var key string
+		if part == 1 {
+			key = baseKey
+		} else {
+			key = fmt.Sprintf("mpg-slot-data/%d/sql/%s_part%03d.sql", gameID, baseName, part)
+		}
+
+		err := db.ImportSQLFileFromS3(s3Client, key)
+		if err != nil {
+			if part == 1 {
+				if isS3ObjectNotFound(err) {
+					return fmt.Errorf("在S3未找到SQL文件: %s", key)
+				}
+				return fmt.Errorf("导入主文件失败: %v", err)
+			}
+
+			if isS3ObjectNotFound(err) {
+				if importedFiles == 0 {
+					return fmt.Errorf("在S3未找到任何SQL分割文件（起始路径: %s）", baseKey)
+				}
+				fmt.Printf("ℹ️ 未检测到更多分割文件，结束导入\n")
+				break
+			}
+			return fmt.Errorf("导入文件 %s 失败: %v", key, err)
+		}
+
+		importedFiles++
+		fmt.Printf("  ✅ 已导入: %s\n", key)
+	}
+
+	if importedFiles == 0 {
+		return fmt.Errorf("未导入任何文件，S3路径: %s", baseKey)
+	}
+
+	fmt.Printf("🔄 正在同步序列...\n")
+	if err := db.SyncSequenceWithMaxID(); err != nil {
+		return err
+	}
+
+	fmt.Printf("✅ 游戏 %d 导入完成（共导入 %d 个文件）\n", gameID, importedFiles)
+	return nil
+}
+
+// isS3ObjectNotFound 判断S3错误是否为对象不存在
+func isS3ObjectNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "nosuchkey") || strings.Contains(msg, "not found") || strings.Contains(msg, "status code: 404")
 }
 
 // runImportFbMode 运行购买夺宝导入模式

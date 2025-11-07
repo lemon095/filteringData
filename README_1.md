@@ -93,13 +93,13 @@ df -h
 # 3) 仅导入指定 rtpLevel 的文件（例如 93）
 ./filteringData import 93
 
-# 4) 生成“购买夺宝”模式 JSON（输出到 output/<gameId>_fb）
+# 4) 生成"购买夺宝"模式 JSON（输出到 output/<gameId>_fb）
 ./filteringData generateFb
 
 # 5) 从 output/<gameId>_fb 导入到数据库
 ./filteringData importFb
 
-# 6) 仅导入指定 rtpLevel 的“购买夺宝”文件
+# 6) 仅导入指定 rtpLevel 的"购买夺宝"文件
 ./filteringData importFb 93
 
 # 不同环境导表
@@ -111,6 +111,81 @@ go run *.go generateTest
 go run *.go import-s3-fb 1513328 ht
 go run *.go import-s3-normal 1513328 ht
 free -h
+```
+
+### SQL 文件导出和导入
+
+#### 导出表数据到 SQL 文件
+
+```bash
+# 导出到默认文件（sql/GameResultData_{gameId}.sql）
+./filteringData export
+
+# 导出到指定文件名
+./filteringData export custom.sql
+
+# 导出指定环境的数据
+./filteringData export hp
+./filteringData export custom.sql hp
+```
+
+**说明：**
+
+- 导出文件会自动保存到 `sql/` 目录
+- 默认文件名格式：`sql/{source_table_prefix}_{gameId}.sql`
+- 例如：`sql/GameResultData_20063.sql`
+- 支持多环境导出（local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp）
+
+#### 从本地 SQL 文件导入
+
+```bash
+# 从本地sql目录导入指定文件
+./filteringData import-sql GameResultData_20063.sql
+
+# 导入到指定环境
+./filteringData import-sql GameResultData_20063.sql hp
+```
+
+**说明：**
+
+- 文件路径会自动查找 `sql/` 目录
+- 如果文件在 sql 目录中，可以直接使用文件名
+
+#### 从 S3 导入 SQL 文件
+
+```bash
+# 使用配置文件中的gameId（默认）
+./filteringData import-s3-sql
+
+# 指定游戏ID
+./filteringData import-s3-sql 20063
+
+# 指定游戏ID和环境
+./filteringData import-s3-sql 20063 hp
+
+# 多个游戏ID（按顺序逐个导入）
+./filteringData import-s3-sql 20063,20064 hp
+
+# 只指定环境（使用配置文件中的gameId）
+./filteringData import-s3-sql hp
+```
+
+**说明：**
+
+- S3 路径格式：`mpg-slot-data/{gameID}/sql/GameResultData_{gameID}.sql`
+- 例如：`mpg-slot-data/20063/sql/GameResultData_20063.sql`
+- 需要配置 S3 相关配置（bucket, access_key 等）
+- 支持多环境导入
+- 支持多个游戏 ID，命令会按照输入顺序逐个导入并自动同步序列，确保数据准确性
+
+**示例：**
+
+```bash
+# 导出本地环境的数据
+./filteringData export
+
+# 上传到S3后，在服务器上从S3导入
+./filteringData import-s3-sql 20063 hp
 ```
 
 ### 根据 psid 查记录
