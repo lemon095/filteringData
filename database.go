@@ -191,7 +191,7 @@ func (d *Database) GetTableName() string {
 func (d *Database) GetWinData() ([]GameResultData, error) {
 	tableName := d.GetTableName()
 	query := fmt.Sprintf(`
-		SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
+		SELECT id, tb, aw, gwt, sp, fb, '[]'::jsonb AS gd, "createdAt", "updatedAt"
 		FROM %s 
 		WHERE aw > 0 AND aw < tb * 100
 		AND fb = %d
@@ -215,6 +215,7 @@ func (d *Database) GetWinData() ([]GameResultData, error) {
 		if err != nil {
 			return nil, err
 		}
+		item.GD = JsonData{Data: []interface{}{}}
 		data = append(data, item)
 	}
 
@@ -225,7 +226,7 @@ func (d *Database) GetWinData() ([]GameResultData, error) {
 func (d *Database) GetProfitData() ([]GameResultData, error) {
 	tableName := d.GetTableName()
 	query := fmt.Sprintf(`
-		SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
+		SELECT id, tb, aw, gwt, sp, fb, '[]'::jsonb AS gd, "createdAt", "updatedAt"
 		FROM %s 
 		WHERE aw > 0 AND aw > tb AND fb = %d
 		ORDER BY id
@@ -250,6 +251,7 @@ func (d *Database) GetProfitData() ([]GameResultData, error) {
 		if err != nil {
 			return nil, err
 		}
+		item.GD = JsonData{Data: []interface{}{}}
 		data = append(data, item)
 	}
 
@@ -260,7 +262,7 @@ func (d *Database) GetProfitData() ([]GameResultData, error) {
 func (d *Database) GetWinDataFb() ([]GameResultData, error) {
 	tableName := d.GetTableName()
 	query := fmt.Sprintf(`
-        SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
+        SELECT id, tb, aw, gwt, sp, fb, '[]'::jsonb AS gd, "createdAt", "updatedAt"
         FROM %s 
         WHERE aw > 0 AND aw <= tb AND fb = %d AND sp = true
         ORDER BY id
@@ -284,6 +286,7 @@ func (d *Database) GetWinDataFb() ([]GameResultData, error) {
 		if err != nil {
 			return nil, err
 		}
+		item.GD = JsonData{Data: []interface{}{}}
 		data = append(data, item)
 	}
 
@@ -294,7 +297,7 @@ func (d *Database) GetWinDataFb() ([]GameResultData, error) {
 func (d *Database) GetProfitDataFb() ([]GameResultData, error) {
 	tableName := d.GetTableName()
 	query := fmt.Sprintf(`
-        SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
+        SELECT id, tb, aw, gwt, sp, fb, '[]'::jsonb AS gd, "createdAt", "updatedAt"
         FROM %s 
         WHERE aw > 0 AND aw > tb AND fb = %d AND sp = true
         ORDER BY id
@@ -318,6 +321,7 @@ func (d *Database) GetProfitDataFb() ([]GameResultData, error) {
 		if err != nil {
 			return nil, err
 		}
+		item.GD = JsonData{Data: []interface{}{}}
 		data = append(data, item)
 	}
 
@@ -328,7 +332,7 @@ func (d *Database) GetProfitDataFb() ([]GameResultData, error) {
 func (d *Database) GetNoWinData() ([]GameResultData, error) {
 	tableName := d.GetTableName()
 	query := fmt.Sprintf(`
-		SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
+		SELECT id, tb, aw, gwt, sp, fb, '[]'::jsonb AS gd, "createdAt", "updatedAt"
 		FROM %s 
 		WHERE aw = 0 And sp != true
 		AND fb = %d
@@ -352,6 +356,7 @@ func (d *Database) GetNoWinData() ([]GameResultData, error) {
 		if err != nil {
 			return nil, err
 		}
+		item.GD = JsonData{Data: []interface{}{}}
 		data = append(data, item)
 	}
 
@@ -362,7 +367,7 @@ func (d *Database) GetNoWinData() ([]GameResultData, error) {
 func (d *Database) GetNoWinDataFb() ([]GameResultData, error) {
 	tableName := d.GetTableName()
 	query := fmt.Sprintf(`
-        SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
+        SELECT id, tb, aw, gwt, sp, fb, '[]'::jsonb AS gd, "createdAt", "updatedAt"
         FROM %s 
         WHERE aw = 0 AND sp = true AND fb = %d
         ORDER BY id
@@ -387,6 +392,7 @@ func (d *Database) GetNoWinDataFb() ([]GameResultData, error) {
 		if err != nil {
 			return nil, err
 		}
+		item.GD = JsonData{Data: []interface{}{}}
 		data = append(data, item)
 	}
 
