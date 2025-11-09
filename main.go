@@ -2165,7 +2165,7 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 
 	// 根据分布配置生成数据
 	printf("🔄 正在根据分布配置生成数据...\n")
-	generatedData, err := GenerateDataByDistribution(distribution, dataNum, dataRanges)
+	generatedData, err := GenerateDataByDistribution(distribution, dataNum, dataRanges, int(rtpLevel))
 	if err != nil {
 		return fmt.Errorf("根据分布配置生成数据失败: %v", err)
 	}

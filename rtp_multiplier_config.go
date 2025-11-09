@@ -145,7 +145,7 @@ func ClassifyDataByMultiplier(data []GameResultData, betAmount float64) map[stri
 }
 
 // GenerateDataByDistribution 根据分布配置生成数据
-func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCount int, dataRanges map[string]MultiplierRange) ([]GameResultData, error) {
+func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCount int, dataRanges map[string]MultiplierRange, rtpLevel int) ([]GameResultData, error) {
 	var result []GameResultData
 
 	// 计算每个区间应该分配的数量
@@ -162,24 +162,39 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 	// 创建随机数生成器
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	// 按区间分配数据，允许不中奖率有2%偏差
-	for rangeName, allocation := range allocations {
-		if allocation > 0 && len(dataRanges[rangeName].Data) > 0 {
-			// 如果可用数据不足，使用所有可用数据
-			actualCount := allocation
-			if actualCount > len(dataRanges[rangeName].Data) {
-				actualCount = len(dataRanges[rangeName].Data)
-			}
+	// 针对高档位（300/500）允许有限重复，以缓解高倍率样本不足的问题
+	allowDuplicate := rtpLevel == 300 || rtpLevel == 500
 
-			// 随机选择数据
-			availableData := dataRanges[rangeName].Data
-			perm := rng.Perm(len(availableData))
-			var selectedData []GameResultData
-			for i := 0; i < actualCount; i++ {
+	// 按区间分配数据
+	for rangeName, allocation := range allocations {
+		availableData := dataRanges[rangeName].Data
+		if allocation <= 0 || len(availableData) == 0 {
+			continue
+		}
+
+		// 随机选择数据（优先使用不重复数据）
+		perm := rng.Perm(len(availableData))
+		var selectedData []GameResultData
+
+		if allocation <= len(availableData) {
+			for i := 0; i < allocation; i++ {
 				selectedData = append(selectedData, availableData[perm[i]])
 			}
-			result = append(result, selectedData...)
+		} else {
+			// 不足时，先把全部可用数据取完
+			for i := 0; i < len(availableData); i++ {
+				selectedData = append(selectedData, availableData[perm[i]])
+			}
+
+			// 在高档位允许重复补齐
+			if allowDuplicate {
+				for len(selectedData) < allocation {
+					selectedData = append(selectedData, availableData[rng.Intn(len(availableData))])
+				}
+			}
 		}
+
+		result = append(result, selectedData...)
 	}
 
 	return result, nil
