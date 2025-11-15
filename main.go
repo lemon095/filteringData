@@ -2046,9 +2046,17 @@ func runGenerateMode4() {
 	}
 	defer db.Close()
 
-	// 清理 sp=true 且 aw=0 的数据
-	if err := db.CleanSpZeroAwData(); err != nil {
-		log.Fatalf("清理数据失败: %v", err)
+	// 清理 sp=true 且 aw=0 的数据（根据配置决定是否执行）
+	shouldClean := true // 默认值为true
+	if config.Game.CleanSpZeroAw != nil {
+		shouldClean = *config.Game.CleanSpZeroAw
+	}
+	if shouldClean {
+		if err := db.CleanSpZeroAwData(); err != nil {
+			log.Fatalf("清理数据失败: %v", err)
+		}
+	} else {
+		fmt.Println("⏭️  跳过清理 sp=true 且 aw=0 的数据（配置中 clean_sp_zero_aw=false）")
 	}
 
 	// 预取共享只读数据
@@ -2645,9 +2653,9 @@ func runGenerateFbMode() {
 	defer db.Close()
 
 	// 清理 sp=true 且 aw=0 的数据
-	if err := db.CleanSpZeroAwData(); err != nil {
-		log.Fatalf("清理数据失败: %v", err)
-	}
+	// if err := db.CleanSpZeroAwData(); err != nil {
+	// 	log.Fatalf("清理数据失败: %v", err)
+	// }
 
 	// 计算总投注：cs * ml * bl * bet.fb * 数据条数
 	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB * float64(config.Tables.DataNumFb)

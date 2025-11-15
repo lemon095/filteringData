@@ -62,9 +62,10 @@ type Config struct {
 	} `yaml:"database"`
 
 	Game struct {
-		ID   int  `yaml:"id"`
-		IsFb bool `yaml:"isFb"`
-		Mode int  `yaml:"mode"`
+		ID            int   `yaml:"id"`
+		IsFb          bool  `yaml:"isFb"`
+		Mode          int   `yaml:"mode"`
+		CleanSpZeroAw *bool `yaml:"clean_sp_zero_aw"` // 是否清理sp=true且aw=0的数据，默认为true
 	} `yaml:"game"`
 
 	// 多游戏配置
