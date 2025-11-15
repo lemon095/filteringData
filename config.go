@@ -62,10 +62,11 @@ type Config struct {
 	} `yaml:"database"`
 
 	Game struct {
-		ID            int   `yaml:"id"`
-		IsFb          bool  `yaml:"isFb"`
-		Mode          int   `yaml:"mode"`
-		CleanSpZeroAw *bool `yaml:"clean_sp_zero_aw"` // 是否清理sp=true且aw=0的数据，默认为true
+		ID               int   `yaml:"id"`
+		IsFb             bool  `yaml:"isFb"`
+		Mode             int   `yaml:"mode"`
+		CleanSpZeroAw    *bool `yaml:"clean_sp_zero_aw"`     // 是否清理sp=true且aw=0的数据，默认为true
+		ExcludeSpInNoWin *bool `yaml:"exclude_sp_in_no_win"` // 在GetNoWinData中是否排除sp=true的数据，默认为true（排除）
 	} `yaml:"game"`
 
 	// 多游戏配置

@@ -329,15 +329,31 @@ func (d *Database) GetProfitDataFb() ([]GameResultData, error) {
 }
 
 // GetNoWinData 获取所有不中奖数据 (aw = 0)
+// 根据配置决定是否排除 sp=true 的数据
 func (d *Database) GetNoWinData() ([]GameResultData, error) {
 	tableName := d.GetTableName()
+
+	// 默认排除 sp=true 的数据（保持向后兼容）
+	excludeSp := true
+	if d.Config.Game.ExcludeSpInNoWin != nil {
+		excludeSp = *d.Config.Game.ExcludeSpInNoWin
+	}
+
+	// 根据配置构建查询条件
+	var spCondition string
+	if excludeSp {
+		spCondition = "AND sp != true"
+	} else {
+		spCondition = "" // 不排除，包含所有 sp 值的数据
+	}
+
 	query := fmt.Sprintf(`
 		SELECT id, tb, aw, gwt, sp, fb, '[]'::jsonb AS gd, "createdAt", "updatedAt"
 		FROM %s 
-		WHERE aw = 0 And sp != true
+		WHERE aw = 0 %s
 		AND fb = %d
 		ORDER BY id
-	`, tableName, d.Config.Game.Mode)
+	`, tableName, spCondition, d.Config.Game.Mode)
 
 	rows, err := d.DB.Query(query)
 	if err != nil {
