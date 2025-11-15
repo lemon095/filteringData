@@ -108,7 +108,17 @@ func adjustRTPBalanced(data []GameResultData, targetRTP float64, totalBet float6
 					// 检查RTP是否满足要求
 					newRTP := CalculateRTP(result, totalBet)
 					rtpTolerance := getRTPTolerance(rtpLevel)
-					if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
+					// 对于低档位（targetRTP <= 2.0），最低需要达到目标值，最高可以超出0.005，范围是[targetRTP, targetRTP+0.005]
+					// 对于高档位（targetRTP > 2.0），允许超出但不能太多，最低需要达到目标值，范围是[targetRTP, targetRTP+rtpTolerance]
+					var isRTPAcceptable bool
+					if targetRTP <= 2.0 {
+						// 低档位：最低需要达到目标值，最高可以超出0.005
+						isRTPAcceptable = newRTP >= targetRTP && newRTP <= targetRTP+0.005
+					} else {
+						// 高档位：最低需要达到目标值，允许超出但不能太多
+						isRTPAcceptable = newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance
+					}
+					if isRTPAcceptable {
 						return result, nil
 					}
 					break
@@ -176,7 +186,17 @@ func adjustRTPFinalTuning(data []GameResultData, targetRTP float64, totalBet flo
 				// 检查RTP是否满足要求
 				newRTP := CalculateRTP(result, totalBet)
 				rtpTolerance := getRTPTolerance(rtpLevel)
-				if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
+				// 对于低档位（targetRTP <= 2.0），允许上下偏差0.05，范围是[targetRTP-0.05, targetRTP+0.05]
+				// 对于高档位（targetRTP > 2.0），允许超出但不能太多，最低需要达到目标值，范围是[targetRTP, targetRTP+rtpTolerance]
+				var isRTPAcceptable bool
+				if targetRTP <= 2.0 {
+					// 低档位：允许上下偏差0.05
+					isRTPAcceptable = newRTP >= targetRTP-0.05 && newRTP <= targetRTP+0.05
+				} else {
+					// 高档位：最低需要达到目标值，允许超出但不能太多
+					isRTPAcceptable = newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance
+				}
+				if isRTPAcceptable {
 					return result, nil
 				}
 				break

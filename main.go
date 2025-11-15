@@ -2250,8 +2250,98 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 		adjustedData = adjustedData[excess:]
 	}
 
-	// 最终统计
+	// 补充或移除数据后，重新计算RTP并检查是否需要调整
 	finalRTP = CalculateRTP(adjustedData, totalBet)
+
+	// 对于低档位，如果补充数据后RTP低于目标值，需要重新提升
+	if rtp <= 2.0 && finalRTP < rtp {
+		printf("⚠️ 补充数据后RTP低于目标值 (%.6f < %.6f)，重新调整RTP...\n", finalRTP, rtp)
+		adjustedData, err = AdjustRTPByReplacement(adjustedData, rtp, totalBet, dataRanges, int(rtpLevel), rtpConfig)
+		if err != nil {
+			printf("⚠️ 重新调整RTP失败: %v\n", err)
+		} else {
+			finalRTP = CalculateRTP(adjustedData, totalBet)
+			printf("✅ 重新调整后RTP: %.6f\n", finalRTP)
+		}
+	} else if rtp > 2.0 && finalRTP < rtp {
+		// 对于高档位，如果低于目标值，也需要重新提升
+		printf("⚠️ 补充数据后RTP低于目标值 (%.6f < %.6f)，重新调整RTP...\n", finalRTP, rtp)
+		adjustedData, err = AdjustRTPByReplacement(adjustedData, rtp, totalBet, dataRanges, int(rtpLevel), rtpConfig)
+		if err != nil {
+			printf("⚠️ 重新调整RTP失败: %v\n", err)
+		} else {
+			finalRTP = CalculateRTP(adjustedData, totalBet)
+			printf("✅ 重新调整后RTP: %.6f\n", finalRTP)
+		}
+	}
+
+	// 最终验证：对于低档位，如果RTP超出允许范围，强制调整
+	if rtp <= 2.0 {
+		// 低档位：最低需要达到目标值，最高可以超出0.005，范围是[targetRTP, targetRTP+0.005]
+		if finalRTP < rtp || finalRTP > rtp+0.005 {
+			if finalRTP > rtp+0.005 {
+				// RTP超出上限，需要强制降低
+				excessRTP := finalRTP - (rtp + 0.005)
+				printf("⚠️ 低档位RTP超出上限 %.6f (超出允许范围 %.6f)，开始强制降低...\n", finalRTP, excessRTP)
+
+				// 按金额从大到小排序当前数据
+				type indexedData struct {
+					idx  int
+					item GameResultData
+				}
+				indexedItems := make([]indexedData, len(adjustedData))
+				for i, item := range adjustedData {
+					indexedItems[i] = indexedData{idx: i, item: item}
+				}
+				sort.Slice(indexedItems, func(i, j int) bool {
+					return indexedItems[i].item.AW > indexedItems[j].item.AW
+				})
+
+				// 准备不中奖数据用于替换
+				zeroWinData := dataRanges["zero_win"].Data
+				if len(zeroWinData) > 0 {
+					// 继续强制替换，直到RTP降到允许范围内
+					forceReplaced := 0
+					for dataIdx := 0; dataIdx < len(indexedItems) && forceReplaced < 1000 && len(zeroWinData) > 0; dataIdx++ {
+						oldItem := indexedItems[dataIdx].item
+						if oldItem.AW == 0 {
+							continue
+						}
+
+						// 使用不中奖数据替换
+						zeroWinItem := zeroWinData[forceReplaced%len(zeroWinData)]
+
+						realIdx := indexedItems[dataIdx].idx
+						adjustedData[realIdx] = zeroWinItem
+						forceReplaced++
+
+						finalRTP = CalculateRTP(adjustedData, totalBet)
+
+						// 如果RTP已经降到允许范围内，停止
+						if finalRTP <= rtp+0.005 {
+							printf("✅ 强制降低完成：替换了%d条数据，最终RTP=%.6f\n", forceReplaced, finalRTP)
+							break
+						}
+					}
+
+					if finalRTP > rtp+0.005 {
+						printf("⚠️ 强制降低后RTP仍超出允许范围：%.6f (允许范围: [%.6f, %.6f])\n", finalRTP, rtp, rtp+0.005)
+					}
+				}
+			} else if finalRTP < rtp {
+				// RTP低于目标值，需要提升
+				printf("⚠️ 低档位RTP低于目标值 %.6f (目标: %.6f)，需要提升...\n", finalRTP, rtp)
+			}
+		}
+	} else {
+		// 高档位：最低需要达到目标值，如果低于目标值需要提升
+		if finalRTP < rtp {
+			printf("⚠️ 高档位RTP低于目标值 %.6f (目标: %.6f)，需要提升...\n", finalRTP, rtp)
+			// 这里可以添加提升逻辑，但通常adjustRTPUpFlexible已经处理了
+		}
+	}
+
+	// 重新计算RTP偏差
 	rtpDeviation = math.Abs(finalRTP - rtp)
 
 	printf("📊 最终统计:\n")

@@ -237,13 +237,24 @@ func AdjustRTPByReplacement(data []GameResultData, targetRTP float64, totalBet f
 	targetWinRate := 1.0 - targetNoWinRate
 	winRateDeviation := math.Abs(currentWinRate - targetWinRate)
 
+	// 为特定RTP档位设置不同的偏差容忍度
+	rtpTolerance := getRTPTolerance(rtpLevel)
+
 	// 允许中奖率有2%的偏差（即不中奖率可以在±2%范围内调整）
 	// 例如：配置不中奖率0.77，允许范围0.75-0.79，对应中奖率0.21-0.25
 	if winRateDeviation <= 0.02 {
 		// 中奖率偏差在可接受范围内，检查RTP是否也满足要求
-		// 为特定RTP档位设置不同的偏差容忍度
-		rtpTolerance := getRTPTolerance(rtpLevel)
-		if currentRTP >= targetRTP && currentRTP <= targetRTP+rtpTolerance {
+		// 对于低档位（targetRTP <= 2.0），最低需要达到目标值，最高可以超出0.005，范围是[targetRTP, targetRTP+0.005]
+		// 对于高档位（targetRTP > 2.0），允许超出但不能太多，最低需要达到目标值，范围是[targetRTP, targetRTP+rtpTolerance]
+		var isRTPAcceptable bool
+		if targetRTP <= 2.0 {
+			// 低档位：最低需要达到目标值，最高可以超出0.005
+			isRTPAcceptable = currentRTP >= targetRTP && currentRTP <= targetRTP+0.005
+		} else {
+			// 高档位：最低需要达到目标值，允许超出但不能太多
+			isRTPAcceptable = currentRTP >= targetRTP && currentRTP <= targetRTP+rtpTolerance
+		}
+		if isRTPAcceptable {
 			return data, nil
 		}
 	} else {
@@ -251,16 +262,37 @@ func AdjustRTPByReplacement(data []GameResultData, targetRTP float64, totalBet f
 		fmt.Printf("📊 中奖率偏差超出2%%范围，当前偏差: %.4f\n", winRateDeviation)
 	}
 
-	// 如果RTP超出目标，优先替换大倍率区间的数据
-	if currentRTP > targetRTP {
-		return adjustRTPDownFlexible(data, targetRTP, totalBet, dataRanges, rtpLevel)
+	// 对于低档位，检查是否超出允许范围；对于高档位，检查是否超出或低于目标
+	var needAdjust bool
+	var adjustDirection string
+	if targetRTP <= 2.0 {
+		// 低档位：最低需要达到目标值，最高可以超出0.005，范围是[targetRTP, targetRTP+0.005]
+		if currentRTP < targetRTP {
+			needAdjust = true
+			adjustDirection = "up"
+		} else if currentRTP > targetRTP+0.005 {
+			needAdjust = true
+			adjustDirection = "down"
+		}
+	} else {
+		// 高档位：最低需要达到目标值，允许超出但不能太多
+		if currentRTP < targetRTP {
+			needAdjust = true
+			adjustDirection = "up"
+		} else if currentRTP > targetRTP+rtpTolerance {
+			needAdjust = true
+			adjustDirection = "down"
+		}
 	}
 
-	// 如果RTP不足，使用灵活的调整策略
-	if currentRTP < targetRTP {
-		fmt.Printf("📈 RTP过低，需要提升...\n")
-		// 优先在1-5倍和5-10倍区间内调整
-		return adjustRTPUpFlexible(data, targetRTP, totalBet, dataRanges, rtpLevel)
+	if needAdjust {
+		if adjustDirection == "down" {
+			return adjustRTPDownFlexible(data, targetRTP, totalBet, dataRanges, rtpLevel)
+		} else {
+			fmt.Printf("📈 RTP过低，需要提升...\n")
+			// 优先在1-5倍和5-10倍区间内调整
+			return adjustRTPUpFlexible(data, targetRTP, totalBet, dataRanges, rtpLevel)
+		}
 	}
 
 	return data, nil
@@ -542,7 +574,17 @@ func adjustRTPDownFlexible(data []GameResultData, targetRTP float64, totalBet fl
 			// 检查RTP是否满足要求（必须满足最低值，上浮允许根据档位调整）
 			newRTP := CalculateRTP(result, totalBet)
 			rtpTolerance := getRTPTolerance(rtpLevel)
-			if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
+			// 对于低档位（targetRTP <= 2.0），最低需要达到目标值，最高可以超出0.005，范围是[targetRTP, targetRTP+0.005]
+			// 对于高档位（targetRTP > 2.0），允许超出但不能太多，最低需要达到目标值，范围是[targetRTP, targetRTP+rtpTolerance]
+			var isRTPAcceptable bool
+			if targetRTP <= 2.0 {
+				// 低档位：最低需要达到目标值，最高可以超出0.005
+				isRTPAcceptable = newRTP >= targetRTP && newRTP <= targetRTP+0.005
+			} else {
+				// 高档位：最低需要达到目标值，允许超出但不能太多
+				isRTPAcceptable = newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance
+			}
+			if isRTPAcceptable {
 				return result, nil
 			}
 		}
@@ -611,7 +653,17 @@ func adjustUsingMediumMultiplierOld(data []GameResultData, targetRTP float64, to
 					// 检查RTP是否满足要求
 					newRTP := CalculateRTP(result, totalBet)
 					rtpTolerance := getRTPTolerance(rtpLevel)
-					if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
+					// 对于低档位（targetRTP <= 2.0），允许上下偏差0.05，范围是[targetRTP-0.05, targetRTP+0.05]
+					// 对于高档位（targetRTP > 2.0），允许超出但不能太多，最低需要达到目标值，范围是[targetRTP, targetRTP+rtpTolerance]
+					var isRTPAcceptable bool
+					if targetRTP <= 2.0 {
+						// 低档位：允许上下偏差0.05
+						isRTPAcceptable = newRTP >= targetRTP-0.05 && newRTP <= targetRTP+0.05
+					} else {
+						// 高档位：最低需要达到目标值，允许超出但不能太多
+						isRTPAcceptable = newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance
+					}
+					if isRTPAcceptable {
 						return result, nil
 					}
 					break
@@ -647,7 +699,17 @@ func adjustUsingMediumMultiplierOld(data []GameResultData, targetRTP float64, to
 						// 检查RTP是否满足要求
 						newRTP := CalculateRTP(result, totalBet)
 						rtpTolerance := getRTPTolerance(rtpLevel)
-						if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
+						// 对于低档位（targetRTP <= 2.0），允许上下偏差0.05，范围是[targetRTP-0.05, targetRTP+0.05]
+						// 对于高档位（targetRTP > 2.0），允许超出但不能太多，最低需要达到目标值，范围是[targetRTP, targetRTP+rtpTolerance]
+						var isRTPAcceptable bool
+						if targetRTP <= 2.0 {
+							// 低档位：允许上下偏差0.05
+							isRTPAcceptable = newRTP >= targetRTP-0.05 && newRTP <= targetRTP+0.05
+						} else {
+							// 高档位：最低需要达到目标值，允许超出但不能太多
+							isRTPAcceptable = newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance
+						}
+						if isRTPAcceptable {
 							return result, nil
 						}
 						break
@@ -700,7 +762,17 @@ func adjustUsingHighMultiplierOld(data []GameResultData, targetRTP float64, tota
 						// 检查RTP是否满足要求
 						newRTP := CalculateRTP(result, totalBet)
 						rtpTolerance := getRTPTolerance(rtpLevel)
-						if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
+						// 对于低档位（targetRTP <= 2.0），允许上下偏差0.05，范围是[targetRTP-0.05, targetRTP+0.05]
+						// 对于高档位（targetRTP > 2.0），允许超出但不能太多，最低需要达到目标值，范围是[targetRTP, targetRTP+rtpTolerance]
+						var isRTPAcceptable bool
+						if targetRTP <= 2.0 {
+							// 低档位：允许上下偏差0.05
+							isRTPAcceptable = newRTP >= targetRTP-0.05 && newRTP <= targetRTP+0.05
+						} else {
+							// 高档位：最低需要达到目标值，允许超出但不能太多
+							isRTPAcceptable = newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance
+						}
+						if isRTPAcceptable {
 							return result, nil
 						}
 						break
@@ -957,7 +1029,7 @@ func getRTPTolerance(rtpLevel int) float64 {
 	highToleranceLevels := []int{15, 300, 500, 14, 120, 150, 200}
 	for _, level := range highToleranceLevels {
 		if rtpLevel == level {
-			return 0.05
+			return 0.5
 		}
 	}
 	// 其他档位使用严格的偏差容忍度（0.005）
