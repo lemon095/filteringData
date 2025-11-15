@@ -162,24 +162,65 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 	// 创建随机数生成器
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	// 按区间分配数据，允许不中奖率有2%偏差
+	// 针对高档位（300/500）允许有限重复，以缓解高倍率样本不足的问题
+	allowDuplicate := rtpLevel == 300 || rtpLevel == 500
+
+	// 按区间分配数据
 	for rangeName, allocation := range allocations {
-		if allocation > 0 && len(dataRanges[rangeName].Data) > 0 {
-			// 如果可用数据不足，使用所有可用数据
-			actualCount := allocation
-			if actualCount > len(dataRanges[rangeName].Data) {
-				actualCount = len(dataRanges[rangeName].Data)
+		availableData := dataRanges[rangeName].Data
+
+		// 如果分配数量为0，跳过
+		if allocation <= 0 {
+			continue
+		}
+
+		// 如果该区间没有可用数据
+		if len(availableData) == 0 {
+			// 对于高倍率区间（very_high_multiplier及以上），如果数据为空且分配数量>0，给出警告
+			highMultiplierRanges := []string{"very_high_multiplier", "mega_multiplier", "super_mega_multiplier", "ultra_mega_multiplier"}
+			isHighMultiplier := false
+			for _, hr := range highMultiplierRanges {
+				if rangeName == hr {
+					isHighMultiplier = true
+					break
+				}
 			}
 
-			// 随机选择数据
-			availableData := dataRanges[rangeName].Data
-			perm := rng.Perm(len(availableData))
-			var selectedData []GameResultData
-			for i := 0; i < actualCount; i++ {
+			if isHighMultiplier {
+				fmt.Printf("⚠️ 警告：%s 区间需要 %d 条数据，但可用数据为 0 条，将跳过该区间\n", rangeName, allocation)
+			}
+			continue
+		}
+
+		// 随机选择数据（优先使用不重复数据）
+		perm := rng.Perm(len(availableData))
+		var selectedData []GameResultData
+
+		if allocation <= len(availableData) {
+			// 数据充足，直接选择
+			for i := 0; i < allocation; i++ {
 				selectedData = append(selectedData, availableData[perm[i]])
 			}
-			result = append(result, selectedData...)
+		} else {
+			// 数据不足时，先把全部可用数据取完
+			for i := 0; i < len(availableData); i++ {
+				selectedData = append(selectedData, availableData[perm[i]])
+			}
+
+			// 在高档位允许重复补齐
+			if allowDuplicate {
+				shortage := allocation - len(selectedData)
+				fmt.Printf("⚠️ %s 区间数据不足：需要 %d 条，可用 %d 条，将通过重复补齐 %d 条\n", rangeName, allocation, len(availableData), shortage)
+				for len(selectedData) < allocation {
+					selectedData = append(selectedData, availableData[rng.Intn(len(availableData))])
+				}
+			} else {
+				// 非高档位，数据不足时给出警告但不补齐
+				fmt.Printf("⚠️ 警告：%s 区间数据不足：需要 %d 条，可用 %d 条，实际只使用 %d 条\n", rangeName, allocation, len(availableData), len(selectedData))
+			}
 		}
+
+		result = append(result, selectedData...)
 	}
 
 	return result, nil
