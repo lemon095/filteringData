@@ -41,7 +41,6 @@ ORDER BY "rtpLevel";
 
 
 WITH base_stats AS (
-    -- 先计算基础统计量（各区间计数、总记录数等）
     SELECT 
         count(1) FILTER (WHERE "aw"/"tb" > 0 AND "aw"/"tb" <= 1) AS "0-1",
         count(1) FILTER (WHERE "aw"/"tb" > 1 AND "aw"/"tb" <= 2) AS "1-2",
@@ -54,11 +53,11 @@ WITH base_stats AS (
         count(1) FILTER (WHERE "aw"/"tb" > 50) AS ">50",
         count(1) FILTER (WHERE "aw" > 0) AS "win",
         count(1) FILTER (WHERE "aw" = 0) AS "noWin",
-        sum("aw")::numeric / sum("tb") AS "rtp",  -- 转换为numeric避免精度丢失
-        count(1) AS total  -- 总记录数
-    FROM "GameResultData_20063"
+        -- 确保 rtp 计算时直接转换为 numeric 类型（避免隐式转为 double precision）
+        (sum("aw")::numeric / sum("tb")) AS "rtp",  
+        count(1) AS total
+    FROM "GameResultData_20064"
 )
--- 计算各区间的概率（占比 = 区间计数 / 总记录数）
 SELECT 
     round("0-1"::numeric / total, 4) AS "0-1概率",
     round("1-2"::numeric / total, 4) AS "1-2概率",
@@ -71,6 +70,7 @@ SELECT
     round(">50"::numeric / total, 4) AS ">50概率",
     round("win"::numeric / total, 4) AS "赢的概率",
     round("noWin"::numeric / total, 4) AS "未赢的概率",
-    round("rtp", 4) AS "rtp",  -- 保留4位小数
+    -- 关键修正：将 rtp 显式转为 numeric 后再 round
+    round("rtp"::numeric, 4) AS "rtp",  
     total AS "总记录数"
 FROM base_stats;
