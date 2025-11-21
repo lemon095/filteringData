@@ -2922,8 +2922,36 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		}
 	}
 
+	// 如果数据仍不足，通过重复补齐（类似 generate4 的逻辑）
 	if len(data) < targetCount {
-		return fmt.Errorf("可用候选数据不足：需要%d条，实际%d条", targetCount, len(data))
+		shortage := targetCount - len(data)
+		printf("[FB] ⚠️ 数据不足：需要 %d 条，可用 %d 条，将通过重复补齐 %d 条\n", targetCount, len(data), shortage)
+
+		// 使用已选择的数据作为填充源
+		fillSource := make([]GameResultData, len(data))
+		copy(fillSource, data)
+
+		// 如果填充源为空，尝试使用所有候选数据
+		if len(fillSource) == 0 {
+			fillSource = append(fillSource, primaryPool...)
+			fillSource = append(fillSource, secondaryPool...)
+		}
+
+		// 如果仍然为空，使用不中奖数据
+		if len(fillSource) == 0 && len(noWinDataAll) > 0 {
+			fillSource = noWinDataAll
+		}
+
+		if len(fillSource) > 0 {
+			// 重复填充
+			for i := 0; i < shortage; i++ {
+				idx := rng.Intn(len(fillSource))
+				data = append(data, fillSource[idx])
+			}
+			printf("[FB] ✅ 重复补齐完成，当前数量: %d/%d\n", len(data), targetCount)
+		} else {
+			return fmt.Errorf("可用候选数据不足：需要%d条，实际%d条，且无可用填充源", targetCount, len(data))
+		}
 	}
 
 	// 计算初始RTP

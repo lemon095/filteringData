@@ -176,7 +176,7 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 
 		// 如果该区间没有可用数据
 		if len(availableData) == 0 {
-			// 对于高倍率区间（very_high_multiplier及以上），如果数据为空且分配数量>0，给出警告
+			// 对于高倍率区间（very_high_multiplier及以上），如果数据为空且分配数量>0
 			highMultiplierRanges := []string{"very_high_multiplier", "mega_multiplier", "super_mega_multiplier", "ultra_mega_multiplier"}
 			isHighMultiplier := false
 			for _, hr := range highMultiplierRanges {
@@ -187,7 +187,54 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 			}
 
 			if isHighMultiplier {
-				fmt.Printf("⚠️ 警告：%s 区间需要 %d 条数据，但可用数据为 0 条，将跳过该区间\n", rangeName, allocation)
+				// 对于300/500档位，如果高倍率区间没有数据，向下找次高倍率数据复制补齐
+				if allowDuplicate {
+					// 按优先级向下查找可用的次高倍率数据源（从高到低）
+					// 根据当前区间，优先使用更接近的倍率区间
+					var fallbackRanges []string
+					switch rangeName {
+					case "ultra_mega_multiplier":
+						fallbackRanges = []string{"super_mega_multiplier", "mega_multiplier", "very_high_multiplier", "high_multiplier", "medium_multiplier"}
+					case "super_mega_multiplier":
+						fallbackRanges = []string{"mega_multiplier", "very_high_multiplier", "high_multiplier", "medium_multiplier"}
+					case "mega_multiplier":
+						fallbackRanges = []string{"very_high_multiplier", "high_multiplier", "medium_multiplier"}
+					case "very_high_multiplier":
+						fallbackRanges = []string{"high_multiplier", "medium_multiplier"}
+					default:
+						fallbackRanges = []string{"high_multiplier", "medium_multiplier"}
+					}
+					
+					var fallbackData []GameResultData
+					fallbackRangeName := ""
+					
+					// 查找第一个有数据的次高倍率区间
+					for _, fbRange := range fallbackRanges {
+						if len(dataRanges[fbRange].Data) > 0 {
+							fallbackData = dataRanges[fbRange].Data
+							fallbackRangeName = fbRange
+							break
+						}
+					}
+					
+					if len(fallbackData) > 0 {
+						// 使用次高倍率数据复制补齐
+						fmt.Printf("⚠️ %s 区间需要 %d 条数据，但可用数据为 0 条，将使用 %s 区间的数据复制补齐\n", rangeName, allocation, fallbackRangeName)
+						for i := 0; i < allocation; i++ {
+							selectedData := fallbackData[rng.Intn(len(fallbackData))]
+							result = append(result, selectedData)
+						}
+						continue
+					} else {
+						// 如果次高倍率也没有数据，给出警告并跳过
+						fmt.Printf("⚠️ 警告：%s 区间需要 %d 条数据，但可用数据为 0 条，且无次高倍率数据可替代，将跳过该区间\n", rangeName, allocation)
+						continue
+					}
+				} else {
+					// 非高档位，直接跳过
+					fmt.Printf("⚠️ 警告：%s 区间需要 %d 条数据，但可用数据为 0 条，将跳过该区间\n", rangeName, allocation)
+					continue
+				}
 			}
 			continue
 		}
