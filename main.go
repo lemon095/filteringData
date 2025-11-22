@@ -3007,54 +3007,114 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 
 			// 智能贪心替换：寻找最接近目标的替换组合
 			candidateIdx := 0
-			for dataIdx := 0; dataIdx < len(indexedItems) && candidateIdx < len(unusedHighCandidates) && replacedCount < maxReplaceIterations; dataIdx++ {
+			// 对于高档位（300/500），如果未使用的候选数据用完了，允许重复使用已使用过的高金额数据
+			allowReuseForHighRTP := (rtpLevel == 300 || rtpLevel == 500)
+			allHighCandidates := make([]GameResultData, len(unusedHighCandidates))
+			copy(allHighCandidates, unusedHighCandidates)
+
+			for dataIdx := 0; dataIdx < len(indexedItems) && replacedCount < maxReplaceIterations; dataIdx++ {
 				oldItem := indexedItems[dataIdx].item
 
 				// 寻找最佳替换候选（最接近目标增量的）
 				bestCandidateIdx := -1
 				bestDelta := math.MaxFloat64
+				var bestCandidate GameResultData
 
-				for j := candidateIdx; j < len(unusedHighCandidates) && j < candidateIdx+50; j++ {
-					newItem := unusedHighCandidates[j]
-					if newItem.AW <= oldItem.AW {
-						continue
+				// 优先使用未使用的候选数据
+				if candidateIdx < len(unusedHighCandidates) {
+					searchEnd := candidateIdx + 50
+					if searchEnd > len(unusedHighCandidates) {
+						searchEnd = len(unusedHighCandidates)
 					}
 
-					awDelta := newItem.AW - oldItem.AW
-					newTotalWin := totalWin + awDelta
-					newRTP := newTotalWin / totalBet
+					for j := candidateIdx; j < searchEnd; j++ {
+						newItem := unusedHighCandidates[j]
+						if newItem.AW <= oldItem.AW {
+							continue
+						}
 
-					// 不能超过目标太多
-					if newRTP > rtp+rtpTolerance*2 {
-						continue
+						awDelta := newItem.AW - oldItem.AW
+						newTotalWin := totalWin + awDelta
+						newRTP := newTotalWin / totalBet
+
+						// 不能超过目标太多
+						if newRTP > rtp+rtpTolerance*2 {
+							continue
+						}
+
+						// 计算与目标的距离
+						rtpDelta := math.Abs(newRTP - rtp)
+						if rtpDelta < bestDelta {
+							bestDelta = rtpDelta
+							bestCandidateIdx = j
+							bestCandidate = newItem
+						}
+
+						// 如果找到完美匹配，立即使用
+						if rtpDelta <= rtpTolerance {
+							break
+						}
 					}
+				}
 
-					// 计算与目标的距离
-					rtpDelta := math.Abs(newRTP - rtp)
-					if rtpDelta < bestDelta {
-						bestDelta = rtpDelta
-						bestCandidateIdx = j
-					}
+				// 如果未使用的候选数据用完了，且允许重复使用，则从所有高金额数据中查找
+				if bestCandidateIdx < 0 && allowReuseForHighRTP && len(allHighCandidates) > 0 {
+					printf("[FB] ⚠️ 未使用的候选数据已用完，允许重复使用高金额数据继续替换\n")
+					// 从所有高金额数据中随机查找
+					for attempt := 0; attempt < 100; attempt++ {
+						randIdx := rng.Intn(len(allHighCandidates))
+						newItem := allHighCandidates[randIdx]
+						if newItem.AW <= oldItem.AW {
+							continue
+						}
 
-					// 如果找到完美匹配，立即使用
-					if rtpDelta <= rtpTolerance {
-						break
+						awDelta := newItem.AW - oldItem.AW
+						newTotalWin := totalWin + awDelta
+						newRTP := newTotalWin / totalBet
+
+						// 不能超过目标太多
+						if newRTP > rtp+rtpTolerance*2 {
+							continue
+						}
+
+						// 计算与目标的距离
+						rtpDelta := math.Abs(newRTP - rtp)
+						if rtpDelta < bestDelta {
+							bestDelta = rtpDelta
+							bestCandidate = newItem
+						}
+
+						// 如果找到完美匹配，立即使用
+						if rtpDelta <= rtpTolerance {
+							break
+						}
 					}
 				}
 
 				// 执行最佳替换
-				if bestCandidateIdx >= 0 {
-					newItem := unusedHighCandidates[bestCandidateIdx]
+				if bestCandidateIdx >= 0 || (allowReuseForHighRTP && bestDelta < math.MaxFloat64) {
+					var newItem GameResultData
+					if bestCandidateIdx >= 0 {
+						newItem = unusedHighCandidates[bestCandidateIdx]
+					} else {
+						newItem = bestCandidate
+					}
+
 					realIdx := indexedItems[dataIdx].idx
 
 					data[realIdx] = newItem
 					totalWin = totalWin - oldItem.AW + newItem.AW
 					delete(used, oldItem.ID)
-					used[newItem.ID] = true
-					replacedCount++
 
-					// 移除已使用的候选
-					unusedHighCandidates = append(unusedHighCandidates[:bestCandidateIdx], unusedHighCandidates[bestCandidateIdx+1:]...)
+					// 如果使用的是未使用的数据，标记为已使用并从列表中移除
+					if bestCandidateIdx >= 0 {
+						used[newItem.ID] = true
+						unusedHighCandidates = append(unusedHighCandidates[:bestCandidateIdx], unusedHighCandidates[bestCandidateIdx+1:]...)
+						candidateIdx = 0 // 重置索引，重新开始搜索
+					}
+					// 如果使用的是重复数据，不需要更新 used map（允许重复）
+
+					replacedCount++
 
 					currentRTP = totalWin / totalBet
 
@@ -3065,6 +3125,11 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 					}
 				} else {
 					candidateIdx++
+					// 如果候选索引超出范围，且不允许重复使用，则停止
+					if candidateIdx >= len(unusedHighCandidates) && !allowReuseForHighRTP {
+						printf("[FB] ⚠️ 未使用的候选数据已用完，停止替换\n")
+						break
+					}
 				}
 			}
 
