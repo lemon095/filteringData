@@ -204,10 +204,10 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 					default:
 						fallbackRanges = []string{"high_multiplier", "medium_multiplier"}
 					}
-					
+
 					var fallbackData []GameResultData
 					fallbackRangeName := ""
-					
+
 					// 查找第一个有数据的次高倍率区间
 					for _, fbRange := range fallbackRanges {
 						if len(dataRanges[fbRange].Data) > 0 {
@@ -216,7 +216,7 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 							break
 						}
 					}
-					
+
 					if len(fallbackData) > 0 {
 						// 使用次高倍率数据复制补齐
 						fmt.Printf("⚠️ %s 区间需要 %d 条数据，但可用数据为 0 条，将使用 %s 区间的数据复制补齐\n", rangeName, allocation, fallbackRangeName)
@@ -1133,99 +1133,128 @@ func adjustRTPToLowerLimit(data []GameResultData, targetRTP float64, totalBet fl
 }
 
 // ShuffleDataWithMultiplierDistribution 智能打乱数据，确保大倍率数据均匀分布在整个序列中
-// 方案：将数据分成若干区间，然后将大倍率数据随机插入到每个区间的随机位置
+// 方案A：将数据分成三类（不中奖、普通中奖、大倍率），先均匀分布普通中奖数据到各个区间，再插入大倍率数据
 func ShuffleDataWithMultiplierDistribution(data []GameResultData, betAmount float64, rng *rand.Rand) {
 	totalSize := len(data)
 	if totalSize == 0 {
 		return
 	}
 
-	// 按倍率分类，提取大倍率数据（20-100倍）
-	var bigMultiplierData []GameResultData // 20-50倍、50-100倍等高倍率数据
-	var normalData []GameResultData        // 其他数据
+	// 步骤1：按倍率分类，将数据分成三类
+	var zeroWinData []GameResultData       // 不中奖数据（multiplier == 0）
+	var normalWinData []GameResultData     // 普通中奖数据（0 < multiplier <= 20）
+	var bigMultiplierData []GameResultData // 大倍率数据（20 < multiplier <= 100）
 
 	for _, item := range data {
 		multiplier := item.AW / betAmount
 
-		// 提取20-100倍的数据
-		if multiplier > 20 && multiplier <= 100 {
+		if multiplier == 0 {
+			zeroWinData = append(zeroWinData, item)
+		} else if multiplier > 0 && multiplier <= 20 {
+			normalWinData = append(normalWinData, item)
+		} else if multiplier > 20 && multiplier <= 100 {
 			bigMultiplierData = append(bigMultiplierData, item)
 		} else {
-			normalData = append(normalData, item)
+			// 超过100倍的数据也归入普通中奖数据
+			normalWinData = append(normalWinData, item)
 		}
 	}
 
-	// 如果没有大倍率数据，直接整体打乱返回
-	if len(bigMultiplierData) == 0 {
-		rand.Shuffle(len(data), func(i, j int) {
-			data[i], data[j] = data[j], data[i]
-		})
-		return
+	// 步骤2：计算参数
+	// 总中奖率 = (普通中奖数量 + 大倍率数量) / 总数据量
+	totalWinCount := len(normalWinData) + len(bigMultiplierData)
+	totalWinRate := float64(totalWinCount) / float64(totalSize)
+
+	// 区间数量：如果有大倍率数据，使用大倍率数据数量；否则固定分成10个区间
+	segmentCount := len(bigMultiplierData)
+	if segmentCount == 0 {
+		// 没有大倍率数据时，固定分成10个区间
+		segmentCount = 10
 	}
 
-	// 先打乱普通数据
-	rand.Shuffle(len(normalData), func(i, j int) {
-		normalData[i], normalData[j] = normalData[j], normalData[i]
-	})
+	// 每个区间的基础大小（不包含大倍率数据）
+	// 基础数据 = 不中奖数据 + 普通中奖数据
+	baseDataCount := len(zeroWinData) + len(normalWinData)
+	baseSegmentSize := baseDataCount / segmentCount
+	if baseSegmentSize == 0 {
+		baseSegmentSize = 1 // 确保至少为1
+	}
 
-	// 先打乱大倍率数据
+	// 步骤3：打乱数据
+	rand.Shuffle(len(zeroWinData), func(i, j int) {
+		zeroWinData[i], zeroWinData[j] = zeroWinData[j], zeroWinData[i]
+	})
+	rand.Shuffle(len(normalWinData), func(i, j int) {
+		normalWinData[i], normalWinData[j] = normalWinData[j], normalWinData[i]
+	})
 	rand.Shuffle(len(bigMultiplierData), func(i, j int) {
 		bigMultiplierData[i], bigMultiplierData[j] = bigMultiplierData[j], bigMultiplierData[i]
 	})
 
-	// 计算区间数量：大倍率数据数量
-	segmentCount := len(bigMultiplierData)
-
-	// 计算每个区间的平均大小
-	avgSegmentSize := float64(len(normalData)) / float64(segmentCount)
-
-	// 创建结果数组
+	// 步骤4：按区间分配数据
 	result := make([]GameResultData, 0, totalSize)
+	normalWinIdx := 0
+	zeroWinIdx := 0
 
-	// 遍历每个区间，在每个区间内随机插入一条大倍率数据
 	for seg := 0; seg < segmentCount; seg++ {
-		// 计算当前区间的起始和结束位置
-		segmentStart := int(float64(seg) * avgSegmentSize)
-		segmentEnd := int(float64(seg+1) * avgSegmentSize)
+		segment := make([]GameResultData, 0)
+
+		// 计算当前区间的实际大小（最后一个区间包含所有剩余数据）
+		currentSegmentSize := baseSegmentSize
 		if seg == segmentCount-1 {
-			segmentEnd = len(normalData) // 最后一个区间包含所有剩余数据
+			// 最后一个区间：包含所有剩余的基础数据
+			remainingNormalWin := len(normalWinData) - normalWinIdx
+			remainingZeroWin := len(zeroWinData) - zeroWinIdx
+			currentSegmentSize = remainingNormalWin + remainingZeroWin
 		}
 
-		segmentSize := segmentEnd - segmentStart
+		// 计算当前区间的目标中奖数
+		currentTargetWin := int(float64(currentSegmentSize) * totalWinRate)
+		if seg == segmentCount-1 {
+			// 最后一个区间：使用所有剩余的普通中奖数据
+			currentTargetWin = len(normalWinData) - normalWinIdx
+		}
 
-		// 先添加这个区间的普通数据
-		result = append(result, normalData[segmentStart:segmentEnd]...)
+		// 分配普通中奖数据到当前区间
+		normalWinAdded := 0
+		for normalWinAdded < currentTargetWin && normalWinIdx < len(normalWinData) {
+			segment = append(segment, normalWinData[normalWinIdx])
+			normalWinIdx++
+			normalWinAdded++
+		}
 
-		// 如果还有大倍率数据，在这个区间内随机选择一个位置插入
+		// 填充不中奖数据到区间大小
+		for len(segment) < currentSegmentSize && zeroWinIdx < len(zeroWinData) {
+			segment = append(segment, zeroWinData[zeroWinIdx])
+			zeroWinIdx++
+		}
+
+		// 打乱区间内的数据（普通中奖和不中奖数据）
+		rand.Shuffle(len(segment), func(i, j int) {
+			segment[i], segment[j] = segment[j], segment[i]
+		})
+
+		// 在区间内随机位置插入大倍率数据
 		if seg < len(bigMultiplierData) {
-			// 计算当前结果数组的长度（作为插入位置的参考点）
-			currentResultLen := len(result)
-
-			// 在区间内随机选择一个相对位置（0 到 segmentSize-1）
-			relativePos := 0
-			if segmentSize > 1 {
-				relativePos = rng.Intn(segmentSize)
-			}
-
-			// 计算绝对插入位置：需要在已经添加的数据中找到位置
-			insertPos := currentResultLen - segmentSize + relativePos
-
-			// 确保插入位置有效
-			if insertPos < 0 {
-				insertPos = 0
-			}
-			if insertPos > currentResultLen {
-				insertPos = currentResultLen
+			insertPos := 0
+			if len(segment) > 0 {
+				insertPos = rng.Intn(len(segment) + 1) // +1 允许插入到末尾
 			}
 
 			// 插入大倍率数据
-			result = append(result, GameResultData{})
-			copy(result[insertPos+1:], result[insertPos:])
-			result[insertPos] = bigMultiplierData[seg]
+			if insertPos >= len(segment) {
+				segment = append(segment, bigMultiplierData[seg])
+			} else {
+				segment = append(segment, GameResultData{})
+				copy(segment[insertPos+1:], segment[insertPos:])
+				segment[insertPos] = bigMultiplierData[seg]
+			}
 		}
+
+		// 将区间数据添加到结果
+		result = append(result, segment...)
 	}
 
-	// 不再整体打乱，保持均匀分布的效果
-	// 将结果复制回原数组
+	// 步骤5：将结果复制回原数组（不改变数据本身，只改变排列顺序）
 	copy(data, result)
 }
