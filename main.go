@@ -877,9 +877,15 @@ func saveToJSON(data []GameResultData, config *Config, rtpLevel float64, testNum
 	// 转换数据为字典数组格式
 	var jsonData []map[string]interface{}
 	for _, item := range data {
-		gdValue := item.GD.Data
-		if gdValue == nil {
+		// 对于 generateFb，gd 字段始终使用空数组；对于 generate4，使用原始值
+		var gdValue interface{}
+		if config.Game.IsFb {
 			gdValue = []interface{}{}
+		} else {
+			gdValue = item.GD.Data
+			if gdValue == nil {
+				gdValue = []interface{}{}
+			}
 		}
 		row := map[string]interface{}{
 			"id":  item.ID,
