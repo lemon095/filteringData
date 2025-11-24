@@ -18,6 +18,37 @@ import (
 	"time"
 )
 
+func parseDataID(value interface{}) (int64, error) {
+	if value == nil {
+		return 0, fmt.Errorf("记录缺少 id 字段")
+	}
+	switch v := value.(type) {
+	case float64:
+		return int64(v), nil
+	case int:
+		return int64(v), nil
+	case int64:
+		return v, nil
+	case json.Number:
+		i, err := v.Int64()
+		if err != nil {
+			return 0, err
+		}
+		return i, nil
+	case string:
+		if v == "" {
+			return 0, fmt.Errorf("id 字段为空字符串")
+		}
+		i, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		return i, nil
+	default:
+		return 0, fmt.Errorf("无法解析 id 字段类型: %T", value)
+	}
+}
+
 // isGameId 检查参数是否为gameId（对应目录存在）
 func isGameId(arg string) bool {
 	if gid, err := strconv.Atoi(arg); err == nil {
@@ -27,416 +58,6 @@ func isGameId(arg string) bool {
 		}
 	}
 	return false
-}
-
-// isGameIdFb 检查参数是否为gameId（对应_fb目录存在）
-func isGameIdFb(arg string) bool {
-	if gid, err := strconv.Atoi(arg); err == nil {
-		gameDir := filepath.Join("output", fmt.Sprintf("%d_fb", gid))
-		if st, err2 := os.Stat(gameDir); err2 == nil && st.IsDir() {
-			return true
-		}
-	}
-	return false
-}
-
-// runMultiGameMode 运行多游戏生成模式
-func runMultiGameMode(mode string) {
-	// 记录程序开始时间
-	startTime := time.Now()
-
-	// 初始化随机数种子
-	rand.Seed(time.Now().UnixNano())
-
-	// 加载配置文件
-	config, err := LoadConfig("config.yaml")
-	if err != nil {
-		log.Fatalf("加载配置文件失败: %v", err)
-	}
-
-	// 验证生成模式
-	validModes := map[string]bool{
-		"generate":   true,
-		"generate2":  true,
-		"generate3":  true,
-		"generateFb": true,
-	}
-	if !validModes[mode] {
-		fmt.Printf("❌ 无效的生成模式: %s\n", mode)
-		fmt.Println("支持的模式: generate, generate2, generate3, generateFb")
-		return
-	}
-
-	// 检查是否启用多游戏模式
-	if !config.MultiGame.Enabled {
-		fmt.Println("⚠️ 多游戏模式未启用，请设置 multi_game.enabled: true")
-		return
-	}
-
-	if len(config.MultiGame.Games) == 0 {
-		fmt.Println("⚠️ 未配置任何游戏，请检查 multi_game.games 配置")
-		return
-	}
-
-	fmt.Printf("🎮 多游戏模式启动，生成模式: %s，共配置 %d 个游戏\n", mode, len(config.MultiGame.Games))
-	for i, game := range config.MultiGame.Games {
-		fmt.Printf("  游戏 %d: ID=%d, BL=%.0f, IsFb=%t\n", i+1, game.ID, game.BL, game.IsFb)
-	}
-
-	// 连接数据库
-	db, err := NewDatabase(config, "")
-	if err != nil {
-		log.Fatalf("数据库连接失败: %v", err)
-	}
-	defer db.Close()
-
-	// 为每个游戏生成数据
-	for gameIndex, gameConfig := range config.MultiGame.Games {
-		gameStartTime := time.Now()
-		fmt.Printf("\n🎯 开始处理游戏 %d/%d: ID=%d, BL=%.0f\n",
-			gameIndex+1, len(config.MultiGame.Games), gameConfig.ID, gameConfig.BL)
-
-		// 检查连接健康状态
-		if err := db.EnsureConnection(); err != nil {
-			fmt.Printf("⚠️ 连接健康检查失败: %v\n", err)
-		}
-
-		// 创建游戏特定的配置
-		gameConfigCopy := *config
-		gameConfigCopy.Game.ID = gameConfig.ID
-		gameConfigCopy.Game.IsFb = gameConfig.IsFb
-		gameConfigCopy.Bet.BL = gameConfig.BL
-
-		// 根据指定的生成模式选择对应的函数
-		fmt.Printf("🔄 游戏 %d 使用 %s 模式\n", gameConfig.ID, mode)
-		switch mode {
-		case "generate":
-			err = runSingleGameMode(&gameConfigCopy, db, gameIndex+1)
-		case "generate2":
-			err = runSingleGameMode2(&gameConfigCopy, db, gameIndex+1)
-		case "generate3":
-			err = runSingleGameMode3(&gameConfigCopy, db, gameIndex+1)
-		case "generateFb":
-			err = runSingleGameFbMode(&gameConfigCopy, db, gameIndex+1)
-		default:
-			err = fmt.Errorf("不支持的生成模式: %s", mode)
-		}
-
-		if err != nil {
-			log.Printf("❌ 游戏 %d 生成失败: %v", gameConfig.ID, err)
-			continue
-		}
-
-		gameDuration := time.Since(gameStartTime)
-		fmt.Printf("✅ 游戏 %d 生成完成，耗时: %v\n", gameConfig.ID, gameDuration)
-
-		// 游戏间连接健康检查
-		if gameIndex < len(config.MultiGame.Games)-1 {
-			fmt.Printf("🔍 检查连接健康状态...\n")
-			if err := db.EnsureConnection(); err != nil {
-				fmt.Printf("⚠️ 连接健康检查失败: %v\n", err)
-			}
-		}
-	}
-
-	totalDuration := time.Since(startTime)
-	fmt.Printf("\n🎉 所有游戏生成完成！总耗时: %v\n", totalDuration)
-}
-
-// runSingleGameMode 运行单个游戏的标准生成模式
-func runSingleGameMode(config *Config, db *Database, gameIndex int) error {
-	fmt.Printf("配置加载成功 - 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNum)
-
-	// 计算总投注
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNum)
-
-	// 失败统计
-	var failedLevels []float64
-	var failedTests []string
-	var failedMu sync.Mutex
-
-	// 预取共享只读数据
-	winDataAll, err := db.GetWinData()
-	if err != nil {
-		return fmt.Errorf("获取中奖数据失败: %v", err)
-	}
-	noWinDataAll, err := db.GetNoWinData()
-	if err != nil {
-		return fmt.Errorf("获取不中奖数据失败: %v", err)
-	}
-
-	// 遍历 RTP 档位
-	for rtpNum := 0; rtpNum < len(RtpLevels); rtpNum++ {
-		// 并发度：CPU 核数
-		worker := runtime.NumCPU()
-		sem := make(chan struct{}, worker)
-		var wg sync.WaitGroup
-
-		for t := 0; t < config.Tables.DataTableNum; t++ {
-			sem <- struct{}{}
-			wg.Add(1)
-
-			// 捕获当前循环变量
-			rtpNo := RtpLevels[rtpNum].RtpNo
-			rtpVal := RtpLevels[rtpNum].Rtp
-			testIndex := t + 1
-
-			go func(rtpNo float64, rtpVal float64, testIndex int) {
-				defer func() { <-sem; wg.Done() }()
-				testStartTime := time.Now()
-				fmt.Printf("▶️ 开始生成 | 游戏%d | RTP等级 %.0f | 第%d次 | %s\n",
-					config.Game.ID, rtpNo, testIndex, testStartTime.Format(time.RFC3339))
-				fmt.Printf("🔧 totalBet=%.2f allowWin_base=%.2f\n", totalBet, totalBet*rtpVal)
-
-				if err := runRtpTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll); err != nil {
-					log.Printf("RTP测试失败: %v", err)
-					// 记录失败的档位和测试（线程安全）
-					failedMu.Lock()
-					failedLevels = append(failedLevels, rtpNo)
-					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
-					failedMu.Unlock()
-				}
-
-				fmt.Printf("⏱️  游戏%d | RTP等级 %.0f (第%d次生成) 耗时: %v\n",
-					config.Game.ID, rtpNo, testIndex, time.Since(testStartTime))
-			}(rtpNo, rtpVal, testIndex)
-		}
-
-		wg.Wait()
-		fmt.Printf("⏱️  游戏%d | RTP等级 %.0f 总耗时: %v\n", config.Game.ID, RtpLevels[rtpNum].RtpNo, time.Since(time.Now()))
-	}
-
-	// 输出失败统计
-	printFailureSummary("generate", config.Game.ID, failedLevels, failedTests)
-
-	fmt.Printf("✅ 游戏 %d 导入完成！\n", config.Game.ID)
-	return nil
-}
-
-// runSingleGameFbMode 运行单个游戏的购买夺宝生成模式
-func runSingleGameFbMode(config *Config, db *Database, gameIndex int) error {
-	fmt.Printf("配置加载成功 - 游戏ID: %d, 目标数据量: %d (购买夺宝模式)\n", config.Game.ID, config.Tables.DataNumFb)
-
-	// 计算总投注：cs * ml * bl * bet.fb * 数据条数
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB * float64(config.Tables.DataNumFb)
-
-	// 预取共享只读数据（购买模式）
-	fmt.Println("🔄 正在获取购买模式中奖数据...")
-	winDataAll, err := db.GetWinDataFb()
-	if err != nil {
-		return fmt.Errorf("获取购买模式中奖数据失败: %v", err)
-	}
-	if len(winDataAll) == 0 {
-		return fmt.Errorf("未获取到购买模式中奖数据，无法继续")
-	}
-	fmt.Printf("✅ 购买模式中奖数据条数: %d\n", len(winDataAll))
-
-	fmt.Println("🔄 正在获取购买模式不中奖数据...")
-	noWinDataAll, err := db.GetNoWinDataFb()
-	if err != nil {
-		return fmt.Errorf("获取购买模式不中奖数据失败: %v", err)
-	}
-	fmt.Printf("✅ 购买模式不中奖数据条数: %d\n", len(noWinDataAll))
-
-	// 遍历 RTP 档位，每档位执行多次
-	for rtpNum := 0; rtpNum < len(FbRtpLevels); rtpNum++ {
-		levelStart := time.Now()
-		levelNo := FbRtpLevels[rtpNum].RtpNo
-		levelVal := FbRtpLevels[rtpNum].Rtp
-
-		var wgLevel sync.WaitGroup
-		worker := runtime.NumCPU()
-		sem := make(chan struct{}, worker)
-
-		for t := 0; t < config.Tables.DataTableNumFb; t++ {
-			sem <- struct{}{}
-			wgLevel.Add(1)
-
-			testIndex := t + 1
-			rtpNo := levelNo
-			rtpVal := levelVal
-
-			go func(rtpNo float64, rtpVal float64, testIndex int) {
-				defer func() { <-sem; wgLevel.Done() }()
-				testStartTime := time.Now()
-				fmt.Printf("▶️ 开始生成 | 游戏%d | RTP等级 %.0f | 第%d次 | %s\n",
-					config.Game.ID, rtpNo, testIndex, testStartTime.Format(time.RFC3339))
-				fmt.Printf("🔧 totalBet=%.2f allowWin_base=%.2f\n", totalBet, totalBet*rtpVal)
-
-				if err := runRtpFbTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, []GameResultData{}); err != nil {
-					log.Printf("RTP测试失败: %v", err)
-				}
-
-				fmt.Printf("⏱️  游戏%d | RTP等级 %.0f (第%d次生成) 耗时: %v\n",
-					config.Game.ID, rtpNo, testIndex, time.Since(testStartTime))
-			}(rtpNo, rtpVal, testIndex)
-		}
-
-		wgLevel.Wait()
-		fmt.Printf("⏱️  游戏%d | RTP等级 %.0f 总耗时: %v\n", config.Game.ID, levelNo, time.Since(levelStart))
-	}
-
-	fmt.Printf("✅ 游戏 %d 导入完成！\n", config.Game.ID)
-	return nil
-}
-
-// runSingleGameMode2 运行单个游戏的V2生成模式（四阶段策略）
-func runSingleGameMode2(config *Config, db *Database, gameIndex int) error {
-	fmt.Printf("配置加载成功V2 - 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNum)
-	fmt.Printf("阶段策略配置: 阶段1比例[%.1f%%-%.1f%%], 阶段3比例%.1f%%, 上偏差%.3f\n",
-		config.StageRatios.Stage1MinRatio*100, config.StageRatios.Stage1MaxRatio*100,
-		config.StageRatios.Stage3WinTopRatio*100, config.StageRatios.UpperDeviation)
-
-	// 计算总投注
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNum)
-
-	// 失败统计
-	var failedLevels []float64
-	var failedTests []string
-	var failedMu sync.Mutex
-
-	// 预取共享只读数据（使用三种数据源）
-	fmt.Println("🔄 正在获取中奖但不盈利数据...")
-	winDataAll, err := db.GetWinData()
-	if err != nil {
-		return fmt.Errorf("获取中奖但不盈利数据失败: %v", err)
-	}
-	fmt.Printf("✅ 中奖但不盈利数据条数: %d\n", len(winDataAll))
-
-	fmt.Println("🔄 正在获取中奖且盈利数据...")
-	profitDataAll, err := db.GetProfitData()
-	if err != nil {
-		return fmt.Errorf("获取中奖且盈利数据失败: %v", err)
-	}
-	fmt.Printf("✅ 中奖且盈利数据条数: %d\n", len(profitDataAll))
-
-	fmt.Println("🔄 正在获取不中奖数据...")
-	noWinDataAll, err := db.GetNoWinData()
-	if err != nil {
-		return fmt.Errorf("获取不中奖数据失败: %v", err)
-	}
-	fmt.Printf("✅ 不中奖数据条数: %d\n", len(noWinDataAll))
-
-	if len(winDataAll) == 0 {
-		return fmt.Errorf("未获取到中奖但不盈利数据，无法继续")
-	}
-	if len(noWinDataAll) == 0 {
-		fmt.Println("⚠️ 未获取到不中奖数据，后续将无法补全至目标条数。")
-	}
-
-	// 遍历 RTP 档位
-	for rtpNum := 0; rtpNum < len(RtpLevels); rtpNum++ {
-		// 并发度：CPU 核数
-		worker := runtime.NumCPU()
-		sem := make(chan struct{}, worker)
-		var wg sync.WaitGroup
-
-		for t := 0; t < config.Tables.DataTableNum; t++ {
-			sem <- struct{}{}
-			wg.Add(1)
-
-			// 捕获当前循环变量
-			rtpNo := RtpLevels[rtpNum].RtpNo
-			rtpVal := RtpLevels[rtpNum].Rtp
-			testIndex := t + 1
-
-			go func(rtpNo float64, rtpVal float64, testIndex int) {
-				defer func() { <-sem; wg.Done() }()
-				testStartTime := time.Now()
-				fmt.Printf("▶️ 开始生成V2 | 游戏%d | RTP等级 %.0f | 第%d次 | %s\n",
-					config.Game.ID, rtpNo, testIndex, testStartTime.Format(time.RFC3339))
-
-				if err := runRtpTest2(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, profitDataAll); err != nil {
-					log.Printf("RTP测试V2失败: %v", err)
-					// 记录失败的档位和测试（线程安全）
-					failedMu.Lock()
-					failedLevels = append(failedLevels, rtpNo)
-					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
-					failedMu.Unlock()
-				}
-
-				fmt.Printf("⏱️  游戏%d | RTP等级 %.0f (第%d次生成V2) 耗时: %v\n",
-					config.Game.ID, rtpNo, testIndex, time.Since(testStartTime))
-			}(rtpNo, rtpVal, testIndex)
-		}
-
-		wg.Wait()
-	}
-
-	// 输出失败统计
-	printFailureSummary("generate2", config.Game.ID, failedLevels, failedTests)
-
-	fmt.Printf("✅ 游戏 %d 导入完成！\n", config.Game.ID)
-	return nil
-}
-
-// runSingleGameMode3 运行单个游戏的V3生成模式（10%不中奖+40%不盈利+30%盈利策略）
-func runSingleGameMode3(config *Config, db *Database, gameIndex int) error {
-	fmt.Printf("配置加载成功（V3模式）- 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNumV3)
-	fmt.Printf("🔧 V3策略：10%%不中奖 + 40%%不盈利 + 30%%盈利数据\n")
-
-	// 计算总投注
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNumV3)
-
-	// 失败统计
-	var failedLevels []float64
-	var failedTests []string
-	var failedMu sync.Mutex
-
-	// 预取共享只读数据
-	winDataAll, err := db.GetWinData()
-	if err != nil {
-		return fmt.Errorf("获取中奖数据失败: %v", err)
-	}
-	noWinDataAll, err := db.GetNoWinData()
-	if err != nil {
-		return fmt.Errorf("获取不中奖数据失败: %v", err)
-	}
-
-	// 使用RtpLevelsTest配置
-	for rtpNum := 0; rtpNum < len(RtpLevelsTest); rtpNum++ {
-		// 并发度：CPU 核数
-		worker := runtime.NumCPU()
-		sem := make(chan struct{}, worker)
-		var wg sync.WaitGroup
-
-		for t := 0; t < config.Tables.DataTableNum3; t++ {
-			sem <- struct{}{}
-			wg.Add(1)
-
-			// 捕获当前循环变量
-			rtpNo := RtpLevelsTest[rtpNum].RtpNo
-			rtpVal := RtpLevelsTest[rtpNum].Rtp
-			testIndex := t + 1
-
-			go func(rtpNo float64, rtpVal float64, testIndex int) {
-				defer func() { <-sem; wg.Done() }()
-				testStartTime := time.Now()
-				fmt.Printf("▶️ 开始生成V3 | 游戏%d | RTP等级 %.0f | 第%d次 | %s\n",
-					config.Game.ID, rtpNo, testIndex, testStartTime.Format(time.RFC3339))
-
-				if err := runRtpTestV3(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll); err != nil {
-					log.Printf("RTP测试V3失败: %v", err)
-					// 记录失败的档位和测试（线程安全）
-					failedMu.Lock()
-					failedLevels = append(failedLevels, rtpNo)
-					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
-					failedMu.Unlock()
-				}
-
-				fmt.Printf("⏱️  游戏%d | RTP等级 %.0f (第%d次生成V3) 耗时: %v\n",
-					config.Game.ID, rtpNo, testIndex, time.Since(testStartTime))
-			}(rtpNo, rtpVal, testIndex)
-		}
-
-		wg.Wait()
-	}
-
-	// 输出失败统计
-	printFailureSummary("generate3", config.Game.ID, failedLevels, failedTests)
-
-	fmt.Printf("✅ 游戏 %d 导入完成！\n", config.Game.ID)
-	return nil
 }
 
 // 保证并发任务按块输出日志
@@ -535,9 +156,23 @@ func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, tes
 			break
 		}
 
-		// 判断本条是什么奖励配额（仅检查, 不计数, 计数在成功加入后再做）
-		gwt := item.GWT
-		switch gwt {
+		// 判断本条是什么奖励配额（基于aw < tb * 100条件）
+		// 根据中奖金额判断奖励类型
+		var rewardType int
+		if item.AW < float64(item.TB)*100 {
+			// 根据中奖金额范围判断奖励类型
+			if item.AW >= float64(item.TB)*50 {
+				rewardType = 4 // 超级巨奖
+			} else if item.AW >= float64(item.TB)*20 {
+				rewardType = 3 // 巨奖
+			} else {
+				rewardType = 2 // 大奖
+			}
+		} else {
+			continue // 不符合aw < tb * 100条件，跳过
+		}
+
+		switch rewardType {
 		case 2: // 大奖
 			if bigCount >= bigNum {
 				continue
@@ -569,7 +204,7 @@ func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, tes
 		// 添加数据并更新累计
 		data = append(data, item)
 		// 成功加入后再更新对应奖励计数
-		switch gwt {
+		switch rewardType {
 		case 2:
 			bigCount++
 		case 3:
@@ -1228,8 +863,8 @@ func saveToJSON(data []GameResultData, config *Config, rtpLevel float64, testNum
 		return fmt.Errorf("创建输出目录失败: %v", err)
 	}
 
-	// 生成文件名：output_table_prefix_RtpNo_第几次.json
-	fileName := fmt.Sprintf("%s%.0f_%d.json", config.Tables.OutputTablePrefix, rtpLevel, testNumber)
+	// 生成文件名：output_table_prefix_mode_RtpNo_第几次.json
+	fileName := fmt.Sprintf("%s%d_%.0f_%d.json", config.Tables.OutputTablePrefix, config.Game.Mode, rtpLevel, testNumber)
 	filePath := filepath.Join(outputDir, fileName)
 
 	// 准备要保存的数据结构
@@ -1242,13 +877,18 @@ func saveToJSON(data []GameResultData, config *Config, rtpLevel float64, testNum
 	// 转换数据为字典数组格式
 	var jsonData []map[string]interface{}
 	for _, item := range data {
+		gdValue := item.GD.Data
+		if gdValue == nil {
+			gdValue = []interface{}{}
+		}
 		row := map[string]interface{}{
+			"id":  item.ID,
 			"tb":  item.TB,
 			"aw":  item.AW,
 			"gwt": item.GWT,
 			"sp":  item.SP,
 			"fb":  item.FB,
-			"gd":  item.GD.Data,
+			"gd":  gdValue,
 		}
 		jsonData = append(jsonData, row)
 	}
@@ -1279,12 +919,7 @@ func main() {
 	// 检查命令行参数
 	if len(os.Args) < 2 {
 		fmt.Println("使用方法:")
-		fmt.Println("  ./filteringData generate                    # 生成RTP测试数据并保存到JSON文件")
-		fmt.Println("  ./filteringData generate2                   # 生成RTP测试数据V2（四阶段策略）")
-		fmt.Println("  ./filteringData generate3                   # 生成RTP测试数据V3（10%不中奖+40%不盈利+30%盈利策略）")
 		fmt.Println("  ./filteringData generate4                   # 生成RTP测试数据V4（RTP档位倍率分布策略）")
-		fmt.Println("  ./filteringData multi-game [mode]           # 多游戏顺序生成模式")
-		fmt.Println("     mode: generate/generate2/generate3/generate4/generateFb")
 		fmt.Println("  ./filteringData import                     # 导入output目录下的所有JSON文件到数据库")
 		fmt.Println("  ./filteringData import [fileLevelId]       # 只导入指定fileLevelId的JSON文件")
 		fmt.Println("  ./filteringData import-s3 <gameIds> [level] [env] # 从S3智能导入（自动检测normal和fb模式）")
@@ -1292,9 +927,15 @@ func main() {
 		fmt.Println("  ./filteringData import-s3-fb <gameIds> [level] [env] # 从S3导入购买夺宝模式文件")
 		fmt.Println("  ./filteringData sp-stats <gameId>              # 统计指定游戏JSON文件的SP数据")
 		fmt.Println("  ./filteringData importFb-s3 <gameIds> [level] [env] # 从S3导入多个游戏的购买夺宝模式文件")
+		fmt.Println("  ./filteringData export [outputFile] [env]     # 导出source_table_prefix表的数据到SQL文件")
+		fmt.Println("  ./filteringData import-sql <sqlFile> [env]    # 从本地SQL文件导入数据到source_table_prefix表")
+		fmt.Println("  ./filteringData import-s3-sql [gameId] [env]  # 从S3的SQL文件导入数据到source_table_prefix表")
 		fmt.Println("     gameIds: 逗号分隔的游戏ID列表，如: 112,103,105")
 		fmt.Println("     level: 可选的RTP等级过滤")
 		fmt.Println("     env: 可选的数据库环境 (local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp)")
+		fmt.Println("     outputFile: 可选的输出SQL文件路径（默认: sql/{前缀}_{游戏ID}.sql）")
+		fmt.Println("     sqlFile: SQL文件路径（默认: sql/{前缀}_{游戏ID}.sql）")
+		fmt.Println("     --s3: 从S3导入SQL文件（路径: sql/xxx.sql）")
 		fmt.Println("")
 		fmt.Println("示例:")
 		fmt.Println("  ./filteringData import                     # 导入所有文件")
@@ -1305,27 +946,24 @@ func main() {
 		fmt.Println("  ./filteringData import-s3-fb 112,103       # 只导入游戏112,103的购买夺宝模式文件")
 		fmt.Println("  ./filteringData import-s3 112,103 50       # 智能导入RTP等级50的文件")
 		fmt.Println("  ./filteringData import-s3 112,103 50 hp    # 智能导入到生产环境")
+		fmt.Println("  ./filteringData export                     # 导出到 sql/{前缀}_{游戏ID}.sql")
+		fmt.Println("  ./filteringData export custom.sql          # 导出到 sql/custom.sql")
+		fmt.Println("  ./filteringData export hp                  # 导出指定环境的数据")
+		fmt.Println("  ./filteringData import-sql custom.sql      # 从本地 sql/custom.sql 导入")
+		fmt.Println("  ./filteringData import-sql custom.sql hp   # 从本地导入到指定环境")
+		fmt.Println("  ./filteringData import-s3-sql              # 从S3导入（使用配置文件中的gameId）")
+		fmt.Println("  ./filteringData import-s3-sql 20063        # 从S3导入指定游戏ID的SQL文件")
+		fmt.Println("  ./filteringData import-s3-sql 20063 hp     # 从S3导入到指定环境")
 		os.Exit(1)
 	}
 
 	command := os.Args[1]
 
 	switch command {
-	case "generate":
-		runGenerateMode()
-	case "generate2":
-		runGenerateMode2()
-	case "generate3":
-		runGenerateMode3()
 	case "generate4":
 		runGenerateMode4()
-	case "multi-game":
-		// 支持指定生成模式：./filteringData multi-game generate2
-		mode := "generate" // 默认模式
-		if len(os.Args) > 2 {
-			mode = os.Args[2]
-		}
-		runMultiGameMode(mode)
+	case "generateFb":
+		runGenerateFbMode()
 	case "import":
 		// 支持多环境导入：
 		// 1) ./filteringData import                      → 使用默认环境导入全部
@@ -1388,10 +1026,6 @@ func main() {
 			fmt.Println("\n环境代码: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp")
 			os.Exit(1)
 		}
-	case "generateFb":
-		runGenerateFbMode()
-	case "generateFb2":
-		runGenerateFbMode2()
 	case "importFb":
 		// 支持多环境购买夺宝导入：
 		// 1) ./filteringData importFb                      → 使用默认环境导入全部_fb
@@ -1405,7 +1039,7 @@ func main() {
 			runImportFbMode("", "")
 		} else if len(os.Args) == 3 {
 			arg := os.Args[2]
-			if isGameIdFb(arg) {
+			if isGameId(arg) {
 				// ./filteringData importFb <gameId>
 				gid, _ := strconv.Atoi(arg)
 				runImportFbModeWithGameId(gid, "", "")
@@ -1415,7 +1049,7 @@ func main() {
 			}
 		} else if len(os.Args) == 4 {
 			arg1, arg2 := os.Args[2], os.Args[3]
-			if isGameIdFb(arg1) && IsEnv(arg2) {
+			if isGameId(arg1) && IsEnv(arg2) {
 				// ./filteringData importFb <gameId> <env>
 				gid, _ := strconv.Atoi(arg1)
 				env := ResolveEnv(arg2)
@@ -1424,7 +1058,7 @@ func main() {
 				// ./filteringData importFb <levelId> <env>
 				env := ResolveEnv(arg2)
 				runImportFbMode(arg1, env)
-			} else if isGameIdFb(arg1) {
+			} else if isGameId(arg1) {
 				// ./filteringData importFb <gameId> <level>
 				gid, _ := strconv.Atoi(arg1)
 				runImportFbModeWithGameId(gid, arg2, "")
@@ -1468,199 +1102,26 @@ func main() {
 	case "sp-stats":
 		// SP统计命令：./filteringData sp-stats <gameId>
 		runSpStatisticsFromJSON()
+	case "export":
+		// 导出命令：./filteringData export [outputFile] [env]
+		// 导出source_table_prefix表的数据到SQL文件
+		runExportCommand()
+	case "import-sql":
+		// 本地导入SQL命令：./filteringData import-sql <sqlFile> [env]
+		// 从本地SQL文件导入数据到source_table_prefix表
+		runImportSQLCommand()
+	case "import-s3-sql":
+		// S3导入SQL命令：./filteringData import-s3-sql [gameId] [env]
+		// 从S3的SQL文件导入数据到source_table_prefix表
+		handleS3SQLImportCommand()
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate, generate2, generate3, generate4, generateFb, generateFb2, multi-game, import, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats")
+		fmt.Println("支持的命令: generate4, import, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats, export, import-sql, import-s3-sql")
 		os.Exit(1)
 	}
 }
 
 // runGenerateMode 运行生成模式
-func runGenerateMode() {
-	// 记录程序开始时间
-	startTime := time.Now()
-
-	// 初始化随机数种子
-	rand.Seed(time.Now().UnixNano())
-
-	// 加载配置文件
-	config, err := LoadConfig("config.yaml")
-	if err != nil {
-		log.Fatalf("加载配置文件失败: %v", err)
-	}
-	fmt.Printf("配置加载成功 - 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNum)
-
-	// 连接数据库
-	db, err := NewDatabase(config, "")
-	if err != nil {
-		log.Fatalf("数据库连接失败: %v", err)
-	}
-	defer db.Close()
-
-	// 清理 sp=true 且 aw=0 的数据
-	if err := db.CleanSpZeroAwData(); err != nil {
-		log.Fatalf("清理数据失败: %v", err)
-	}
-
-	//计算总投注
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNum)
-
-	// 预取共享只读数据
-	winDataAll, err := db.GetWinData()
-	if err != nil {
-		log.Fatalf("获取中奖数据失败: %v", err)
-	}
-	noWinDataAll, err := db.GetNoWinData()
-	if err != nil {
-		log.Fatalf("获取不中奖数据失败: %v", err)
-	}
-
-	for rtpNum := 0; rtpNum < len(RtpLevels); rtpNum++ {
-		// 并发度：CPU 核数
-		worker := runtime.NumCPU()
-		sem := make(chan struct{}, worker)
-		var wg sync.WaitGroup
-
-		for t := 0; t < config.Tables.DataTableNum; t++ {
-			sem <- struct{}{}
-			wg.Add(1)
-
-			// 捕获当前循环变量
-			rtpNo := RtpLevels[rtpNum].RtpNo
-			rtpVal := RtpLevels[rtpNum].Rtp
-			testIndex := t + 1
-
-			go func(rtpNo float64, rtpVal float64, testIndex int) {
-				defer func() { <-sem; wg.Done() }()
-
-				// 记录单次测试开始时间
-				testStartTime := time.Now()
-				// 即时输出单次任务开始，便于观察进度
-				fmt.Printf("▶️ 开始生成 | RTP等级 %.0f | 第%d次 | %s\n", rtpNo, testIndex, testStartTime.Format(time.RFC3339))
-
-				if err := runRtpTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll); err != nil {
-					log.Printf("RTP测试失败: %v", err)
-				}
-
-				// 计算并输出单次测试耗时
-				testDuration := time.Since(testStartTime)
-				fmt.Printf("⏱️  RTP等级 %.0f (第%d次生成) 耗时: %v\n", rtpNo, testIndex, testDuration)
-			}(rtpNo, rtpVal, testIndex)
-		}
-
-		wg.Wait()
-	}
-
-	// 计算并输出整个程序的总耗时
-	totalDuration := time.Since(startTime)
-	fmt.Printf("\n🎉 RTP数据筛选和保存完成！\n")
-	fmt.Printf("⏱️  整个程序总耗时: %v\n", totalDuration)
-}
-
-// runGenerateMode2 运行生成模式V2 - 使用新的四阶段策略
-func runGenerateMode2() {
-	// 记录程序开始时间
-	startTime := time.Now()
-
-	// 初始化随机数种子
-	rand.Seed(time.Now().UnixNano())
-
-	// 加载配置文件
-	config, err := LoadConfig("config.yaml")
-	if err != nil {
-		log.Fatalf("加载配置文件失败: %v", err)
-	}
-	fmt.Printf("配置加载成功V2 - 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNum)
-	fmt.Printf("阶段策略配置: 阶段1比例[%.1f%%-%.1f%%], 阶段3比例%.1f%%, 上偏差%.3f\n",
-		config.StageRatios.Stage1MinRatio*100, config.StageRatios.Stage1MaxRatio*100,
-		config.StageRatios.Stage3WinTopRatio*100, config.StageRatios.UpperDeviation)
-
-	// 连接数据库
-	db, err := NewDatabase(config, "")
-	if err != nil {
-		log.Fatalf("数据库连接失败: %v", err)
-	}
-	defer db.Close()
-
-	// 清理 sp=true 且 aw=0 的数据
-	if err := db.CleanSpZeroAwData(); err != nil {
-		log.Fatalf("清理数据失败: %v", err)
-	}
-
-	//计算总投注
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNum)
-
-	// 预取共享只读数据（使用三种数据源）
-	fmt.Println("🔄 正在获取中奖但不盈利数据...")
-	winDataAll, err := db.GetWinData()
-	if err != nil {
-		log.Fatalf("获取中奖但不盈利数据失败: %v", err)
-	}
-	fmt.Printf("✅ 中奖但不盈利数据条数: %d\n", len(winDataAll))
-
-	fmt.Println("🔄 正在获取中奖且盈利数据...")
-	profitDataAll, err := db.GetProfitData()
-	if err != nil {
-		log.Fatalf("获取中奖且盈利数据失败: %v", err)
-	}
-	fmt.Printf("✅ 中奖且盈利数据条数: %d\n", len(profitDataAll))
-
-	fmt.Println("🔄 正在获取不中奖数据...")
-	noWinDataAll, err := db.GetNoWinData()
-	if err != nil {
-		log.Fatalf("获取不中奖数据失败: %v", err)
-	}
-	fmt.Printf("✅ 不中奖数据条数: %d\n", len(noWinDataAll))
-
-	if len(winDataAll) == 0 {
-		fmt.Println("⚠️ 未获取到中奖但不盈利数据，无法继续。")
-		return
-	}
-	if len(noWinDataAll) == 0 {
-		fmt.Println("⚠️ 未获取到不中奖数据，后续将无法补全至目标条数。")
-	}
-
-	for rtpNum := 0; rtpNum < len(RtpLevels); rtpNum++ {
-		// 并发度：CPU 核数
-		worker := runtime.NumCPU()
-		sem := make(chan struct{}, worker)
-		var wg sync.WaitGroup
-
-		for t := 0; t < config.Tables.DataTableNum; t++ {
-			sem <- struct{}{}
-			wg.Add(1)
-
-			// 捕获当前循环变量
-			rtpNo := RtpLevels[rtpNum].RtpNo
-			rtpVal := RtpLevels[rtpNum].Rtp
-			testIndex := t + 1
-
-			go func(rtpNo float64, rtpVal float64, testIndex int) {
-				defer func() { <-sem; wg.Done() }()
-
-				// 记录单次测试开始时间
-				testStartTime := time.Now()
-				// 即时输出单次任务开始，便于观察进度
-				fmt.Printf("▶️ 开始生成V2 | RTP等级 %.0f | 第%d次 | %s\n", rtpNo, testIndex, testStartTime.Format(time.RFC3339))
-
-				if err := runRtpTest2(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, profitDataAll); err != nil {
-					log.Printf("RTP测试V2失败: %v", err)
-				}
-
-				// 计算并输出单次测试耗时
-				testDuration := time.Since(testStartTime)
-				fmt.Printf("⏱️  RTP等级 %.0f (第%d次生成V2) 耗时: %v\n", rtpNo, testIndex, testDuration)
-			}(rtpNo, rtpVal, testIndex)
-		}
-
-		wg.Wait()
-	}
-
-	// 计算并输出整个程序的总耗时
-	totalDuration := time.Since(startTime)
-	fmt.Printf("\n🎉 RTP数据筛选和保存完成V2！\n")
-	fmt.Printf("⏱️  整个程序总耗时V2: %v\n", totalDuration)
-}
 
 // runImportMode 运行导入模式
 func runImportMode(fileLevelId string, env string) {
@@ -2056,931 +1517,6 @@ func smartFillFbData(data []GameResultData, totalWin, totalBet float64, targetCo
 	return data, totalWin
 }
 
-// runGenerateFbMode 运行购买夺宝生成模式
-func runGenerateFbMode() {
-	// 加载配置
-	config, err := LoadConfig("config.yaml")
-	if err != nil {
-		log.Fatalf("加载配置文件失败: %v", err)
-	}
-	if !config.Game.IsFb {
-		fmt.Println("⚠️ 当前游戏未启用购买夺宝 (game.is_fb=false)，退出。")
-		return
-	}
-	fmt.Println("▶️ [generateFb] 购买夺宝生成模式启动")
-
-	// 连接数据库
-	db, err := NewDatabase(config, "")
-	if err != nil {
-		log.Fatalf("数据库连接失败: %v", err)
-	}
-	defer db.Close()
-
-	// 清理 sp=true 且 aw=0 的数据
-	if err := db.CleanSpZeroAwData(); err != nil {
-		log.Fatalf("清理数据失败: %v", err)
-	}
-
-	// 计算总投注：cs * ml * bl * bet.fb * 数据条数
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB * float64(config.Tables.DataNumFb)
-
-	// 预取共享只读数据（购买模式）
-	fmt.Println("🔄 [generateFb] 正在获取购买模式中奖数据...")
-	winDataAll, err := db.GetWinDataFb()
-	if err != nil {
-		log.Fatalf("获取购买模式中奖数据失败: %v", err)
-	}
-
-	fmt.Printf("✅ [generateFb] 购买模式中奖但是不盈利的数据条数: %d\n", len(winDataAll))
-
-	profitDataAll, err := db.GetProfitDataFb()
-	if err != nil {
-		log.Fatalf("获取购买模式中奖数据失败: %v", err)
-	}
-	if len(profitDataAll) == 0 {
-		return
-	}
-	fmt.Printf("✅ [generateFb] 购买模式中奖并且盈利的数据条数: %d\n", len(profitDataAll))
-
-	fmt.Println("🔄 [generateFb] 正在获取购买模式不中奖数据...")
-	noWinDataAll, err := db.GetNoWinDataFb()
-	if err != nil {
-		log.Fatalf("获取购买模式不中奖数据失败: %v", err)
-	}
-	fmt.Printf("✅ [generateFb] 购买模式不中奖数据条数: %d\n", len(noWinDataAll))
-
-	if len(winDataAll) == 0 {
-		fmt.Println("⚠️ [generateFb] 未获取到购买模式中奖数据，无法继续。请检查数据条件 (aw>0, gwt<=3, fb=2, sp=true)。")
-		return
-	}
-	if len(noWinDataAll) == 0 {
-		fmt.Println("⚠️ [generateFb] 未获取到购买模式不中奖数据，后续将无法补全至目标条数。")
-	}
-
-	// 失败统计
-	var failedLevels []float64
-	var failedTests []string
-	var failedMu sync.Mutex
-
-	// 遍历 RTP 档位，每档位执行多次，并统计耗时
-	fbStartTime := time.Now()
-	worker := runtime.NumCPU()
-	sem := make(chan struct{}, worker)
-
-	for rtpNum := 0; rtpNum < len(FbRtpLevels); rtpNum++ {
-		levelStart := time.Now()
-		levelNo := FbRtpLevels[rtpNum].RtpNo
-		levelVal := FbRtpLevels[rtpNum].Rtp
-
-		var wgLevel sync.WaitGroup
-		for t := 0; t < config.Tables.DataTableNumFb; t++ {
-			sem <- struct{}{}
-			wgLevel.Add(1)
-
-			testIndex := t + 1
-			rtpNo := levelNo
-			rtpVal := levelVal
-
-			go func(rtpNo float64, rtpVal float64, testIndex int) {
-				defer func() { <-sem; wgLevel.Done() }()
-				testStartTime := time.Now()
-				fmt.Printf("▶️ [generateFb] 开始生成 | RTP等级 %.0f | 第%d次 | %s\n", rtpNo, testIndex, testStartTime.Format(time.RFC3339))
-				fmt.Printf("🔧 [generateFb] totalBet=%.2f allowWin_base=%.2f\n", totalBet, totalBet*rtpVal)
-
-				if err := runRtpFbTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, profitDataAll); err != nil {
-					log.Printf("[generateFb] RTP测试失败: %v", err)
-					// 记录失败的档位和测试（线程安全）
-					failedMu.Lock()
-					failedLevels = append(failedLevels, rtpNo)
-					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
-					failedMu.Unlock()
-				}
-
-				fmt.Printf("⏱️  [generateFb] RTP等级 %.0f (第%d次生成) 耗时: %v\n", rtpNo, testIndex, time.Since(testStartTime))
-			}(rtpNo, rtpVal, testIndex)
-		}
-
-		wgLevel.Wait()
-		fmt.Printf("⏱️  [generateFb] RTP等级 %.0f 总耗时: %v\n", levelNo, time.Since(levelStart))
-	}
-
-	// 输出失败统计
-	printFailureSummary("generateFb", config.Game.ID, failedLevels, failedTests)
-
-	fmt.Printf("\n🎉 [generateFb] 全部档位生成完成！\n")
-	fmt.Printf("⏱️  [generateFb] 整体总耗时: %v\n", time.Since(fbStartTime))
-}
-
-// runRtpFbTest 生成购买夺宝 RTP 数据（智能替换策略：精确贪心算法）
-func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData, profitDataAll []GameResultData) error {
-	var logBuf bytes.Buffer
-	printf := func(format string, a ...interface{}) {
-		fmt.Fprintf(&logBuf, format, a...)
-	}
-
-	// 统一使用更严格的容忍度，提高精度
-	rtpTolerance := 0.005  // 0.5%，更精确
-	maxReplaceRatio := 0.6 // 60%，允许更多替换次数
-
-	// 目标参数
-	targetCount := config.Tables.DataNumFb
-	maxReplaceIterations := int(float64(targetCount) * maxReplaceRatio)
-
-	printf("\n========== [FB TASK BEGIN] RtpNo: %.0f | Test: %d | %s =========\n", rtpLevel, testNumber, time.Now().Format(time.RFC3339))
-	printf("[FB] 🎯 目标RTP=%.4f, 精度容忍度=%.2f%% (智能替换算法v2.0)\n", rtp, rtpTolerance*100)
-	printf("候选: win(aw<tb)=%d, profit(aw>tb)=%d, nowin=%d\n", len(winDataAll), len(profitDataAll), len(noWinDataAll))
-
-	// 随机源
-	seed := time.Now().UnixNano() ^ int64(config.Game.ID)*1_000_003 ^ int64(testNumber)*1_000_033 ^ int64(rtpLevel)*1_000_037
-	rng := rand.New(rand.NewSource(seed))
-
-	// 准备候选数据池（排除gwt>=4的超巨奖）
-	var profitCandidates []GameResultData // aw > tb 盈利数据
-	var winCandidates []GameResultData    // aw <= tb 不盈利中奖数据
-
-	for _, item := range profitDataAll {
-		if item.GWT < 4 && item.AW > 0 {
-			profitCandidates = append(profitCandidates, item)
-		}
-	}
-	for _, item := range winDataAll {
-		if item.GWT < 4 && item.AW > 0 {
-			winCandidates = append(winCandidates, item)
-		}
-	}
-
-	printf("[FB] 步骤1：智能选择%d条数据（根据RTP档位）...\n", targetCount)
-
-	// 步骤1：根据目标RTP智能选择初始数据
-	var primaryPool, secondaryPool []GameResultData
-	var data []GameResultData
-	used := make(map[int]bool)
-
-	if rtp < 1.0 {
-		// 低RTP档位：优先使用不盈利数据（aw < tb）
-		primaryPool = winCandidates
-		secondaryPool = profitCandidates
-		printf("[FB] 低RTP档位：优先选择不盈利数据(aw<tb)\n")
-	} else {
-		// 高RTP档位：优先使用盈利数据（aw > tb）
-		primaryPool = profitCandidates
-		secondaryPool = winCandidates
-		printf("[FB] 高RTP档位：优先选择盈利数据(aw>tb)\n")
-	}
-
-	// 从主池随机选择
-	if len(primaryPool) > 0 {
-		perm := rng.Perm(len(primaryPool))
-		for _, idx := range perm {
-			if len(data) >= targetCount {
-				break
-			}
-			item := primaryPool[idx]
-			data = append(data, item)
-			used[item.ID] = true
-		}
-	}
-
-	// 如果主池不够，从副池补充
-	if len(data) < targetCount && len(secondaryPool) > 0 {
-		perm := rng.Perm(len(secondaryPool))
-		for _, idx := range perm {
-			if len(data) >= targetCount {
-				break
-			}
-			item := secondaryPool[idx]
-			if !used[item.ID] {
-				data = append(data, item)
-				used[item.ID] = true
-			}
-		}
-	}
-
-	if len(data) < targetCount {
-		return fmt.Errorf("可用候选数据不足：需要%d条，实际%d条", targetCount, len(data))
-	}
-
-	// 计算初始RTP
-	var totalWin float64
-	for _, item := range data {
-		totalWin += item.AW
-	}
-	currentRTP := totalWin / totalBet
-	printf("[FB] 初始RTP=%.6f (目标=%.6f, 偏差=%.6f)\n", currentRTP, rtp, currentRTP-rtp)
-
-	// 步骤2：智能RTP精确调整（贪心算法）
-	if math.Abs(currentRTP-rtp) > rtpTolerance {
-		printf("[FB] 步骤2：RTP偏差超出容忍度(%.2f%%)，开始智能调整...\n", rtpTolerance*100)
-
-		replacedCount := 0
-		targetWin := totalBet * rtp
-		winGap := targetWin - totalWin
-
-		if currentRTP < rtp {
-			// RTP过低：用高金额数据替换低金额数据
-			printf("[FB] 🔼 RTP过低，需增加%.2f中奖金额 (智能贪心替换)...\n", winGap)
-
-			// 准备未使用的替换候选数据：优先profit，然后win
-			var unusedHighCandidates []GameResultData
-			for _, item := range profitCandidates {
-				if !used[item.ID] {
-					unusedHighCandidates = append(unusedHighCandidates, item)
-				}
-			}
-			for _, item := range winCandidates {
-				if !used[item.ID] {
-					unusedHighCandidates = append(unusedHighCandidates, item)
-				}
-			}
-
-			// 按aw降序排序（高金额在前）
-			sort.Slice(unusedHighCandidates, func(i, j int) bool {
-				return unusedHighCandidates[i].AW > unusedHighCandidates[j].AW
-			})
-
-			// 对当前数据构建索引数组并按aw升序排序
-			type indexedData struct {
-				idx  int
-				item GameResultData
-			}
-			indexedItems := make([]indexedData, len(data))
-			for i, item := range data {
-				indexedItems[i] = indexedData{idx: i, item: item}
-			}
-			sort.Slice(indexedItems, func(i, j int) bool {
-				return indexedItems[i].item.AW < indexedItems[j].item.AW
-			})
-
-			// 智能贪心替换：寻找最接近目标的替换组合
-			candidateIdx := 0
-			for dataIdx := 0; dataIdx < len(indexedItems) && candidateIdx < len(unusedHighCandidates) && replacedCount < maxReplaceIterations; dataIdx++ {
-				oldItem := indexedItems[dataIdx].item
-
-				// 寻找最佳替换候选（最接近目标增量的）
-				bestCandidateIdx := -1
-				bestDelta := math.MaxFloat64
-
-				for j := candidateIdx; j < len(unusedHighCandidates) && j < candidateIdx+50; j++ {
-					newItem := unusedHighCandidates[j]
-					if newItem.AW <= oldItem.AW {
-						continue
-					}
-
-					awDelta := newItem.AW - oldItem.AW
-					newTotalWin := totalWin + awDelta
-					newRTP := newTotalWin / totalBet
-
-					// 不能超过目标太多
-					if newRTP > rtp+rtpTolerance*2 {
-						continue
-					}
-
-					// 计算与目标的距离
-					rtpDelta := math.Abs(newRTP - rtp)
-					if rtpDelta < bestDelta {
-						bestDelta = rtpDelta
-						bestCandidateIdx = j
-					}
-
-					// 如果找到完美匹配，立即使用
-					if rtpDelta <= rtpTolerance {
-						break
-					}
-				}
-
-				// 执行最佳替换
-				if bestCandidateIdx >= 0 {
-					newItem := unusedHighCandidates[bestCandidateIdx]
-					realIdx := indexedItems[dataIdx].idx
-
-					data[realIdx] = newItem
-					totalWin = totalWin - oldItem.AW + newItem.AW
-					delete(used, oldItem.ID)
-					used[newItem.ID] = true
-					replacedCount++
-
-					// 移除已使用的候选
-					unusedHighCandidates = append(unusedHighCandidates[:bestCandidateIdx], unusedHighCandidates[bestCandidateIdx+1:]...)
-
-					currentRTP = totalWin / totalBet
-
-					// 如果已经达到目标，提前退出
-					if math.Abs(currentRTP-rtp) <= rtpTolerance {
-						printf("[FB] ✅ 已达到目标RTP，提前结束替换\n")
-						break
-					}
-				} else {
-					candidateIdx++
-				}
-			}
-
-		} else {
-			// RTP过高：用低金额数据替换高金额数据
-			printf("[FB] 🔽 RTP过高，需减少%.2f中奖金额 (智能贪心替换)...\n", -winGap)
-
-			// 准备替换候选数据：按优先级：nowin > 低aw的win > 低aw的profit
-			var replacementCandidates []GameResultData
-
-			// 1. 优先使用不中奖数据（aw=0）
-			for _, item := range noWinDataAll {
-				if !used[item.ID] {
-					replacementCandidates = append(replacementCandidates, item)
-				}
-			}
-
-			// 2. 补充低金额的不盈利中奖数据（aw < tb）
-			var unusedWinCandidates []GameResultData
-			for _, item := range winCandidates {
-				if !used[item.ID] {
-					unusedWinCandidates = append(unusedWinCandidates, item)
-				}
-			}
-			sort.Slice(unusedWinCandidates, func(i, j int) bool {
-				return unusedWinCandidates[i].AW < unusedWinCandidates[j].AW
-			})
-			replacementCandidates = append(replacementCandidates, unusedWinCandidates...)
-
-			// 3. 补充低金额的盈利数据（aw > tb）
-			var unusedProfitCandidates []GameResultData
-			for _, item := range profitCandidates {
-				if !used[item.ID] {
-					unusedProfitCandidates = append(unusedProfitCandidates, item)
-				}
-			}
-			sort.Slice(unusedProfitCandidates, func(i, j int) bool {
-				return unusedProfitCandidates[i].AW < unusedProfitCandidates[j].AW
-			})
-			replacementCandidates = append(replacementCandidates, unusedProfitCandidates...)
-
-			printf("[FB] 可用低金额替换数据: %d条\n", len(replacementCandidates))
-
-			// 对当前数据构建索引数组并按aw降序排序
-			type indexedData struct {
-				idx  int
-				item GameResultData
-			}
-			indexedItems := make([]indexedData, len(data))
-			for i, item := range data {
-				indexedItems[i] = indexedData{idx: i, item: item}
-			}
-			sort.Slice(indexedItems, func(i, j int) bool {
-				return indexedItems[i].item.AW > indexedItems[j].item.AW
-			})
-
-			// 智能贪心替换：寻找最接近目标的替换组合
-			candidateIdx := 0
-			for dataIdx := 0; dataIdx < len(indexedItems) && candidateIdx < len(replacementCandidates) && replacedCount < maxReplaceIterations; dataIdx++ {
-				oldItem := indexedItems[dataIdx].item
-
-				// 寻找最佳替换候选（最接近目标减量的）
-				bestCandidateIdx := -1
-				bestDelta := math.MaxFloat64
-
-				for j := candidateIdx; j < len(replacementCandidates) && j < candidateIdx+50; j++ {
-					newItem := replacementCandidates[j]
-					if newItem.AW >= oldItem.AW {
-						continue
-					}
-
-					awDelta := oldItem.AW - newItem.AW
-					newTotalWin := totalWin - awDelta
-					newRTP := newTotalWin / totalBet
-
-					// 不能低于目标太多
-					if newRTP < rtp-rtpTolerance*2 {
-						continue
-					}
-
-					// 计算与目标的距离
-					rtpDelta := math.Abs(newRTP - rtp)
-					if rtpDelta < bestDelta {
-						bestDelta = rtpDelta
-						bestCandidateIdx = j
-					}
-
-					// 如果找到完美匹配，立即使用
-					if rtpDelta <= rtpTolerance {
-						break
-					}
-				}
-
-				// 执行最佳替换
-				if bestCandidateIdx >= 0 {
-					newItem := replacementCandidates[bestCandidateIdx]
-					realIdx := indexedItems[dataIdx].idx
-
-					data[realIdx] = newItem
-					totalWin = totalWin - oldItem.AW + newItem.AW
-					delete(used, oldItem.ID)
-					used[newItem.ID] = true
-					replacedCount++
-
-					// 移除已使用的候选
-					replacementCandidates = append(replacementCandidates[:bestCandidateIdx], replacementCandidates[bestCandidateIdx+1:]...)
-
-					currentRTP = totalWin / totalBet
-
-					// 如果已经达到目标，提前退出
-					if math.Abs(currentRTP-rtp) <= rtpTolerance {
-						printf("[FB] ✅ 已达到目标RTP，提前结束替换\n")
-						break
-					}
-				} else {
-					candidateIdx++
-				}
-			}
-		}
-
-		currentRTP = totalWin / totalBet
-		rtpDeviation := currentRTP - rtp
-		deviationPercent := (rtpDeviation / rtp) * 100
-		printf("[FB] 替换完成：替换了%d条数据，当前RTP=%.6f (偏差=%.6f, %.2f%%)\n",
-			replacedCount, currentRTP, math.Abs(rtpDeviation), math.Abs(deviationPercent))
-	}
-
-	// 最终统计与保存
-	printf("📊 [FB] 最终验证: 期望 %d 条, 实际 %d 条\n", targetCount, len(data))
-	var finalTotalBet float64
-	var finalTotalWin float64
-	for _, it := range data {
-		finalTotalBet += float64(it.TB)
-		finalTotalWin += it.AW
-	}
-	finalRTP := finalTotalWin / finalTotalBet
-	printf("✅ [FB] 档位: %.0f, 目标RTP: %.6f, 实际RTP: %.6f, 偏差: %.6f\n", rtpLevel, rtp, finalRTP, math.Abs(finalRTP-rtp))
-	printf("📊 [FB] 实际投注总额: %.2f (假设值: %.2f), 实际中奖总额: %.2f\n", finalTotalBet, totalBet, finalTotalWin)
-
-	// 重复率统计（按 id 去重）
-	uniq := make(map[int]int, len(data))
-	for _, it := range data {
-		uniq[it.ID]++
-	}
-	dupCount := 0
-	for _, c := range uniq {
-		if c > 1 {
-			dupCount += c - 1
-		}
-	}
-	dupRate := 0.0
-	if n := len(data); n > 0 {
-		dupRate = float64(dupCount) / float64(n)
-	}
-	printf("🔎 [FB] 去重统计: 总数=%d, 唯一=%d, 重复=%d, 重复率=%.4f\n", len(data), len(uniq), dupCount, dupRate)
-
-	// 打乱输出顺序并写文件
-	rand.Shuffle(len(data), func(i, j int) { data[i], data[j] = data[j], data[i] })
-	outDir := filepath.Join("output", fmt.Sprintf("%d_fb", config.Game.ID))
-	if err := saveToJSON(data, config, rtpLevel, testNumber, outDir); err != nil {
-		return fmt.Errorf("[FB] 保存JSON失败: %v", err)
-	}
-
-	outputMu.Lock()
-	fmt.Print(logBuf.String())
-	outputMu.Unlock()
-	return nil
-}
-
-// runGenerateFbMode2 运行购买夺宝生成模式V2（允许数据重复使用）
-func runGenerateFbMode2() {
-	// 加载配置
-	config, err := LoadConfig("config.yaml")
-	if err != nil {
-		log.Fatalf("加载配置文件失败: %v", err)
-	}
-	if !config.Game.IsFb {
-		fmt.Println("⚠️ 当前游戏未启用购买夺宝 (game.is_fb=false)，退出。")
-		return
-	}
-	fmt.Println("▶️ [generateFb2] 购买夺宝生成模式V2启动（允许数据重复使用）")
-
-	// 连接数据库
-	db, err := NewDatabase(config, "")
-	if err != nil {
-		log.Fatalf("数据库连接失败: %v", err)
-	}
-	defer db.Close()
-
-	// 清理 sp=true 且 aw=0 的数据
-	if err := db.CleanSpZeroAwData(); err != nil {
-		log.Fatalf("清理数据失败: %v", err)
-	}
-
-	// 计算总投注：cs * ml * bl * bet.fb * 数据条数
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB * float64(config.Tables.DataNumFb)
-
-	// 预取共享只读数据（购买模式）
-	fmt.Println("🔄 [generateFb2] 正在获取购买模式中奖数据...")
-	winDataAll, err := db.GetWinDataFb()
-	if err != nil {
-		log.Fatalf("获取购买模式中奖数据失败: %v", err)
-	}
-
-	fmt.Printf("✅ [generateFb2] 购买模式中奖但是不盈利的数据条数: %d\n", len(winDataAll))
-
-	profitDataAll, err := db.GetProfitDataFb()
-	if err != nil {
-		log.Fatalf("获取购买模式中奖数据失败: %v", err)
-	}
-	if len(profitDataAll) == 0 {
-		fmt.Println("⚠️ [generateFb2] 未获取到盈利数据，但将继续使用不盈利数据")
-	}
-	fmt.Printf("✅ [generateFb2] 购买模式中奖并且盈利的数据条数: %d\n", len(profitDataAll))
-
-	fmt.Println("🔄 [generateFb2] 正在获取购买模式不中奖数据...")
-	noWinDataAll, err := db.GetNoWinDataFb()
-	if err != nil {
-		log.Fatalf("获取购买模式不中奖数据失败: %v", err)
-	}
-	fmt.Printf("✅ [generateFb2] 购买模式不中奖数据条数: %d\n", len(noWinDataAll))
-
-	totalAvailable := len(winDataAll) + len(profitDataAll) + len(noWinDataAll)
-	fmt.Printf("📊 [generateFb2] 总可用数据: %d 条，目标生成: %d 条\n", totalAvailable, config.Tables.DataNumFb)
-
-	if totalAvailable == 0 {
-		fmt.Println("⚠️ [generateFb2] 未获取到任何购买模式数据，无法继续。")
-		return
-	}
-
-	// 失败统计
-	var failedLevels []float64
-	var failedTests []string
-	var failedMu sync.Mutex
-
-	// 遍历 RTP 档位，每档位执行多次，并统计耗时
-	fbStartTime := time.Now()
-	worker := runtime.NumCPU()
-	sem := make(chan struct{}, worker)
-
-	for rtpNum := 0; rtpNum < len(FbRtpLevels); rtpNum++ {
-		levelStart := time.Now()
-		levelNo := FbRtpLevels[rtpNum].RtpNo
-		levelVal := FbRtpLevels[rtpNum].Rtp
-
-		var wgLevel sync.WaitGroup
-		for t := 0; t < config.Tables.DataTableNumFb; t++ {
-			sem <- struct{}{}
-			wgLevel.Add(1)
-
-			testIndex := t + 1
-			rtpNo := levelNo
-			rtpVal := levelVal
-
-			go func(rtpNo float64, rtpVal float64, testIndex int) {
-				defer func() { <-sem; wgLevel.Done() }()
-				testStartTime := time.Now()
-				fmt.Printf("▶️ [generateFb2] 开始生成 | RTP等级 %.0f | 第%d次 | %s\n", rtpNo, testIndex, testStartTime.Format(time.RFC3339))
-				fmt.Printf("🔧 [generateFb2] totalBet=%.2f allowWin_base=%.2f\n", totalBet, totalBet*rtpVal)
-
-				if err := runRtpFbTest2(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, profitDataAll); err != nil {
-					log.Printf("[generateFb2] RTP测试失败: %v", err)
-					// 记录失败的档位和测试（线程安全）
-					failedMu.Lock()
-					failedLevels = append(failedLevels, rtpNo)
-					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
-					failedMu.Unlock()
-				}
-
-				fmt.Printf("⏱️  [generateFb2] RTP等级 %.0f (第%d次生成) 耗时: %v\n", rtpNo, testIndex, time.Since(testStartTime))
-			}(rtpNo, rtpVal, testIndex)
-		}
-
-		wgLevel.Wait()
-		fmt.Printf("⏱️  [generateFb2] RTP等级 %.0f 总耗时: %v\n", levelNo, time.Since(levelStart))
-	}
-
-	// 输出失败统计
-	printFailureSummary("generateFb2", config.Game.ID, failedLevels, failedTests)
-
-	fmt.Printf("\n🎉 [generateFb2] 全部档位生成完成！\n")
-	fmt.Printf("⏱️  [generateFb2] 整体总耗时: %v\n", time.Since(fbStartTime))
-}
-
-// runRtpFbTest2 生成购买夺宝 RTP 数据V2（允许数据重复使用）
-func runRtpFbTest2(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData, profitDataAll []GameResultData) error {
-	var logBuf bytes.Buffer
-	printf := func(format string, a ...interface{}) {
-		fmt.Fprintf(&logBuf, format, a...)
-	}
-
-	// 统一使用更严格的容忍度，提高精度
-	rtpTolerance := 0.005  // 0.5%，更精确
-	maxReplaceRatio := 0.6 // 60%，允许更多替换次数
-
-	// 目标参数
-	targetCount := config.Tables.DataNumFb
-	maxReplaceIterations := int(float64(targetCount) * maxReplaceRatio)
-
-	printf("\n========== [FB2 TASK BEGIN] RtpNo: %.0f | Test: %d | %s =========\n", rtpLevel, testNumber, time.Now().Format(time.RFC3339))
-	printf("[FB2] 🎯 目标RTP=%.4f, 精度容忍度=%.2f%%, 目标数量=%d (允许数据重复使用)\n", rtp, rtpTolerance*100, targetCount)
-	printf("[FB2] 候选: win(aw<tb)=%d, profit(aw>tb)=%d, nowin=%d\n", len(winDataAll), len(profitDataAll), len(noWinDataAll))
-
-	// 随机源
-	seed := time.Now().UnixNano() ^ int64(config.Game.ID)*1_000_003 ^ int64(testNumber)*1_000_033 ^ int64(rtpLevel)*1_000_037
-	rng := rand.New(rand.NewSource(seed))
-
-	// 准备候选数据池（排除gwt>=4的超巨奖）
-	var profitCandidates []GameResultData // aw > tb 盈利数据
-	var winCandidates []GameResultData    // aw <= tb 不盈利中奖数据
-
-	for _, item := range profitDataAll {
-		if item.GWT < 4 && item.AW > 0 {
-			profitCandidates = append(profitCandidates, item)
-		}
-	}
-	for _, item := range winDataAll {
-		if item.GWT < 4 && item.AW > 0 {
-			winCandidates = append(winCandidates, item)
-		}
-	}
-
-	printf("[FB2] 步骤1：智能选择%d条数据（允许重复使用）...\n", targetCount)
-
-	// 步骤1：根据目标RTP智能选择初始数据（允许重复）
-	var primaryPool, secondaryPool []GameResultData
-	var data []GameResultData
-
-	if rtp < 1.0 {
-		// 低RTP档位：优先使用不盈利数据（aw < tb）
-		primaryPool = winCandidates
-		secondaryPool = profitCandidates
-		printf("[FB2] 低RTP档位：优先选择不盈利数据(aw<tb)\n")
-	} else {
-		// 高RTP档位：优先使用盈利数据（aw > tb）
-		primaryPool = profitCandidates
-		secondaryPool = winCandidates
-		printf("[FB2] 高RTP档位：优先选择盈利数据(aw>tb)\n")
-	}
-
-	// 从主池循环选择（允许重复）
-	if len(primaryPool) > 0 {
-		for len(data) < targetCount {
-			idx := rng.Intn(len(primaryPool))
-			data = append(data, primaryPool[idx])
-		}
-	} else if len(secondaryPool) > 0 {
-		// 如果主池为空，使用副池
-		for len(data) < targetCount {
-			idx := rng.Intn(len(secondaryPool))
-			data = append(data, secondaryPool[idx])
-		}
-	} else if len(noWinDataAll) > 0 {
-		// 如果中奖数据都没有，使用不中奖数据
-		printf("[FB2] ⚠️ 无中奖数据可用，使用不中奖数据填充\n")
-		for len(data) < targetCount {
-			idx := rng.Intn(len(noWinDataAll))
-			data = append(data, noWinDataAll[idx])
-		}
-	} else {
-		return fmt.Errorf("[FB2] ❌ 没有任何可用数据")
-	}
-
-	// 计算初始RTP
-	var totalWin float64
-	for _, item := range data {
-		totalWin += item.AW
-	}
-	currentRTP := totalWin / totalBet
-	printf("[FB2] 初始RTP=%.6f (目标=%.6f, 偏差=%.6f)\n", currentRTP, rtp, currentRTP-rtp)
-
-	// 步骤2：智能RTP精确调整（贪心算法，允许重复使用）
-	if math.Abs(currentRTP-rtp) > rtpTolerance {
-		printf("[FB2] 步骤2：RTP偏差超出容忍度(%.2f%%)，开始智能调整（允许重复）...\n", rtpTolerance*100)
-
-		replacedCount := 0
-		targetWin := totalBet * rtp
-		winGap := targetWin - totalWin
-
-		if currentRTP < rtp {
-			// RTP过低：用高金额数据替换低金额数据
-			printf("[FB2] 🔼 RTP过低，需增加%.2f中奖金额 (智能贪心替换，允许重复)...\n", winGap)
-
-			// 准备替换候选数据：优先profit，然后win（允许重复使用）
-			var highCandidates []GameResultData
-			highCandidates = append(highCandidates, profitCandidates...)
-			highCandidates = append(highCandidates, winCandidates...)
-
-			// 按aw降序排序（高金额在前）
-			sort.Slice(highCandidates, func(i, j int) bool {
-				return highCandidates[i].AW > highCandidates[j].AW
-			})
-
-			// 对当前数据构建索引数组并按aw升序排序
-			type indexedData struct {
-				idx  int
-				item GameResultData
-			}
-			indexedItems := make([]indexedData, len(data))
-			for i, item := range data {
-				indexedItems[i] = indexedData{idx: i, item: item}
-			}
-			sort.Slice(indexedItems, func(i, j int) bool {
-				return indexedItems[i].item.AW < indexedItems[j].item.AW
-			})
-
-			// 智能贪心替换：寻找最接近目标的替换组合（允许重复使用候选数据）
-			for dataIdx := 0; dataIdx < len(indexedItems) && replacedCount < maxReplaceIterations; dataIdx++ {
-				oldItem := indexedItems[dataIdx].item
-
-				// 寻找最佳替换候选（最接近目标增量的）
-				bestCandidateIdx := -1
-				bestDelta := math.MaxFloat64
-
-				// 遍历所有候选数据（允许重复使用）
-				for j := 0; j < len(highCandidates) && j < 200; j++ {
-					newItem := highCandidates[j]
-					if newItem.AW <= oldItem.AW {
-						continue
-					}
-
-					awDelta := newItem.AW - oldItem.AW
-					newTotalWin := totalWin + awDelta
-					newRTP := newTotalWin / totalBet
-
-					// 不能超过目标太多
-					if newRTP > rtp+rtpTolerance*2 {
-						continue
-					}
-
-					// 计算与目标的距离
-					rtpDelta := math.Abs(newRTP - rtp)
-					if rtpDelta < bestDelta {
-						bestDelta = rtpDelta
-						bestCandidateIdx = j
-					}
-
-					// 如果找到完美匹配，立即使用
-					if rtpDelta <= rtpTolerance {
-						break
-					}
-				}
-
-				// 执行最佳替换
-				if bestCandidateIdx >= 0 {
-					newItem := highCandidates[bestCandidateIdx]
-					realIdx := indexedItems[dataIdx].idx
-
-					data[realIdx] = newItem
-					totalWin = totalWin - oldItem.AW + newItem.AW
-					replacedCount++
-
-					currentRTP = totalWin / totalBet
-
-					// 如果已经达到目标，提前退出
-					if math.Abs(currentRTP-rtp) <= rtpTolerance {
-						printf("[FB2] ✅ 已达到目标RTP，提前结束替换\n")
-						break
-					}
-				}
-			}
-
-		} else {
-			// RTP过高：用低金额数据替换高金额数据
-			printf("[FB2] 🔽 RTP过高，需减少%.2f中奖金额 (智能贪心替换，允许重复)...\n", -winGap)
-
-			// 准备替换候选数据：按优先级：nowin > 低aw的win > 低aw的profit（允许重复）
-			var replacementCandidates []GameResultData
-
-			// 1. 优先使用不中奖数据（aw=0）
-			replacementCandidates = append(replacementCandidates, noWinDataAll...)
-
-			// 2. 补充低金额的不盈利中奖数据（aw < tb）
-			var lowWinCandidates []GameResultData
-			lowWinCandidates = append(lowWinCandidates, winCandidates...)
-			sort.Slice(lowWinCandidates, func(i, j int) bool {
-				return lowWinCandidates[i].AW < lowWinCandidates[j].AW
-			})
-			replacementCandidates = append(replacementCandidates, lowWinCandidates...)
-
-			// 3. 补充低金额的盈利数据（aw > tb）
-			var lowProfitCandidates []GameResultData
-			lowProfitCandidates = append(lowProfitCandidates, profitCandidates...)
-			sort.Slice(lowProfitCandidates, func(i, j int) bool {
-				return lowProfitCandidates[i].AW < lowProfitCandidates[j].AW
-			})
-			replacementCandidates = append(replacementCandidates, lowProfitCandidates...)
-
-			printf("[FB2] 可用低金额替换数据: %d条（允许重复使用）\n", len(replacementCandidates))
-
-			// 对当前数据构建索引数组并按aw降序排序
-			type indexedData struct {
-				idx  int
-				item GameResultData
-			}
-			indexedItems := make([]indexedData, len(data))
-			for i, item := range data {
-				indexedItems[i] = indexedData{idx: i, item: item}
-			}
-			sort.Slice(indexedItems, func(i, j int) bool {
-				return indexedItems[i].item.AW > indexedItems[j].item.AW
-			})
-
-			// 智能贪心替换：寻找最接近目标的替换组合（允许重复使用候选数据）
-			for dataIdx := 0; dataIdx < len(indexedItems) && replacedCount < maxReplaceIterations; dataIdx++ {
-				oldItem := indexedItems[dataIdx].item
-
-				// 寻找最佳替换候选（最接近目标减量的）
-				bestCandidateIdx := -1
-				bestDelta := math.MaxFloat64
-
-				// 遍历所有候选数据（允许重复使用）
-				for j := 0; j < len(replacementCandidates) && j < 200; j++ {
-					newItem := replacementCandidates[j]
-					if newItem.AW >= oldItem.AW {
-						continue
-					}
-
-					awDelta := oldItem.AW - newItem.AW
-					newTotalWin := totalWin - awDelta
-					newRTP := newTotalWin / totalBet
-
-					// 不能低于目标太多
-					if newRTP < rtp-rtpTolerance*2 {
-						continue
-					}
-
-					// 计算与目标的距离
-					rtpDelta := math.Abs(newRTP - rtp)
-					if rtpDelta < bestDelta {
-						bestDelta = rtpDelta
-						bestCandidateIdx = j
-					}
-
-					// 如果找到完美匹配，立即使用
-					if rtpDelta <= rtpTolerance {
-						break
-					}
-				}
-
-				// 执行最佳替换
-				if bestCandidateIdx >= 0 {
-					newItem := replacementCandidates[bestCandidateIdx]
-					realIdx := indexedItems[dataIdx].idx
-
-					data[realIdx] = newItem
-					totalWin = totalWin - oldItem.AW + newItem.AW
-					replacedCount++
-
-					currentRTP = totalWin / totalBet
-
-					// 如果已经达到目标，提前退出
-					if math.Abs(currentRTP-rtp) <= rtpTolerance {
-						printf("[FB2] ✅ 已达到目标RTP，提前结束替换\n")
-						break
-					}
-				}
-			}
-		}
-
-		currentRTP = totalWin / totalBet
-		rtpDeviation := currentRTP - rtp
-		deviationPercent := (rtpDeviation / rtp) * 100
-		printf("[FB2] 替换完成：替换了%d条数据，当前RTP=%.6f (偏差=%.6f, %.2f%%)\n",
-			replacedCount, currentRTP, math.Abs(rtpDeviation), math.Abs(deviationPercent))
-	}
-
-	// 最终统计与保存
-	printf("📊 [FB2] 最终验证: 期望 %d 条, 实际 %d 条\n", targetCount, len(data))
-	var finalTotalBet float64
-	var finalTotalWin float64
-	for _, it := range data {
-		finalTotalBet += float64(it.TB)
-		finalTotalWin += it.AW
-	}
-	finalRTP := finalTotalWin / finalTotalBet
-	printf("✅ [FB2] 档位: %.0f, 目标RTP: %.6f, 实际RTP: %.6f, 偏差: %.6f\n", rtpLevel, rtp, finalRTP, math.Abs(finalRTP-rtp))
-	printf("📊 [FB2] 实际投注总额: %.2f (假设值: %.2f), 实际中奖总额: %.2f\n", finalTotalBet, totalBet, finalTotalWin)
-
-	// 重复率统计（按 id 去重）
-	uniq := make(map[int]int, len(data))
-	for _, it := range data {
-		uniq[it.ID]++
-	}
-	dupCount := 0
-	for _, c := range uniq {
-		if c > 1 {
-			dupCount += c - 1
-		}
-	}
-	dupRate := 0.0
-	if n := len(data); n > 0 {
-		dupRate = float64(dupCount) / float64(n)
-	}
-	printf("🔎 [FB2] 去重统计: 总数=%d, 唯一=%d, 重复=%d, 重复率=%.2f%%\n", len(data), len(uniq), dupCount, dupRate*100)
-
-	// 打乱输出顺序并写文件
-	rand.Shuffle(len(data), func(i, j int) { data[i], data[j] = data[j], data[i] })
-	outDir := filepath.Join("output", fmt.Sprintf("%d_fb", config.Game.ID))
-	if err := saveToJSON(data, config, rtpLevel, testNumber, outDir); err != nil {
-		return fmt.Errorf("[FB2] 保存JSON失败: %v", err)
-	}
-
-	outputMu.Lock()
-	fmt.Print(logBuf.String())
-	outputMu.Unlock()
-	return nil
-}
-
-// runImportFbMode 运行购买夺宝导入模式
 func runImportFbMode(fileLevelId string, env string) {
 	// 加载配置
 	config, err := LoadConfig("config.yaml")
@@ -3010,17 +1546,18 @@ func runImportFbMode(fileLevelId string, env string) {
 	// 构建目标表（与普通导入相同：rtpLevel 为 NUMERIC，表名不带 _fb）
 	tableName := fmt.Sprintf("%s%d", config.Tables.OutputTablePrefix, config.Game.ID)
 	createTable := fmt.Sprintf(`
-        CREATE TABLE IF NOT EXISTS "%s" (
-            "id" SERIAL PRIMARY KEY,
-            "rtpLevel" REAL NOT NULL,
-            "srNumber" INTEGER NOT NULL,
-            "srId" SERIAL NOT NULL,
-            "bet" NUMERIC NOT NULL,
-            "win" NUMERIC NOT NULL,
-            "detail" JSONB,
-            "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    `, tableName)
+	    CREATE TABLE IF NOT EXISTS "%s" (
+	        "id" SERIAL PRIMARY KEY,
+	        "rtpLevel" REAL NOT NULL,
+	        "srNumber" INTEGER NOT NULL,
+	        "srId" SERIAL NOT NULL,
+	        "dataId" INTEGER NOT NULL,
+	        "bet" NUMERIC NOT NULL,
+	        "win" NUMERIC NOT NULL,
+	        "detail" JSONB NOT NULL DEFAULT '[]'::jsonb,
+	        "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	    );
+	`, tableName)
 	if _, err := db.DB.Exec(createTable); err != nil {
 		log.Fatalf("❌ 创建FB目标表失败: %v", err)
 	}
@@ -3138,9 +1675,9 @@ func runImportFbMode(fileLevelId string, env string) {
 					return fmt.Errorf("开启事务失败: %w", err)
 				}
 				stmt, err := tx.Prepare(fmt.Sprintf(`
-                    INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "bet", "win", "detail")
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                `, tableName))
+                    INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "dataId", "bet", "win", "detail")
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+	                `, tableName))
 				if err != nil {
 					_ = tx.Rollback()
 					return fmt.Errorf("准备语句失败: %w", err)
@@ -3170,8 +1707,8 @@ func runImportFbMode(fileLevelId string, env string) {
 						totalBet = math.Round(tb*100) / 100
 					}
 
-					// detail 序列化 gd
-					var detailVal interface{}
+					// detail 序列化 gd，默认存储空数组
+					detailVal := "[]"
 					if item["gd"] != nil {
 						gdJSON, err := json.Marshal(item["gd"])
 						if err != nil {
@@ -3182,7 +1719,14 @@ func runImportFbMode(fileLevelId string, env string) {
 						detailVal = string(gdJSON)
 					}
 
-					if _, err := stmt.Exec(rtpLevelVal, srNumber, srId, totalBet, winValue, detailVal); err != nil {
+					dataID, err := parseDataID(item["id"])
+					if err != nil {
+						_ = stmt.Close()
+						_ = tx.Rollback()
+						return fmt.Errorf("解析dataId失败: %w", err)
+					}
+
+					if _, err := stmt.Exec(rtpLevelVal, srNumber, srId, dataID, totalBet, winValue, detailVal); err != nil {
 						_ = stmt.Close()
 						_ = tx.Rollback()
 						return fmt.Errorf("插入失败: %w", err)
@@ -3264,17 +1808,18 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 	// 目标表仍为不带 _fb 的表名（与现有实现一致）
 	tableName := fmt.Sprintf("%s%d", config.Tables.OutputTablePrefix, gameId)
 	createTable := fmt.Sprintf(`
-        CREATE TABLE IF NOT EXISTS "%s" (
-            "id" SERIAL PRIMARY KEY,
-            "rtpLevel" REAL NOT NULL,
-            "srNumber" INTEGER NOT NULL,
-            "srId" SERIAL NOT NULL,
-            "bet" NUMERIC NOT NULL,
-            "win" NUMERIC NOT NULL,
-            "detail" JSONB,
-            "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    `, tableName)
+	    CREATE TABLE IF NOT EXISTS "%s" (
+	        "id" SERIAL PRIMARY KEY,
+	        "rtpLevel" REAL NOT NULL,
+	        "srNumber" INTEGER NOT NULL,
+	        "srId" SERIAL NOT NULL,
+	        "dataId" INTEGER NOT NULL,
+	        "bet" NUMERIC NOT NULL,
+	        "win" NUMERIC NOT NULL,
+	        "detail" JSONB NOT NULL DEFAULT '[]'::jsonb,
+	        "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	    );
+	`, tableName)
 	if _, err := db.DB.Exec(createTable); err != nil {
 		log.Fatalf("❌ 创建FB目标表失败: %v", err)
 	}
@@ -3383,9 +1928,9 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 					return fmt.Errorf("开启事务失败: %w", err)
 				}
 				stmt, err := tx.Prepare(fmt.Sprintf(`
-                    INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "bet", "win", "detail")
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                `, tableName))
+                    INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "dataId", "bet", "win", "detail")
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+	                `, tableName))
 				if err != nil {
 					_ = tx.Rollback()
 					return fmt.Errorf("准备语句失败: %w", err)
@@ -3404,7 +1949,7 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 					if aw, ok := item["aw"].(float64); ok {
 						winValue = math.Round(aw*100) / 100
 					}
-					var detailVal interface{}
+					detailVal := "[]"
 					if item["gd"] != nil {
 						gdJSON, err := json.Marshal(item["gd"])
 						if err != nil {
@@ -3414,7 +1959,15 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 						}
 						detailVal = string(gdJSON)
 					}
-					if _, err := stmt.Exec(rtpLevelVal, srNumber, srId, bet, winValue, detailVal); err != nil {
+
+					dataID, err := parseDataID(item["id"])
+					if err != nil {
+						_ = stmt.Close()
+						_ = tx.Rollback()
+						return fmt.Errorf("解析dataId失败: %w", err)
+					}
+
+					if _, err := stmt.Exec(rtpLevelVal, srNumber, srId, dataID, bet, winValue, detailVal); err != nil {
 						_ = stmt.Close()
 						_ = tx.Rollback()
 						return fmt.Errorf("插入失败: %w", err)
@@ -3462,8 +2015,8 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 	fmt.Println("\n🎉 [importFb] 所有文件导入完成！")
 }
 
-// runGenerateMode3 运行生成模式V3 - 使用RtpLevelsTest配置，10%不中奖+40%不盈利+30%盈利策略
-func runGenerateMode3() {
+// runGenerateMode4 运行生成模式V4 - 使用RTP档位倍率分布策略
+func runGenerateMode4() {
 	// 记录程序开始时间
 	startTime := time.Now()
 
@@ -3475,8 +2028,16 @@ func runGenerateMode3() {
 	if err != nil {
 		log.Fatalf("加载配置文件失败: %v", err)
 	}
-	fmt.Printf("配置加载成功（V3模式）- 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNumV3)
-	fmt.Printf("🔧 V3策略：10%%不中奖 + 40%%不盈利 + 30%%盈利数据\n")
+	fmt.Printf("配置加载成功（V4模式）- 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNum)
+	fmt.Printf("🔧 V4策略：RTP档位倍率分布策略\n")
+	fmt.Printf("📋 高RTP档位(14,15,120,150,200,300,500)将使用V3配置: data_num_v3=%d, data_table_num_3=%d\n",
+		config.Tables.DataNum, config.Tables.DataTableNum)
+
+	// 加载RTP倍率分布配置
+	rtpConfig, err := LoadRtpMultiplierConfig("rtp_multiplier_config.yaml")
+	if err != nil {
+		log.Fatalf("加载RTP倍率分布配置失败: %v", err)
+	}
 
 	// 连接数据库
 	db, err := NewDatabase(config, "")
@@ -3485,13 +2046,18 @@ func runGenerateMode3() {
 	}
 	defer db.Close()
 
-	// 清理 sp=true 且 aw=0 的数据
-	if err := db.CleanSpZeroAwData(); err != nil {
-		log.Fatalf("清理数据失败: %v", err)
+	// 清理 sp=true 且 aw=0 的数据（根据配置决定是否执行）
+	shouldClean := true // 默认值为true
+	if config.Game.CleanSpZeroAw != nil {
+		shouldClean = *config.Game.CleanSpZeroAw
 	}
-
-	// 计算总投注
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(config.Tables.DataNumV3)
+	if shouldClean {
+		if err := db.CleanSpZeroAwData(); err != nil {
+			log.Fatalf("清理数据失败: %v", err)
+		}
+	} else {
+		fmt.Println("⏭️  跳过清理 sp=true 且 aw=0 的数据（配置中 clean_sp_zero_aw=false）")
+	}
 
 	// 预取共享只读数据
 	winDataAll, err := db.GetWinData()
@@ -3503,38 +2069,57 @@ func runGenerateMode3() {
 		log.Fatalf("获取不中奖数据失败: %v", err)
 	}
 
-	// 使用RtpLevelsTest配置
-	for rtpNum := 0; rtpNum < len(RtpLevelsTest); rtpNum++ {
+	// 合并所有数据
+	allData := append(winDataAll, noWinDataAll...)
+	fmt.Printf("✅ 总数据量: %d 条（中奖: %d, 不中奖: %d）\n", len(allData), len(winDataAll), len(noWinDataAll))
+
+	// 使用RtpLevels配置
+	for rtpNum := 0; rtpNum < len(RtpLevels); rtpNum++ {
 		// 并发度：CPU 核数
 		worker := runtime.NumCPU()
 		sem := make(chan struct{}, worker)
 		var wg sync.WaitGroup
 
-		for t := 0; t < config.Tables.DataTableNum3; t++ {
+		// 捕获当前循环变量
+		rtpNo := RtpLevels[rtpNum].RtpNo
+		rtpVal := RtpLevels[rtpNum].Rtp
+
+		// 根据RTP档位选择配置
+		var dataNum, tableNum int
+		if isHighRtpLevel(rtpNo) {
+			dataNum = config.Tables.DataNumV3
+			tableNum = config.Tables.DataTableNum3
+			fmt.Printf("🔧 RTP档位 %.0f 使用V3配置: 数据量=%d, 生表数=%d\n", rtpNo, dataNum, tableNum)
+		} else {
+			dataNum = config.Tables.DataNum
+			tableNum = config.Tables.DataTableNum
+		}
+
+		// 计算总投注
+		totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB * float64(dataNum)
+
+		for t := 0; t < tableNum; t++ {
 			sem <- struct{}{}
 			wg.Add(1)
 
-			// 捕获当前循环变量
-			rtpNo := RtpLevelsTest[rtpNum].RtpNo
-			rtpVal := RtpLevelsTest[rtpNum].Rtp
 			testIndex := t + 1
 
-			go func(rtpNo float64, rtpVal float64, testIndex int) {
+			go func(rtpNo float64, rtpVal float64, testIndex int, dataNum int, totalBet float64) {
 				defer func() { <-sem; wg.Done() }()
 
 				// 记录单次测试开始时间
 				testStartTime := time.Now()
 				// 即时输出单次任务开始，便于观察进度
-				fmt.Printf("▶️ 开始生成（V3模式）| RTP等级 %.0f | 第%d次 | %s\n", rtpNo, testIndex, testStartTime.Format(time.RFC3339))
+				fmt.Printf("▶️ 开始生成（V4模式）| RTP等级 %.0f | 第%d次 | 数据量:%d | %s\n", rtpNo, testIndex, dataNum, testStartTime.Format(time.RFC3339))
 
-				if err := runRtpTestV3(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll); err != nil {
-					log.Printf("RTP测试V3失败: %v", err)
+				if err := runRtpTestV4(db, config, rtpConfig, rtpNo, rtpVal, testIndex, totalBet, allData, dataNum); err != nil {
+					log.Printf("RTP测试V4失败: %v", err)
 				}
 
 				// 计算并输出单次测试耗时
 				testDuration := time.Since(testStartTime)
-				fmt.Printf("⏱️  RTP等级 %.0f (第%d次生成-V3模式) 耗时: %v\n", rtpNo, testIndex, testDuration)
-			}(rtpNo, rtpVal, testIndex)
+				fmt.Printf("⏱️  RTP等级 %.0f (第%d次生成-V4模式) 耗时: %v\n", rtpNo, testIndex, testDuration)
+			}(rtpNo, rtpVal, testIndex, dataNum, totalBet)
 		}
 
 		wg.Wait()
@@ -3542,537 +2127,8 @@ func runGenerateMode3() {
 
 	// 计算并输出整个程序的总耗时
 	totalDuration := time.Since(startTime)
-	fmt.Printf("\n🎉 RTP数据筛选和保存完成（V3模式）！\n")
+	fmt.Printf("\n🎉 RTP数据筛选和保存完成（V4模式）！\n")
 	fmt.Printf("⏱️  整个程序总耗时: %v\n", totalDuration)
-}
-
-// runRtpTestV3 执行单次RTP测试V3 - 优化版本：动态比例调整+RTP下限保证+数量精确控制
-func runRtpTestV3(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData) error {
-	var logBuf bytes.Buffer
-	printf := func(format string, a ...interface{}) {
-		fmt.Fprintf(&logBuf, format, a...)
-	}
-	testStartTime := time.Now()
-
-	// 任务头分隔线
-	printf("\n========== [TASK BEGIN - V3 OPTIMIZED] RtpNo: %.0f | Test: %d | %s =========\n", rtpLevel, testNumber, time.Now().Format(time.RFC3339))
-
-	// 计算允许中的金额
-	allowWin := totalBet * rtp
-	rtpUpperLimit := rtp + 0.5
-	maxAllowWin := totalBet * rtpUpperLimit
-	rtpLowerLimit := rtp - 0.1 // RTP下限：目标值-0.1
-	minAllowWin := totalBet * rtpLowerLimit
-
-	// 数据统计
-	printf("\n数据源统计:\n")
-	printf("  - 中奖数据(包含不盈利): %d条\n", len(winDataAll))
-	printf("  - 不中奖数据(aw=0): %d条\n", len(noWinDataAll))
-	printf("档位: %.0f, 目标RTP: %.4f, 允许中奖金额: %.2f\n", rtpLevel, rtp, allowWin)
-	printf("🔧 V3优化策略：动态比例调整 + RTP下限保证 + 数量精确控制\n")
-	printf("RTP控制范围: [%.2f, %.2f]，中奖金额范围: [%.2f, %.2f]\n", rtpLowerLimit, rtpUpperLimit, minAllowWin, maxAllowWin)
-
-	// 每任务独立随机源
-	seed := time.Now().UnixNano() ^ int64(config.Game.ID)*1_000_003 ^ int64(testNumber)*1_000_033 ^ int64(rtpLevel)*1_000_037
-	rng := rand.New(rand.NewSource(seed))
-
-	// 动态计算各阶段的数量目标（根据RTP目标调整）
-	totalCount := config.Tables.DataNumV3
-	var noWinCount, notProfitCount, profitCount, remainingCount int
-
-	// 根据RTP目标动态调整比例
-	if rtp >= 3.0 {
-		// 超高RTP：需要更多盈利数据
-		noWinCount = int(float64(totalCount) * 0.05)     // 5%不中奖
-		notProfitCount = int(float64(totalCount) * 0.25) // 25%不盈利
-		profitCount = int(float64(totalCount) * 0.50)    // 50%盈利
-		remainingCount = int(float64(totalCount) * 0.20) // 20%调整
-	} else if rtp >= 2.0 {
-		// 高RTP：增加盈利数据比例
-		noWinCount = int(float64(totalCount) * 0.08)     // 8%不中奖
-		notProfitCount = int(float64(totalCount) * 0.32) // 32%不盈利
-		profitCount = int(float64(totalCount) * 0.40)    // 40%盈利
-		remainingCount = int(float64(totalCount) * 0.20) // 20%调整
-	} else {
-		// 中低RTP：保持原比例
-		noWinCount = int(float64(totalCount) * 0.10)     // 10%不中奖
-		notProfitCount = int(float64(totalCount) * 0.40) // 40%不盈利
-		profitCount = int(float64(totalCount) * 0.30)    // 30%盈利
-		remainingCount = int(float64(totalCount) * 0.20) // 20%调整
-	}
-
-	printf("🎯 动态数据分配计划 (RTP=%.2f):\n", rtp)
-	printf("  - 不中奖数据: %d 条 (%.1f%%)\n", noWinCount, float64(noWinCount)/float64(totalCount)*100)
-	printf("  - 不盈利数据: %d 条 (%.1f%%)\n", notProfitCount, float64(notProfitCount)/float64(totalCount)*100)
-	printf("  - 盈利数据: %d 条 (%.1f%%)\n", profitCount, float64(profitCount)/float64(totalCount)*100)
-	printf("  - 剩余调整: %d 条 (%.1f%%)\n", remainingCount, float64(remainingCount)/float64(totalCount)*100)
-
-	var data []GameResultData
-	var totalWin float64 = 0
-	perSpinBet := float64(config.Bet.CS * config.Bet.ML * config.Bet.BL)
-
-	// 第一步：添加不中奖数据 (10%)
-	printf("\n📊 第一步：添加不中奖数据\n")
-	if len(noWinDataAll) > 0 {
-		permNo := rng.Perm(len(noWinDataAll))
-		for i := 0; i < noWinCount && i < len(permNo); i++ {
-			idx := permNo[i]
-			data = append(data, noWinDataAll[idx])
-		}
-		printf("✅ 添加不中奖数据: %d 条\n", noWinCount)
-	}
-
-	// 第二步：添加不盈利数据 (40%)
-	printf("\n📊 第二步：添加不盈利数据\n")
-	// 从winDataAll中筛选出不盈利数据 (aw > 0 且 aw <= tb)
-	var notProfitData []GameResultData
-	for _, item := range winDataAll {
-		if item.AW > 0 && float64(item.AW) <= float64(item.TB) {
-			notProfitData = append(notProfitData, item)
-		}
-	}
-	printf("可用不盈利数据: %d 条\n", len(notProfitData))
-
-	if len(notProfitData) > 0 {
-		permNotProfit := rng.Perm(len(notProfitData))
-		addedCount := 0
-		for i := 0; i < len(permNotProfit) && addedCount < notProfitCount; i++ {
-			idx := permNotProfit[i]
-			item := notProfitData[idx]
-			data = append(data, item)
-			totalWin += item.AW
-			addedCount++
-		}
-		printf("✅ 添加不盈利数据: %d 条，累计中奖金额: %.2f\n", addedCount, totalWin)
-	}
-
-	// 第三步：添加盈利数据，动态调整筛选条件
-	printf("\n📊 第三步：添加盈利数据\n")
-
-	// 根据RTP目标动态调整盈利数据筛选条件
-	var profitMinRatio, profitMaxMultiplier float64
-	if rtp >= 3.0 {
-		profitMinRatio = 1.2     // 超高RTP：放宽下限
-		profitMaxMultiplier = 15 // 提高上限
-	} else if rtp >= 2.0 {
-		profitMinRatio = 1.3     // 高RTP：适度放宽
-		profitMaxMultiplier = 10 // 适度提高上限
-	} else {
-		profitMinRatio = 1.5    // 中低RTP：保持原条件
-		profitMaxMultiplier = 6 // 保持原上限
-	}
-
-	profitUpperLimit := perSpinBet * rtp * profitMaxMultiplier
-	printf("盈利数据筛选条件: aw > %.1f*tb 且 aw <= %.1f*tb (上限: %.2f)\n",
-		profitMinRatio, rtp*profitMaxMultiplier, profitUpperLimit)
-
-	// 筛选盈利数据：动态条件
-	var suitableProfitData []GameResultData
-	for _, item := range winDataAll {
-		if item.AW > float64(item.TB)*profitMinRatio && item.AW <= profitUpperLimit {
-			suitableProfitData = append(suitableProfitData, item)
-		}
-	}
-	printf("可用盈利数据: %d 条\n", len(suitableProfitData))
-
-	// 按AW降序排序，优先选择大额盈利数据
-	sort.Slice(suitableProfitData, func(i, j int) bool {
-		return suitableProfitData[i].AW > suitableProfitData[j].AW
-	})
-
-	addedProfitCount := 0
-	currentProfitWin := 0.0
-	for _, item := range suitableProfitData {
-		if addedProfitCount >= profitCount {
-			break
-		}
-
-		// 检查加入这条数据后是否超过RTP上限
-		newTotalWin := totalWin + item.AW
-		if newTotalWin > maxAllowWin {
-			continue
-		}
-
-		data = append(data, item)
-		totalWin += item.AW
-		currentProfitWin += item.AW
-		addedProfitCount++
-	}
-	printf("✅ 添加盈利数据: %d 条，盈利金额: %.2f，累计中奖金额: %.2f\n", addedProfitCount, currentProfitWin, totalWin)
-
-	// 第四步：智能调整剩余数据 - 优化版本
-	printf("\n📊 第四步：智能调整剩余数据\n")
-	currentCount := len(data)
-	needMore := totalCount - currentCount
-	printf("当前数据量: %d，目标: %d，还需要: %d\n", currentCount, totalCount, needMore)
-
-	// 计算当前RTP与目标的差距
-	currentRTP := totalWin / totalBet
-	rtpGap := currentRTP - rtp
-	printf("当前RTP: %.6f，目标RTP: %.6f，差距: %.6f\n", currentRTP, rtp, rtpGap)
-
-	// 确保数量达标
-	if needMore > 0 {
-		printf("🎯 需要补充 %d 条数据以达到目标数量\n", needMore)
-
-		// 计算还需要多少中奖金额才能达到RTP下限
-		remainingWinNeeded := minAllowWin - totalWin
-		printf("还需要中奖金额: %.2f 才能达到RTP下限 (%.2f)\n", remainingWinNeeded, rtpLowerLimit)
-
-		// 收集所有可用数据（去重）
-		usedIds := make(map[int]bool)
-		for _, item := range data {
-			usedIds[item.ID] = true
-		}
-
-		var allAvailableData []GameResultData
-		// 优先使用盈利数据
-		for _, item := range suitableProfitData {
-			if !usedIds[item.ID] {
-				allAvailableData = append(allAvailableData, item)
-			}
-		}
-		// 其次使用不盈利数据
-		for _, item := range notProfitData {
-			if !usedIds[item.ID] {
-				allAvailableData = append(allAvailableData, item)
-			}
-		}
-		// 最后使用不中奖数据
-		for _, item := range noWinDataAll {
-			if !usedIds[item.ID] {
-				allAvailableData = append(allAvailableData, item)
-			}
-		}
-
-		printf("可用补充数据: %d 条\n", len(allAvailableData))
-
-		if remainingWinNeeded > 0 {
-			// RTP不足，优先选择大金额数据
-			printf("🎯 RTP不足，优先选择大金额数据提升RTP\n")
-			sort.Slice(allAvailableData, func(i, j int) bool {
-				return allAvailableData[i].AW > allAvailableData[j].AW
-			})
-		} else {
-			// RTP已达标，优先选择中小金额数据保持平衡
-			printf("🎯 RTP已达标，优先选择中小金额数据保持平衡\n")
-			sort.Slice(allAvailableData, func(i, j int) bool {
-				return allAvailableData[i].AW < allAvailableData[j].AW
-			})
-		}
-
-		// 添加数据直到数量达标
-		added := 0
-		for _, item := range allAvailableData {
-			if added >= needMore {
-				break
-			}
-
-			// 检查添加后是否超过RTP上限
-			newTotalWin := totalWin + item.AW
-			if newTotalWin > maxAllowWin {
-				continue
-			}
-
-			data = append(data, item)
-			totalWin += item.AW
-			added++
-		}
-		printf("✅ 补充数据: %d 条，累计中奖金额: %.2f\n", added, totalWin)
-
-		// 如果还是不够，用不中奖数据填充（确保数量达标）
-		if len(data) < totalCount {
-			remaining := totalCount - len(data)
-			printf("🎯 还需要 %d 条数据填充确保数量达标\n", remaining)
-
-			if len(noWinDataAll) > 0 {
-				// 优先使用不中奖数据
-				printf("使用不中奖数据填充...\n")
-				permNo := rng.Perm(len(noWinDataAll))
-				for i := 0; i < remaining && i < len(permNo); i++ {
-					idx := permNo[i]
-					data = append(data, noWinDataAll[idx])
-				}
-				printf("✅ 不中奖数据填充: %d 条\n", remaining)
-			} else {
-				// 如果没有不中奖数据，使用购买夺宝的中奖数据（智能动态调整）
-				printf("⚠️ 没有不中奖数据，使用购买夺宝中奖数据（智能填充）...\n")
-
-				// 收集所有未使用的购买夺宝中奖数据
-				usedIds := make(map[int]bool)
-				for _, item := range data {
-					usedIds[item.ID] = true
-				}
-
-				var unusedFbWinData []GameResultData
-				// 先添加不盈利数据
-				for _, item := range notProfitData {
-					if !usedIds[item.ID] {
-						unusedFbWinData = append(unusedFbWinData, item)
-					}
-				}
-				// 再添加盈利数据
-				for _, item := range suitableProfitData {
-					if !usedIds[item.ID] {
-						unusedFbWinData = append(unusedFbWinData, item)
-					}
-				}
-
-				if len(unusedFbWinData) > 0 {
-					printf("📊 可用的购买夺宝数据: %d 条\n", len(unusedFbWinData))
-
-					// 计算当前RTP状态
-					currentRTP := totalWin / totalBet
-					rtpGap := rtp - currentRTP
-					printf("当前状态 - 数据量: %d/%d, RTP: %.6f/%.6f, RTP差距: %.6f\n",
-						len(data), totalCount, currentRTP, rtp, rtpGap)
-
-					// 智能填充策略
-					data, totalWin = smartFillFbData(data, totalWin, totalBet, totalCount,
-						rtp, rtpLowerLimit, maxAllowWin, unusedFbWinData, usedIds, rng)
-
-				} else {
-					printf("⚠️ 没有可用的购买夺宝数据，数据量不足: %d/%d\n", len(data), totalCount)
-				}
-			}
-		}
-	}
-
-	// 第五步：精确RTP调整和下限保证
-	printf("\n📊 第五步：精确RTP调整和下限保证\n")
-	finalRTP := totalWin / totalBet
-	rtpDeviation := math.Abs(finalRTP - rtp)
-	printf("调整前RTP: %.6f，目标RTP: %.6f，偏差: %.6f\n", finalRTP, rtp, rtpDeviation)
-
-	// 检查RTP下限
-	if finalRTP < rtpLowerLimit {
-		printf("⚠️ RTP低于下限 (%.2f < %.2f)，尝试提升RTP\n", finalRTP, rtpLowerLimit)
-
-		// 收集所有未使用的中奖数据
-		usedIds := make(map[int]bool)
-		for _, item := range data {
-			usedIds[item.ID] = true
-		}
-
-		var allUnusedWinData []GameResultData
-		for _, item := range winDataAll {
-			if !usedIds[item.ID] && item.AW > 0 {
-				allUnusedWinData = append(allUnusedWinData, item)
-			}
-		}
-
-		if len(allUnusedWinData) > 0 {
-			// 按AW降序排序，优先选择大额数据
-			sort.Slice(allUnusedWinData, func(i, j int) bool {
-				return allUnusedWinData[i].AW > allUnusedWinData[j].AW
-			})
-
-			// 尝试替换不中奖数据来提升RTP
-			adjustmentCount := 0
-			maxAdjustments := 500 // 进一步增加调整次数以确保RTP下限
-
-			for _, newItem := range allUnusedWinData {
-				if adjustmentCount >= maxAdjustments {
-					break
-				}
-
-				// 找到一条不中奖数据进行替换
-				for i, oldItem := range data {
-					if oldItem.AW == 0 { // 只替换不中奖数据
-						// 计算替换后的RTP
-						replaceTotalWin := totalWin - oldItem.AW + newItem.AW
-						replaceRTP := replaceTotalWin / totalBet
-
-						// 如果替换后RTP更接近目标且不超过上限
-						if replaceRTP >= rtpLowerLimit && replaceTotalWin <= maxAllowWin {
-							data[i] = newItem
-							totalWin = replaceTotalWin
-							finalRTP = replaceRTP
-							adjustmentCount++
-							printf("🔄 替换不中奖数据: 旧AW=%.2f -> 新AW=%.2f, 新RTP=%.6f\n",
-								oldItem.AW, newItem.AW, replaceRTP)
-							break
-						}
-					}
-				}
-			}
-
-			printf("✅ RTP下限调整完成，调整了 %d 条数据，最终RTP: %.6f\n", adjustmentCount, finalRTP)
-		}
-	}
-
-	// 如果RTP偏差仍然较大，尝试微调
-	if math.Abs(finalRTP-rtp) > 0.05 {
-		printf("🎯 RTP偏差较大 (%.6f)，尝试微调\n", math.Abs(finalRTP-rtp))
-
-		// 收集所有未使用的数据
-		usedIds := make(map[int]bool)
-		for _, item := range data {
-			usedIds[item.ID] = true
-		}
-
-		var allUnusedData []GameResultData
-		for _, item := range winDataAll {
-			if !usedIds[item.ID] && item.AW > 0 {
-				allUnusedData = append(allUnusedData, item)
-			}
-		}
-
-		if len(allUnusedData) > 0 {
-			// 根据RTP偏差方向选择调整策略
-			if finalRTP < rtp {
-				// RTP偏低，优先选择大额数据
-				sort.Slice(allUnusedData, func(i, j int) bool {
-					return allUnusedData[i].AW > allUnusedData[j].AW
-				})
-				printf("🎯 RTP偏低，尝试添加大额数据提升RTP\n")
-			} else {
-				// RTP偏高，优先选择小额数据
-				sort.Slice(allUnusedData, func(i, j int) bool {
-					return allUnusedData[i].AW < allUnusedData[j].AW
-				})
-				printf("🎯 RTP偏高，尝试添加小额数据降低RTP\n")
-			}
-
-			// 尝试替换一些数据来调整RTP
-			adjustmentCount := 0
-			maxAdjustments := 100
-
-			for _, newItem := range allUnusedData {
-				if adjustmentCount >= maxAdjustments {
-					break
-				}
-
-				// 随机选择一条现有数据进行替换
-				if len(data) > 0 {
-					replaceIndex := rng.Intn(len(data))
-					oldItem := data[replaceIndex]
-
-					// 计算替换后的RTP
-					replaceTotalWin := totalWin - oldItem.AW + newItem.AW
-					replaceRTP := replaceTotalWin / totalBet
-					replaceDeviation := math.Abs(replaceRTP - rtp)
-
-					// 如果替换后RTP更接近目标且不超过上限
-					if replaceDeviation < rtpDeviation && replaceTotalWin <= maxAllowWin && replaceRTP >= rtpLowerLimit {
-						data[replaceIndex] = newItem
-						totalWin = replaceTotalWin
-						rtpDeviation = replaceDeviation
-						adjustmentCount++
-					}
-				}
-			}
-
-			printf("✅ 精确调整完成，调整了 %d 条数据\n", adjustmentCount)
-		}
-	}
-
-	// 最终统计和验证
-	printf("\n📊 最终统计和验证\n")
-	finalRTP = totalWin / totalBet
-	rtpDeviation = math.Abs(finalRTP - rtp)
-
-	// 统计各类数据的数量和占比
-	var finalNoWinCount, finalNotProfitCount, finalProfitCount int
-	for _, item := range data {
-		if item.AW == 0 {
-			finalNoWinCount++
-		} else if item.AW <= float64(item.TB) {
-			finalNotProfitCount++
-		} else {
-			finalProfitCount++
-		}
-	}
-
-	printf("✅ V3优化策略结果:\n")
-	printf("  - 总数据量: %d 条\n", len(data))
-	printf("  - 总投注: %.2f\n", totalBet)
-	printf("  - 总中奖: %.2f\n", totalWin)
-	printf("  - 实际RTP: %.6f\n", finalRTP)
-	printf("  - 目标RTP: %.6f\n", rtp)
-	printf("  - RTP偏差: %.6f\n", rtpDeviation)
-	printf("  - RTP下限: %.6f (%.1f%%)\n", rtpLowerLimit, rtpLowerLimit*100)
-	printf("  - 不中奖数据: %d 条 (%.1f%%)\n", finalNoWinCount, float64(finalNoWinCount)/float64(len(data))*100)
-	printf("  - 不盈利数据: %d 条 (%.1f%%)\n", finalNotProfitCount, float64(finalNotProfitCount)/float64(len(data))*100)
-	printf("  - 盈利数据: %d 条 (%.1f%%)\n", finalProfitCount, float64(finalProfitCount)/float64(len(data))*100)
-
-	// 验证数据量
-	if len(data) != config.Tables.DataNumV3 {
-		return fmt.Errorf("❌ 数据量不匹配：期望 %d 条, 实际 %d 条", config.Tables.DataNumV3, len(data))
-	}
-
-	// 验证RTP下限 - 如果仍然低于下限，尝试最后的调整
-	if finalRTP < rtpLowerLimit {
-		printf("⚠️ 最终RTP仍低于下限，尝试最后的调整...\n")
-
-		// 最后的调整：替换更多不中奖数据
-		usedIds := make(map[int]bool)
-		for _, item := range data {
-			usedIds[item.ID] = true
-		}
-
-		var finalUnusedData []GameResultData
-		for _, item := range winDataAll {
-			if !usedIds[item.ID] && item.AW > 0 {
-				finalUnusedData = append(finalUnusedData, item)
-			}
-		}
-
-		if len(finalUnusedData) > 0 {
-			// 按AW降序排序
-			sort.Slice(finalUnusedData, func(i, j int) bool {
-				return finalUnusedData[i].AW > finalUnusedData[j].AW
-			})
-
-			// 替换所有不中奖数据
-			replaced := 0
-			for i, item := range data {
-				if item.AW == 0 && replaced < len(finalUnusedData) {
-					data[i] = finalUnusedData[replaced]
-					totalWin = totalWin - item.AW + finalUnusedData[replaced].AW
-					finalRTP = totalWin / totalBet
-					replaced++
-
-					if finalRTP >= rtpLowerLimit {
-						printf("✅ 最后调整成功，RTP达到下限: %.6f\n", finalRTP)
-						break
-					}
-				}
-			}
-		}
-
-		// 最终检查
-		if finalRTP < rtpLowerLimit {
-			return fmt.Errorf("❌ RTP低于下限：实际 %.6f < 下限 %.6f (数据源不足)", finalRTP, rtpLowerLimit)
-		}
-	}
-
-	// 验证RTP上限
-	if finalRTP > rtpUpperLimit {
-		return fmt.Errorf("❌ RTP超过上限：实际 %.6f > 上限 %.6f", finalRTP, rtpUpperLimit)
-	}
-
-	printf("✅ 所有验证通过：数据量正确，RTP在允许范围内 [%.2f, %.2f]\n", rtpLowerLimit, rtpUpperLimit)
-
-	// 打乱输出顺序
-	rand.Shuffle(len(data), func(i, j int) {
-		data[i], data[j] = data[j], data[i]
-	})
-
-	// 保存到JSON文件
-	var outputDir string = filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
-	if err := saveToJSON(data, config, rtpLevel, testNumber, outputDir); err != nil {
-		return fmt.Errorf("保存JSON文件失败: %v", err)
-	}
-
-	// 任务尾分隔线
-	printf("========== [TASK END - V3 STRATEGY]   RtpNo: %.0f | Test: %d =========\n\n", rtpLevel, testNumber)
-	printf("⏱️  RTP等级 %.0f (第%d次生成-V3策略) 耗时: %v\n", rtpLevel, testNumber, time.Since(testStartTime))
-
-	outputMu.Lock()
-	fmt.Print(logBuf.String())
-	outputMu.Unlock()
-	return nil
 }
 
 // runRtpTestV4 执行单次RTP测试V4 - 使用RTP档位倍率分布策略
@@ -4117,7 +2173,7 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 
 	// 根据分布配置生成数据
 	printf("🔄 正在根据分布配置生成数据...\n")
-	generatedData, err := GenerateDataByDistribution(distribution, dataNum, dataRanges)
+	generatedData, err := GenerateDataByDistribution(distribution, dataNum, dataRanges, int(rtpLevel))
 	if err != nil {
 		return fmt.Errorf("根据分布配置生成数据失败: %v", err)
 	}
@@ -4194,8 +2250,98 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 		adjustedData = adjustedData[excess:]
 	}
 
-	// 最终统计
+	// 补充或移除数据后，重新计算RTP并检查是否需要调整
 	finalRTP = CalculateRTP(adjustedData, totalBet)
+
+	// 对于低档位，如果补充数据后RTP低于目标值，需要重新提升
+	if rtp <= 2.0 && finalRTP < rtp {
+		printf("⚠️ 补充数据后RTP低于目标值 (%.6f < %.6f)，重新调整RTP...\n", finalRTP, rtp)
+		adjustedData, err = AdjustRTPByReplacement(adjustedData, rtp, totalBet, dataRanges, int(rtpLevel), rtpConfig)
+		if err != nil {
+			printf("⚠️ 重新调整RTP失败: %v\n", err)
+		} else {
+			finalRTP = CalculateRTP(adjustedData, totalBet)
+			printf("✅ 重新调整后RTP: %.6f\n", finalRTP)
+		}
+	} else if rtp > 2.0 && finalRTP < rtp {
+		// 对于高档位，如果低于目标值，也需要重新提升
+		printf("⚠️ 补充数据后RTP低于目标值 (%.6f < %.6f)，重新调整RTP...\n", finalRTP, rtp)
+		adjustedData, err = AdjustRTPByReplacement(adjustedData, rtp, totalBet, dataRanges, int(rtpLevel), rtpConfig)
+		if err != nil {
+			printf("⚠️ 重新调整RTP失败: %v\n", err)
+		} else {
+			finalRTP = CalculateRTP(adjustedData, totalBet)
+			printf("✅ 重新调整后RTP: %.6f\n", finalRTP)
+		}
+	}
+
+	// 最终验证：对于低档位，如果RTP超出允许范围，强制调整
+	if rtp <= 2.0 {
+		// 低档位：最低需要达到目标值，最高可以超出0.005，范围是[targetRTP, targetRTP+0.005]
+		if finalRTP < rtp || finalRTP > rtp+0.005 {
+			if finalRTP > rtp+0.005 {
+				// RTP超出上限，需要强制降低
+				excessRTP := finalRTP - (rtp + 0.005)
+				printf("⚠️ 低档位RTP超出上限 %.6f (超出允许范围 %.6f)，开始强制降低...\n", finalRTP, excessRTP)
+
+				// 按金额从大到小排序当前数据
+				type indexedData struct {
+					idx  int
+					item GameResultData
+				}
+				indexedItems := make([]indexedData, len(adjustedData))
+				for i, item := range adjustedData {
+					indexedItems[i] = indexedData{idx: i, item: item}
+				}
+				sort.Slice(indexedItems, func(i, j int) bool {
+					return indexedItems[i].item.AW > indexedItems[j].item.AW
+				})
+
+				// 准备不中奖数据用于替换
+				zeroWinData := dataRanges["zero_win"].Data
+				if len(zeroWinData) > 0 {
+					// 继续强制替换，直到RTP降到允许范围内
+					forceReplaced := 0
+					for dataIdx := 0; dataIdx < len(indexedItems) && forceReplaced < 1000 && len(zeroWinData) > 0; dataIdx++ {
+						oldItem := indexedItems[dataIdx].item
+						if oldItem.AW == 0 {
+							continue
+						}
+
+						// 使用不中奖数据替换
+						zeroWinItem := zeroWinData[forceReplaced%len(zeroWinData)]
+
+						realIdx := indexedItems[dataIdx].idx
+						adjustedData[realIdx] = zeroWinItem
+						forceReplaced++
+
+						finalRTP = CalculateRTP(adjustedData, totalBet)
+
+						// 如果RTP已经降到允许范围内，停止
+						if finalRTP <= rtp+0.005 {
+							printf("✅ 强制降低完成：替换了%d条数据，最终RTP=%.6f\n", forceReplaced, finalRTP)
+							break
+						}
+					}
+
+					if finalRTP > rtp+0.005 {
+						printf("⚠️ 强制降低后RTP仍超出允许范围：%.6f (允许范围: [%.6f, %.6f])\n", finalRTP, rtp, rtp+0.005)
+					}
+				}
+			} else if finalRTP < rtp {
+				// RTP低于目标值，需要提升
+				printf("⚠️ 低档位RTP低于目标值 %.6f (目标: %.6f)，需要提升...\n", finalRTP, rtp)
+			}
+		}
+	} else {
+		// 高档位：最低需要达到目标值，如果低于目标值需要提升
+		if finalRTP < rtp {
+			printf("⚠️ 高档位RTP低于目标值 %.6f (目标: %.6f)，需要提升...\n", finalRTP, rtp)
+			// 这里可以添加提升逻辑，但通常adjustRTPUpFlexible已经处理了
+		}
+	}
+
+	// 重新计算RTP偏差
 	rtpDeviation = math.Abs(finalRTP - rtp)
 
 	printf("📊 最终统计:\n")
@@ -4211,10 +2357,8 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 		return fmt.Errorf("❌ 数据量不匹配：期望 %d 条, 实际 %d 条", dataNum, len(adjustedData))
 	}
 
-	// 打乱输出顺序
-	rand.Shuffle(len(adjustedData), func(i, j int) {
-		adjustedData[i], adjustedData[j] = adjustedData[j], adjustedData[i]
-	})
+	// 智能打乱输出顺序，确保大倍率数据在整个序列中均匀分布
+	ShuffleDataWithMultiplierDistribution(adjustedData, perSpinBet, rng)
 
 	// 保存到JSON文件
 	var outputDir string = filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
@@ -4373,114 +2517,6 @@ func isHighRtpLevel(rtpNo float64) bool {
 		}
 	}
 	return false
-}
-
-// runGenerateMode4 运行生成模式V4 - 使用RTP档位倍率分布策略
-func runGenerateMode4() {
-	// 记录程序开始时间
-	startTime := time.Now()
-
-	// 初始化随机数种子
-	rand.Seed(time.Now().UnixNano())
-
-	// 加载配置文件
-	config, err := LoadConfig("config.yaml")
-	if err != nil {
-		log.Fatalf("加载配置文件失败: %v", err)
-	}
-	fmt.Printf("配置加载成功（V4模式）- 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNum)
-	fmt.Printf("🔧 V4策略：RTP档位倍率分布策略\n")
-	fmt.Printf("📋 高RTP档位(14,15,120,150,200,300,500)将使用V3配置: data_num_v3=%d, data_table_num_3=%d\n",
-		config.Tables.DataNumV3, config.Tables.DataTableNum3)
-
-	// 加载RTP倍率分布配置
-	rtpConfig, err := LoadRtpMultiplierConfig("rtp_multiplier_config.yaml")
-	if err != nil {
-		log.Fatalf("加载RTP倍率分布配置失败: %v", err)
-	}
-
-	// 连接数据库
-	db, err := NewDatabase(config, "")
-	if err != nil {
-		log.Fatalf("数据库连接失败: %v", err)
-	}
-	defer db.Close()
-
-	// 清理 sp=true 且 aw=0 的数据
-	if err := db.CleanSpZeroAwData(); err != nil {
-		log.Fatalf("清理数据失败: %v", err)
-	}
-
-	// 预取共享只读数据
-	winDataAll, err := db.GetWinData()
-	if err != nil {
-		log.Fatalf("获取中奖数据失败: %v", err)
-	}
-	noWinDataAll, err := db.GetNoWinData()
-	if err != nil {
-		log.Fatalf("获取不中奖数据失败: %v", err)
-	}
-
-	// 合并所有数据
-	allData := append(winDataAll, noWinDataAll...)
-	fmt.Printf("✅ 总数据量: %d 条（中奖: %d, 不中奖: %d）\n", len(allData), len(winDataAll), len(noWinDataAll))
-
-	// 使用RtpLevels配置
-	for rtpNum := 0; rtpNum < len(RtpLevels); rtpNum++ {
-		// 并发度：CPU 核数
-		worker := runtime.NumCPU()
-		sem := make(chan struct{}, worker)
-		var wg sync.WaitGroup
-
-		// 捕获当前循环变量
-		rtpNo := RtpLevels[rtpNum].RtpNo
-		rtpVal := RtpLevels[rtpNum].Rtp
-
-		// 根据RTP档位选择配置
-		var dataNum, tableNum int
-		if isHighRtpLevel(rtpNo) {
-			dataNum = config.Tables.DataNumV3
-			tableNum = config.Tables.DataTableNum3
-			fmt.Printf("🔧 RTP档位 %.0f 使用V3配置: 数据量=%d, 生表数=%d\n", rtpNo, dataNum, tableNum)
-		} else {
-			dataNum = config.Tables.DataNum
-			tableNum = config.Tables.DataTableNum
-		}
-
-		// 计算总投注
-		totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * float64(dataNum)
-
-		for t := 0; t < tableNum; t++ {
-			sem <- struct{}{}
-			wg.Add(1)
-
-			testIndex := t + 1
-
-			go func(rtpNo float64, rtpVal float64, testIndex int, dataNum int, totalBet float64) {
-				defer func() { <-sem; wg.Done() }()
-
-				// 记录单次测试开始时间
-				testStartTime := time.Now()
-				// 即时输出单次任务开始，便于观察进度
-				fmt.Printf("▶️ 开始生成（V4模式）| RTP等级 %.0f | 第%d次 | 数据量:%d | %s\n", rtpNo, testIndex, dataNum, testStartTime.Format(time.RFC3339))
-
-				if err := runRtpTestV4(db, config, rtpConfig, rtpNo, rtpVal, testIndex, totalBet, allData, dataNum); err != nil {
-					log.Printf("RTP测试V4失败: %v", err)
-				}
-
-				// 计算并输出单次测试耗时
-				testDuration := time.Since(testStartTime)
-				fmt.Printf("⏱️  RTP等级 %.0f (第%d次生成-V4模式) 耗时: %v\n", rtpNo, testIndex, testDuration)
-			}(rtpNo, rtpVal, testIndex, dataNum, totalBet)
-		}
-
-		wg.Wait()
-	}
-
-	// 计算并输出整个程序的总耗时
-	totalDuration := time.Since(startTime)
-	fmt.Printf("\n🎉 RTP数据筛选和保存完成（V4模式）！\n")
-	fmt.Printf("⏱️  整个程序总耗时: %v\n", totalDuration)
 }
 
 // runSpStatisticsFromJSON 从JSON文件统计SP数据
@@ -4687,3 +2723,1001 @@ func runSpStatisticsFromJSON() {
 	}
 	fmt.Printf("============================================================\n")
 }
+func runGenerateFbMode() {
+	// 加载配置
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("加载配置文件失败: %v", err)
+	}
+	if !config.Game.IsFb {
+		fmt.Println("⚠️ 当前游戏未启用购买夺宝 (game.is_fb=false)，退出。")
+		return
+	}
+	fmt.Println("▶️ [generateFb] 购买夺宝生成模式启动")
+
+	// 连接数据库
+	db, err := NewDatabase(config, "")
+	if err != nil {
+		log.Fatalf("数据库连接失败: %v", err)
+	}
+	defer db.Close()
+
+	// 清理 sp=true 且 aw=0 的数据
+	// if err := db.CleanSpZeroAwData(); err != nil {
+	// 	log.Fatalf("清理数据失败: %v", err)
+	// }
+
+	// 计算总投注：cs * ml * bl * bet.fb * 数据条数
+	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB * float64(config.Tables.DataNumFb)
+
+	// 预取共享只读数据（购买模式）
+	fmt.Println("🔄 [generateFb] 正在获取购买模式中奖数据...")
+	winDataAll, err := db.GetWinDataFb()
+	if err != nil {
+		log.Fatalf("获取购买模式中奖数据失败: %v", err)
+	}
+
+	fmt.Printf("✅ [generateFb] 购买模式中奖但是不盈利的数据条数: %d\n", len(winDataAll))
+
+	profitDataAll, err := db.GetProfitDataFb()
+	if err != nil {
+		log.Fatalf("获取购买模式中奖数据失败: %v", err)
+	}
+	if len(profitDataAll) == 0 {
+		return
+	}
+	fmt.Printf("✅ [generateFb] 购买模式中奖并且盈利的数据条数: %d\n", len(profitDataAll))
+
+	fmt.Println("🔄 [generateFb] 正在获取购买模式不中奖数据...")
+	noWinDataAll, err := db.GetNoWinDataFb()
+	if err != nil {
+		log.Fatalf("获取购买模式不中奖数据失败: %v", err)
+	}
+	fmt.Printf("✅ [generateFb] 购买模式不中奖数据条数: %d\n", len(noWinDataAll))
+
+	if len(winDataAll) == 0 {
+		fmt.Println("⚠️ [generateFb] 未获取到购买模式中奖数据，无法继续。请检查数据条件 (aw>0, gwt<=3, fb=2, sp=true)。")
+		return
+	}
+	if len(noWinDataAll) == 0 {
+		fmt.Println("⚠️ [generateFb] 未获取到购买模式不中奖数据，后续将无法补全至目标条数。")
+	}
+
+	// 失败统计
+	var failedLevels []float64
+	var failedTests []string
+	var failedMu sync.Mutex
+
+	// 遍历 RTP 档位，每档位执行多次，并统计耗时
+	fbStartTime := time.Now()
+	worker := runtime.NumCPU()
+	sem := make(chan struct{}, worker)
+
+	for rtpNum := 0; rtpNum < len(FbRtpLevels); rtpNum++ {
+		levelStart := time.Now()
+		levelNo := FbRtpLevels[rtpNum].RtpNo
+		levelVal := FbRtpLevels[rtpNum].Rtp
+
+		var wgLevel sync.WaitGroup
+		for t := 0; t < config.Tables.DataTableNumFb; t++ {
+			sem <- struct{}{}
+			wgLevel.Add(1)
+
+			testIndex := t + 1
+			rtpNo := levelNo
+			rtpVal := levelVal
+
+			go func(rtpNo float64, rtpVal float64, testIndex int) {
+				defer func() { <-sem; wgLevel.Done() }()
+				testStartTime := time.Now()
+				fmt.Printf("▶️ [generateFb] 开始生成 | RTP等级 %.0f | 第%d次 | %s\n", rtpNo, testIndex, testStartTime.Format(time.RFC3339))
+				fmt.Printf("🔧 [generateFb] totalBet=%.2f allowWin_base=%.2f\n", totalBet, totalBet*rtpVal)
+
+				if err := runRtpFbTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, profitDataAll); err != nil {
+					log.Printf("[generateFb] RTP测试失败: %v", err)
+					// 记录失败的档位和测试（线程安全）
+					failedMu.Lock()
+					failedLevels = append(failedLevels, rtpNo)
+					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
+					failedMu.Unlock()
+				}
+
+				fmt.Printf("⏱️  [generateFb] RTP等级 %.0f (第%d次生成) 耗时: %v\n", rtpNo, testIndex, time.Since(testStartTime))
+			}(rtpNo, rtpVal, testIndex)
+		}
+
+		wgLevel.Wait()
+		fmt.Printf("⏱️  [generateFb] RTP等级 %.0f 总耗时: %v\n", levelNo, time.Since(levelStart))
+	}
+
+	// 输出失败统计
+	printFailureSummary("generateFb", config.Game.ID, failedLevels, failedTests)
+
+	fmt.Printf("\n🎉 [generateFb] 全部档位生成完成！\n")
+	fmt.Printf("⏱️  [generateFb] 整体总耗时: %v\n", time.Since(fbStartTime))
+}
+
+// runRtpFbTest 生成购买夺宝 RTP 数据（智能替换策略：精确贪心算法）
+func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData, profitDataAll []GameResultData) error {
+	var logBuf bytes.Buffer
+	printf := func(format string, a ...interface{}) {
+		fmt.Fprintf(&logBuf, format, a...)
+	}
+
+	// 统一使用更严格的容忍度，提高精度
+	rtpTolerance := 0.005  // 0.5%，更精确
+	maxReplaceRatio := 0.6 // 60%，允许更多替换次数
+
+	// 目标参数
+	targetCount := config.Tables.DataNumFb
+	maxReplaceIterations := int(float64(targetCount) * maxReplaceRatio)
+
+	printf("\n========== [FB TASK BEGIN] RtpNo: %.0f | Test: %d | %s =========\n", rtpLevel, testNumber, time.Now().Format(time.RFC3339))
+	printf("[FB] 🎯 目标RTP=%.4f, 精度容忍度=%.2f%% (智能替换算法v2.0)\n", rtp, rtpTolerance*100)
+	printf("候选: win(aw<tb)=%d, profit(aw>tb)=%d, nowin=%d\n", len(winDataAll), len(profitDataAll), len(noWinDataAll))
+
+	// 随机源
+	seed := time.Now().UnixNano() ^ int64(config.Game.ID)*1_000_003 ^ int64(testNumber)*1_000_033 ^ int64(rtpLevel)*1_000_037
+	rng := rand.New(rand.NewSource(seed))
+
+	// 准备候选数据池（排除aw > 50*tb的超巨奖）
+	var profitCandidates []GameResultData // aw > tb 盈利数据
+	var winCandidates []GameResultData    // aw <= tb 不盈利中奖数据
+
+	for _, item := range profitDataAll {
+		if item.AW <= float64(item.TB)*50 && item.AW > 0 {
+			profitCandidates = append(profitCandidates, item)
+		}
+	}
+	for _, item := range winDataAll {
+		if item.AW <= float64(item.TB)*50 && item.AW > 0 {
+			winCandidates = append(winCandidates, item)
+		}
+	}
+
+	printf("[FB] 步骤1：智能选择%d条数据（根据RTP档位）...\n", targetCount)
+
+	// 步骤1：根据目标RTP智能选择初始数据
+	var primaryPool, secondaryPool []GameResultData
+	var data []GameResultData
+	used := make(map[int]bool)
+
+	if rtp < 1.0 {
+		// 低RTP档位：优先使用不盈利数据（aw < tb）
+		primaryPool = winCandidates
+		secondaryPool = profitCandidates
+		printf("[FB] 低RTP档位：优先选择不盈利数据(aw<tb)\n")
+	} else {
+		// 高RTP档位：优先使用盈利数据（aw > tb）
+		primaryPool = profitCandidates
+		secondaryPool = winCandidates
+		printf("[FB] 高RTP档位：优先选择盈利数据(aw>tb)\n")
+	}
+
+	// 从主池随机选择
+	if len(primaryPool) > 0 {
+		perm := rng.Perm(len(primaryPool))
+		for _, idx := range perm {
+			if len(data) >= targetCount {
+				break
+			}
+			item := primaryPool[idx]
+			data = append(data, item)
+			used[item.ID] = true
+		}
+	}
+
+	// 如果主池不够，从副池补充
+	if len(data) < targetCount && len(secondaryPool) > 0 {
+		perm := rng.Perm(len(secondaryPool))
+		for _, idx := range perm {
+			if len(data) >= targetCount {
+				break
+			}
+			item := secondaryPool[idx]
+			if !used[item.ID] {
+				data = append(data, item)
+				used[item.ID] = true
+			}
+		}
+	}
+
+	// 如果数据仍不足，通过重复补齐（类似 generate4 的逻辑）
+	if len(data) < targetCount {
+		shortage := targetCount - len(data)
+		printf("[FB] ⚠️ 数据不足：需要 %d 条，可用 %d 条，将通过重复补齐 %d 条\n", targetCount, len(data), shortage)
+
+		// 使用已选择的数据作为填充源
+		fillSource := make([]GameResultData, len(data))
+		copy(fillSource, data)
+
+		// 如果填充源为空，尝试使用所有候选数据
+		if len(fillSource) == 0 {
+			fillSource = append(fillSource, primaryPool...)
+			fillSource = append(fillSource, secondaryPool...)
+		}
+
+		// 如果仍然为空，使用不中奖数据
+		if len(fillSource) == 0 && len(noWinDataAll) > 0 {
+			fillSource = noWinDataAll
+		}
+
+		if len(fillSource) > 0 {
+			// 重复填充
+			for i := 0; i < shortage; i++ {
+				idx := rng.Intn(len(fillSource))
+				data = append(data, fillSource[idx])
+			}
+			printf("[FB] ✅ 重复补齐完成，当前数量: %d/%d\n", len(data), targetCount)
+		} else {
+			return fmt.Errorf("可用候选数据不足：需要%d条，实际%d条，且无可用填充源", targetCount, len(data))
+		}
+	}
+
+	// 计算初始RTP
+	var totalWin float64
+	for _, item := range data {
+		totalWin += item.AW
+	}
+	currentRTP := totalWin / totalBet
+	printf("[FB] 初始RTP=%.6f (目标=%.6f, 偏差=%.6f)\n", currentRTP, rtp, currentRTP-rtp)
+
+	// 步骤2：智能RTP精确调整（贪心算法）
+	if math.Abs(currentRTP-rtp) > rtpTolerance {
+		printf("[FB] 步骤2：RTP偏差超出容忍度(%.2f%%)，开始智能调整...\n", rtpTolerance*100)
+
+		replacedCount := 0
+		targetWin := totalBet * rtp
+		winGap := targetWin - totalWin
+
+		if currentRTP < rtp {
+			// RTP过低：用高金额数据替换低金额数据
+			printf("[FB] 🔼 RTP过低，需增加%.2f中奖金额 (智能贪心替换)...\n", winGap)
+
+			// 准备未使用的替换候选数据：优先profit，然后win
+			var unusedHighCandidates []GameResultData
+			for _, item := range profitCandidates {
+				if !used[item.ID] {
+					unusedHighCandidates = append(unusedHighCandidates, item)
+				}
+			}
+			for _, item := range winCandidates {
+				if !used[item.ID] {
+					unusedHighCandidates = append(unusedHighCandidates, item)
+				}
+			}
+
+			// 按aw降序排序（高金额在前）
+			sort.Slice(unusedHighCandidates, func(i, j int) bool {
+				return unusedHighCandidates[i].AW > unusedHighCandidates[j].AW
+			})
+
+			// 对当前数据构建索引数组并按aw升序排序
+			type indexedData struct {
+				idx  int
+				item GameResultData
+			}
+			indexedItems := make([]indexedData, len(data))
+			for i, item := range data {
+				indexedItems[i] = indexedData{idx: i, item: item}
+			}
+			sort.Slice(indexedItems, func(i, j int) bool {
+				return indexedItems[i].item.AW < indexedItems[j].item.AW
+			})
+
+			// 智能贪心替换：寻找最接近目标的替换组合
+			candidateIdx := 0
+			// 对于高档位（300/500），如果未使用的候选数据用完了，允许重复使用已使用过的高金额数据
+			allowReuseForHighRTP := (rtpLevel == 300 || rtpLevel == 500)
+			allHighCandidates := make([]GameResultData, len(unusedHighCandidates))
+			copy(allHighCandidates, unusedHighCandidates)
+
+			for dataIdx := 0; dataIdx < len(indexedItems) && replacedCount < maxReplaceIterations; dataIdx++ {
+				oldItem := indexedItems[dataIdx].item
+
+				// 寻找最佳替换候选（最接近目标增量的）
+				bestCandidateIdx := -1
+				bestDelta := math.MaxFloat64
+				var bestCandidate GameResultData
+
+				// 优先使用未使用的候选数据
+				if candidateIdx < len(unusedHighCandidates) {
+					searchEnd := candidateIdx + 50
+					if searchEnd > len(unusedHighCandidates) {
+						searchEnd = len(unusedHighCandidates)
+					}
+
+					for j := candidateIdx; j < searchEnd; j++ {
+						newItem := unusedHighCandidates[j]
+						if newItem.AW <= oldItem.AW {
+							continue
+						}
+
+						awDelta := newItem.AW - oldItem.AW
+						newTotalWin := totalWin + awDelta
+						newRTP := newTotalWin / totalBet
+
+						// 不能超过目标太多
+						if newRTP > rtp+rtpTolerance*2 {
+							continue
+						}
+
+						// 计算与目标的距离
+						rtpDelta := math.Abs(newRTP - rtp)
+						if rtpDelta < bestDelta {
+							bestDelta = rtpDelta
+							bestCandidateIdx = j
+							bestCandidate = newItem
+						}
+
+						// 如果找到完美匹配，立即使用
+						if rtpDelta <= rtpTolerance {
+							break
+						}
+					}
+				}
+
+				// 如果未使用的候选数据用完了，且允许重复使用，则从所有高金额数据中查找
+				if bestCandidateIdx < 0 && allowReuseForHighRTP && len(allHighCandidates) > 0 {
+					printf("[FB] ⚠️ 未使用的候选数据已用完，允许重复使用高金额数据继续替换\n")
+					// 从所有高金额数据中随机查找
+					for attempt := 0; attempt < 100; attempt++ {
+						randIdx := rng.Intn(len(allHighCandidates))
+						newItem := allHighCandidates[randIdx]
+						if newItem.AW <= oldItem.AW {
+							continue
+						}
+
+						awDelta := newItem.AW - oldItem.AW
+						newTotalWin := totalWin + awDelta
+						newRTP := newTotalWin / totalBet
+
+						// 不能超过目标太多
+						if newRTP > rtp+rtpTolerance*2 {
+							continue
+						}
+
+						// 计算与目标的距离
+						rtpDelta := math.Abs(newRTP - rtp)
+						if rtpDelta < bestDelta {
+							bestDelta = rtpDelta
+							bestCandidate = newItem
+						}
+
+						// 如果找到完美匹配，立即使用
+						if rtpDelta <= rtpTolerance {
+							break
+						}
+					}
+				}
+
+				// 执行最佳替换
+				if bestCandidateIdx >= 0 || (allowReuseForHighRTP && bestDelta < math.MaxFloat64) {
+					var newItem GameResultData
+					if bestCandidateIdx >= 0 {
+						newItem = unusedHighCandidates[bestCandidateIdx]
+					} else {
+						newItem = bestCandidate
+					}
+
+					realIdx := indexedItems[dataIdx].idx
+
+					data[realIdx] = newItem
+					totalWin = totalWin - oldItem.AW + newItem.AW
+					delete(used, oldItem.ID)
+
+					// 如果使用的是未使用的数据，标记为已使用并从列表中移除
+					if bestCandidateIdx >= 0 {
+						used[newItem.ID] = true
+						unusedHighCandidates = append(unusedHighCandidates[:bestCandidateIdx], unusedHighCandidates[bestCandidateIdx+1:]...)
+						candidateIdx = 0 // 重置索引，重新开始搜索
+					}
+					// 如果使用的是重复数据，不需要更新 used map（允许重复）
+
+					replacedCount++
+
+					currentRTP = totalWin / totalBet
+
+					// 如果已经达到目标，提前退出
+					if math.Abs(currentRTP-rtp) <= rtpTolerance {
+						printf("[FB] ✅ 已达到目标RTP，提前结束替换\n")
+						break
+					}
+				} else {
+					candidateIdx++
+					// 如果候选索引超出范围，且不允许重复使用，则停止
+					if candidateIdx >= len(unusedHighCandidates) && !allowReuseForHighRTP {
+						printf("[FB] ⚠️ 未使用的候选数据已用完，停止替换\n")
+						break
+					}
+				}
+			}
+
+		} else {
+			// RTP过高：用低金额数据替换高金额数据
+			printf("[FB] 🔽 RTP过高，需减少%.2f中奖金额 (智能贪心替换)...\n", -winGap)
+
+			// 准备替换候选数据：按优先级：nowin > 低aw的win > 低aw的profit
+			var replacementCandidates []GameResultData
+
+			// 1. 优先使用不中奖数据（aw=0）
+			for _, item := range noWinDataAll {
+				if !used[item.ID] {
+					replacementCandidates = append(replacementCandidates, item)
+				}
+			}
+
+			// 2. 补充低金额的不盈利中奖数据（aw < tb）
+			var unusedWinCandidates []GameResultData
+			for _, item := range winCandidates {
+				if !used[item.ID] {
+					unusedWinCandidates = append(unusedWinCandidates, item)
+				}
+			}
+			sort.Slice(unusedWinCandidates, func(i, j int) bool {
+				return unusedWinCandidates[i].AW < unusedWinCandidates[j].AW
+			})
+			replacementCandidates = append(replacementCandidates, unusedWinCandidates...)
+
+			// 3. 补充低金额的盈利数据（aw > tb）
+			var unusedProfitCandidates []GameResultData
+			for _, item := range profitCandidates {
+				if !used[item.ID] {
+					unusedProfitCandidates = append(unusedProfitCandidates, item)
+				}
+			}
+			sort.Slice(unusedProfitCandidates, func(i, j int) bool {
+				return unusedProfitCandidates[i].AW < unusedProfitCandidates[j].AW
+			})
+			replacementCandidates = append(replacementCandidates, unusedProfitCandidates...)
+
+			printf("[FB] 可用低金额替换数据: %d条\n", len(replacementCandidates))
+
+			// 对当前数据构建索引数组并按aw降序排序
+			type indexedData struct {
+				idx  int
+				item GameResultData
+			}
+			indexedItems := make([]indexedData, len(data))
+			for i, item := range data {
+				indexedItems[i] = indexedData{idx: i, item: item}
+			}
+			sort.Slice(indexedItems, func(i, j int) bool {
+				return indexedItems[i].item.AW > indexedItems[j].item.AW
+			})
+
+			// 智能贪心替换：寻找最接近目标的替换组合
+			candidateIdx := 0
+			for dataIdx := 0; dataIdx < len(indexedItems) && candidateIdx < len(replacementCandidates) && replacedCount < maxReplaceIterations; dataIdx++ {
+				oldItem := indexedItems[dataIdx].item
+
+				// 寻找最佳替换候选（最接近目标减量的）
+				bestCandidateIdx := -1
+				bestDelta := math.MaxFloat64
+
+				for j := candidateIdx; j < len(replacementCandidates) && j < candidateIdx+50; j++ {
+					newItem := replacementCandidates[j]
+					if newItem.AW >= oldItem.AW {
+						continue
+					}
+
+					awDelta := oldItem.AW - newItem.AW
+					newTotalWin := totalWin - awDelta
+					newRTP := newTotalWin / totalBet
+
+					// 不能低于目标太多
+					if newRTP < rtp-rtpTolerance*2 {
+						continue
+					}
+
+					// 计算与目标的距离
+					rtpDelta := math.Abs(newRTP - rtp)
+					if rtpDelta < bestDelta {
+						bestDelta = rtpDelta
+						bestCandidateIdx = j
+					}
+
+					// 如果找到完美匹配，立即使用
+					if rtpDelta <= rtpTolerance {
+						break
+					}
+				}
+
+				// 执行最佳替换
+				if bestCandidateIdx >= 0 {
+					newItem := replacementCandidates[bestCandidateIdx]
+					realIdx := indexedItems[dataIdx].idx
+
+					data[realIdx] = newItem
+					totalWin = totalWin - oldItem.AW + newItem.AW
+					delete(used, oldItem.ID)
+					used[newItem.ID] = true
+					replacedCount++
+
+					// 移除已使用的候选
+					replacementCandidates = append(replacementCandidates[:bestCandidateIdx], replacementCandidates[bestCandidateIdx+1:]...)
+
+					currentRTP = totalWin / totalBet
+
+					// 如果已经达到目标，提前退出
+					if math.Abs(currentRTP-rtp) <= rtpTolerance {
+						printf("[FB] ✅ 已达到目标RTP，提前结束替换\n")
+						break
+					}
+				} else {
+					candidateIdx++
+				}
+			}
+		}
+
+		currentRTP = totalWin / totalBet
+		rtpDeviation := currentRTP - rtp
+		deviationPercent := (rtpDeviation / rtp) * 100
+		printf("[FB] 替换完成：替换了%d条数据，当前RTP=%.6f (偏差=%.6f, %.2f%%)\n",
+			replacedCount, currentRTP, math.Abs(rtpDeviation), math.Abs(deviationPercent))
+	}
+
+	// 最终统计与保存
+	printf("📊 [FB] 最终验证: 期望 %d 条, 实际 %d 条\n", targetCount, len(data))
+	var finalTotalBet float64
+	var finalTotalWin float64
+	for _, it := range data {
+		finalTotalBet += float64(it.TB)
+		finalTotalWin += it.AW
+	}
+	finalRTP := finalTotalWin / finalTotalBet
+	printf("✅ [FB] 档位: %.0f, 目标RTP: %.6f, 实际RTP: %.6f, 偏差: %.6f\n", rtpLevel, rtp, finalRTP, math.Abs(finalRTP-rtp))
+	printf("📊 [FB] 实际投注总额: %.2f (假设值: %.2f), 实际中奖总额: %.2f\n", finalTotalBet, totalBet, finalTotalWin)
+
+	// 重复率统计（按 id 去重）
+	uniq := make(map[int]int, len(data))
+	for _, it := range data {
+		uniq[it.ID]++
+	}
+	dupCount := 0
+	for _, c := range uniq {
+		if c > 1 {
+			dupCount += c - 1
+		}
+	}
+	dupRate := 0.0
+	if n := len(data); n > 0 {
+		dupRate = float64(dupCount) / float64(n)
+	}
+	printf("🔎 [FB] 去重统计: 总数=%d, 唯一=%d, 重复=%d, 重复率=%.4f\n", len(data), len(uniq), dupCount, dupRate)
+
+	// 打乱输出顺序并写文件
+	rand.Shuffle(len(data), func(i, j int) { data[i], data[j] = data[j], data[i] })
+	outDir := filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
+	if err := saveToJSON(data, config, rtpLevel, testNumber, outDir); err != nil {
+		return fmt.Errorf("[FB] 保存JSON失败: %v", err)
+	}
+
+	outputMu.Lock()
+	fmt.Print(logBuf.String())
+	outputMu.Unlock()
+	return nil
+}
+
+// runExportCommand 运行导出命令
+func runExportCommand() {
+	// 解析参数: ./filteringData export [outputFile] [env]
+	var outputFile string
+	var env string
+
+	if len(os.Args) >= 3 {
+		arg2 := os.Args[2]
+		if IsEnv(arg2) {
+			// 第二个参数是环境
+			env = ResolveEnv(arg2)
+		} else {
+			// 第二个参数是输出文件
+			outputFile = arg2
+			// 检查第三个参数是否是环境
+			if len(os.Args) >= 4 {
+				arg3 := os.Args[3]
+				if IsEnv(arg3) {
+					env = ResolveEnv(arg3)
+				} else {
+					fmt.Printf("❌ 无效的环境参数: %s\n", arg3)
+					fmt.Println("支持的环境: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp")
+					os.Exit(1)
+				}
+			}
+		}
+	}
+
+	// 加载配置
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("❌ 加载配置失败: %v", err)
+	}
+
+	// 连接数据库
+	db, err := NewDatabase(config, env)
+	if err != nil {
+		log.Fatalf("❌ 连接数据库失败: %v", err)
+	}
+	defer db.Close()
+
+	// 创建sql目录（如果不存在）
+	sqlDir := filepath.Join("sql", fmt.Sprintf("%d", config.Game.ID))
+	if err := os.MkdirAll(sqlDir, 0755); err != nil {
+		log.Fatalf("❌ 创建sql目录失败: %v", err)
+	}
+
+	// 如果没有指定输出文件，生成默认文件名：sql/{前缀}_{游戏ID}.sql
+	if outputFile == "" {
+		tablePrefix := config.Tables.SourceTablePrefix
+		gameID := config.Game.ID
+		outputFile = fmt.Sprintf("%s_%d.sql", tablePrefix, gameID)
+	}
+
+	// 确保输出文件路径在sql目录中
+	// 如果用户提供的路径已经是绝对路径或包含目录，则使用原路径
+	// 否则将其放入sql目录
+	if !filepath.IsAbs(outputFile) && filepath.Dir(outputFile) == "." {
+		outputFile = filepath.Join(sqlDir, outputFile)
+	} else if !filepath.IsAbs(outputFile) && !strings.HasPrefix(filepath.Clean(outputFile), sqlDir) {
+		// 如果用户提供了相对路径但不在sql目录，提取文件名放入sql目录
+		outputFile = filepath.Join(sqlDir, filepath.Base(outputFile))
+	}
+
+	envDisplay := ""
+	if env != "" {
+		envDisplay = fmt.Sprintf(" [环境: %s]", env)
+	}
+	fmt.Printf("🔄 开始导出表数据%s...\n", envDisplay)
+	fmt.Printf("📁 输出目录: %s\n", sqlDir)
+
+	// 执行导出
+	if err := db.ExportTableToSQL(outputFile); err != nil {
+		log.Fatalf("❌ 导出失败: %v", err)
+	}
+
+	// 导出建表SQL（与数据SQL放在同一目录）
+	schemaFile := filepath.Join(sqlDir, "schema.sql")
+	if err := db.ExportTableSchema(schemaFile); err != nil {
+		log.Fatalf("❌ 导出建表SQL失败: %v", err)
+	}
+
+	fmt.Printf("✅ 导出完成！数据文件: %s\n", outputFile)
+	fmt.Printf("📄 建表文件: %s\n", schemaFile)
+}
+
+// runImportSQLCommand 运行本地导入SQL命令
+func runImportSQLCommand() {
+	// 解析参数: ./filteringData import-sql <sqlFile> [env]
+	if len(os.Args) < 3 {
+		fmt.Println("❌ 缺少SQL文件参数")
+		fmt.Println("用法: ./filteringData import-sql <sqlFile> [env]")
+		fmt.Println("示例: ./filteringData import-sql data.sql")
+		fmt.Println("示例: ./filteringData import-sql data.sql hp")
+		os.Exit(1)
+	}
+
+	sqlFile := os.Args[2]
+	var env string
+
+	// 检查第三个参数是否是环境
+	if len(os.Args) >= 4 {
+		arg3 := os.Args[3]
+		if IsEnv(arg3) {
+			env = ResolveEnv(arg3)
+		} else {
+			fmt.Printf("❌ 无效的环境参数: %s\n", arg3)
+			fmt.Println("支持的环境: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp")
+			os.Exit(1)
+		}
+	}
+
+	// 加载配置
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("❌ 加载配置失败: %v", err)
+	}
+
+	primarySqlDir := filepath.Join("sql", fmt.Sprintf("%d", config.Game.ID))
+	legacySqlDir := "sql"
+	searchDirs := []string{primarySqlDir, legacySqlDir}
+
+	// 如果文件路径不是绝对路径，尝试在常用目录中查找
+	if !filepath.IsAbs(sqlFile) {
+		cleanInput := filepath.Clean(sqlFile)
+		found := false
+		if filepath.Dir(cleanInput) == "." {
+			for _, dir := range searchDirs {
+				candidate := filepath.Join(dir, filepath.Base(cleanInput))
+				if _, err := os.Stat(candidate); err == nil {
+					sqlFile = candidate
+					fmt.Printf("📁 在目录 %s 中找到文件: %s\n", dir, sqlFile)
+					found = true
+					break
+				}
+			}
+			if !found {
+				sqlFile = filepath.Join(primarySqlDir, filepath.Base(cleanInput))
+			}
+		} else {
+			for _, dir := range searchDirs {
+				if strings.HasPrefix(cleanInput, dir) {
+					sqlFile = cleanInput
+					found = true
+					break
+				}
+			}
+			if !found {
+				sqlFile = filepath.Join(primarySqlDir, filepath.Base(cleanInput))
+			}
+		}
+	}
+
+	// 检查文件是否存在
+	if _, err := os.Stat(sqlFile); os.IsNotExist(err) {
+		log.Fatalf("❌ SQL文件不存在: %s", sqlFile)
+	}
+
+	// 连接数据库
+	db, err := NewDatabase(config, env)
+	if err != nil {
+		log.Fatalf("❌ 连接数据库失败: %v", err)
+	}
+	defer db.Close()
+
+	envDisplay := ""
+	if env != "" {
+		envDisplay = fmt.Sprintf(" [环境: %s]", env)
+	}
+
+	// 导入前先执行建表SQL（如果存在）
+	schemaCandidates := []string{
+		filepath.Join(filepath.Dir(sqlFile), "schema.sql"),
+		filepath.Join(primarySqlDir, "schema.sql"),
+		filepath.Join(legacySqlDir, "schema.sql"),
+	}
+	executedSchema := false
+	for _, schemaPath := range schemaCandidates {
+		if schemaPath == "" {
+			continue
+		}
+		if _, err := os.Stat(schemaPath); err == nil {
+			fmt.Printf("📄 先执行建表SQL: %s\n", schemaPath)
+			if err := db.ImportSQLFile(schemaPath); err != nil {
+				log.Fatalf("❌ 执行建表SQL失败: %v", err)
+			}
+			executedSchema = true
+			break
+		}
+	}
+	if !executedSchema {
+		fmt.Printf("ℹ️ 未找到建表SQL，直接导入数据\n")
+	}
+
+	// 检查是否有分割文件（part文件）
+	baseDir := filepath.Dir(sqlFile)
+	baseName := filepath.Base(sqlFile)
+	ext := filepath.Ext(baseName)
+	baseNameWithoutExt := strings.TrimSuffix(baseName, ext)
+
+	// 查找所有part文件
+	var sqlFiles []string
+
+	// 先检查主文件是否存在
+	if _, err := os.Stat(sqlFile); err == nil {
+		sqlFiles = append(sqlFiles, sqlFile)
+	}
+
+	// 查找part文件（part001, part002, ...）
+	for i := 2; i <= 999; i++ {
+		partFileName := fmt.Sprintf("%s_part%03d%s", baseNameWithoutExt, i, ext)
+		partFilePath := filepath.Join(baseDir, partFileName)
+		if _, err := os.Stat(partFilePath); err == nil {
+			sqlFiles = append(sqlFiles, partFilePath)
+		} else {
+			// 如果这个part文件不存在，说明后面的也不存在了
+			break
+		}
+	}
+
+	if len(sqlFiles) > 1 {
+		fmt.Printf("🔄 发现 %d 个分割文件，将按顺序导入%s...\n", len(sqlFiles), envDisplay)
+		for i, file := range sqlFiles {
+			fmt.Printf("  📄 [%d/%d] 导入文件: %s\n", i+1, len(sqlFiles), filepath.Base(file))
+			if err := db.ImportSQLFile(file); err != nil {
+				log.Fatalf("❌ 导入文件 %s 失败: %v", file, err)
+			}
+		}
+		if err := db.SyncSequenceWithMaxID(); err != nil {
+			log.Printf("⚠️ 同步序列失败: %v（数据已导入，但序列未更新）", err)
+		}
+		fmt.Printf("✅ 所有文件导入完成！\n")
+	} else {
+		fmt.Printf("🔄 开始导入SQL文件%s...\n", envDisplay)
+		fmt.Printf("📁 文件路径: %s\n", sqlFile)
+		if err := db.ImportSQLFile(sqlFile); err != nil {
+			log.Fatalf("❌ 导入失败: %v", err)
+		}
+		if err := db.SyncSequenceWithMaxID(); err != nil {
+			log.Printf("⚠️ 同步序列失败: %v", err)
+		}
+		fmt.Printf("✅ 导入完成！\n")
+	}
+}
+
+// handleS3SQLImportCommand 处理S3 SQL导入命令
+func handleS3SQLImportCommand() {
+	// 解析参数: ./filteringData import-s3-sql [gameIds] [env]
+	args := os.Args[2:]
+
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("❌ 加载配置失败: %v", err)
+	}
+
+	var env string
+	var gameIDs []int
+
+	if len(args) == 0 {
+		gameIDs = []int{config.Game.ID}
+	} else if len(args) == 1 && IsEnv(args[0]) {
+		env = ResolveEnv(args[0])
+		gameIDs = []int{config.Game.ID}
+	} else {
+		argIndex := 0
+		if IsEnv(args[0]) {
+			env = ResolveEnv(args[0])
+			argIndex++
+		}
+
+		if argIndex >= len(args) {
+			gameIDs = []int{config.Game.ID}
+		} else {
+			ids, err := parseGameIds(args[argIndex])
+			if err != nil {
+				fmt.Printf("❌ 解析游戏ID失败: %v\n", err)
+				fmt.Println("用法: ./filteringData import-s3-sql [gameIds] [env]")
+				fmt.Println("示例: ./filteringData import-s3-sql")
+				fmt.Println("示例: ./filteringData import-s3-sql 20063")
+				fmt.Println("示例: ./filteringData import-s3-sql 20063,20064 hp")
+				os.Exit(1)
+			}
+			gameIDs = ids
+			argIndex++
+
+			if argIndex < len(args) {
+				if IsEnv(args[argIndex]) {
+					env = ResolveEnv(args[argIndex])
+					argIndex++
+				} else {
+					fmt.Printf("❌ 无效的环境参数: %s\n", args[argIndex])
+					fmt.Println("支持的环境: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp")
+					os.Exit(1)
+				}
+			}
+
+			if argIndex < len(args) {
+				fmt.Println("❌ 参数过多，请按照: ./filteringData import-s3-sql [gameIds] [env] 的格式使用")
+				os.Exit(1)
+			}
+		}
+	}
+
+	if len(gameIDs) == 0 {
+		gameIDs = []int{config.Game.ID}
+	}
+
+	// 创建S3客户端（复用一个客户端）
+	s3Client, err := NewS3Client(config)
+	if err != nil {
+		log.Fatalf("❌ 创建S3客户端失败: %v", err)
+	}
+
+	originalGameID := config.Game.ID
+	defer func() {
+		config.Game.ID = originalGameID
+	}()
+
+	totalGames := len(gameIDs)
+	fmt.Printf("🔁 准备从S3导入 %d 个游戏的SQL文件...\n", totalGames)
+
+	for idx, gameID := range gameIDs {
+		config.Game.ID = gameID
+		fmt.Printf("\n==============================\n")
+		fmt.Printf("🎯 正在导入游戏 %d (%d/%d)\n", gameID, idx+1, totalGames)
+		fmt.Printf("==============================\n")
+
+		if err := importS3SQLForGame(config, s3Client, env, gameID); err != nil {
+			log.Fatalf("❌ 导入游戏 %d 失败: %v", gameID, err)
+		}
+	}
+
+	fmt.Printf("\n✅ 所有游戏的SQL导入完成！\n")
+}
+
+// importS3SQLForGame 从S3导入指定游戏ID的SQL文件（自动处理分割文件）
+func importS3SQLForGame(config *Config, s3Client *S3Client, env string, gameID int) error {
+	db, err := NewDatabase(config, env)
+	if err != nil {
+		return fmt.Errorf("连接数据库失败: %v", err)
+	}
+	defer db.Close()
+
+	envDisplay := ""
+	if env != "" {
+		envDisplay = fmt.Sprintf(" [环境: %s]", env)
+	}
+
+	tablePrefix := config.Tables.SourceTablePrefix
+	baseKey := fmt.Sprintf("mpg-slot-data/%d/sql/%s_%d.sql", gameID, tablePrefix, gameID)
+	baseName := fmt.Sprintf("%s_%d", tablePrefix, gameID)
+
+	fmt.Printf("🌐 S3 路径: %s%s\n", baseKey, envDisplay)
+	fmt.Printf("📁 目标表: %s\n", db.GetTableName())
+
+	// 先执行建表SQL（如果存在）
+	schemaKey := fmt.Sprintf("mpg-slot-data/%d/sql/schema.sql", gameID)
+	if err := db.ImportSQLFileFromS3(s3Client, schemaKey); err != nil {
+		if isS3ObjectNotFound(err) {
+			fmt.Printf("ℹ️ 未在S3找到建表SQL: %s\n", schemaKey)
+		} else {
+			return fmt.Errorf("执行建表SQL失败: %v", err)
+		}
+	} else {
+		fmt.Printf("✅ 已执行建表SQL: %s\n", schemaKey)
+	}
+
+	importedFiles := 0
+	for part := 1; part <= 999; part++ {
+		var key string
+		if part == 1 {
+			key = baseKey
+		} else {
+			key = fmt.Sprintf("mpg-slot-data/%d/sql/%s_part%03d.sql", gameID, baseName, part)
+		}
+
+		err := db.ImportSQLFileFromS3(s3Client, key)
+		if err != nil {
+			if part == 1 {
+				if isS3ObjectNotFound(err) {
+					return fmt.Errorf("在S3未找到SQL文件: %s", key)
+				}
+				return fmt.Errorf("导入主文件失败: %v", err)
+			}
+
+			if isS3ObjectNotFound(err) {
+				if importedFiles == 0 {
+					return fmt.Errorf("在S3未找到任何SQL分割文件（起始路径: %s）", baseKey)
+				}
+				fmt.Printf("ℹ️ 未检测到更多分割文件，结束导入\n")
+				break
+			}
+			return fmt.Errorf("导入文件 %s 失败: %v", key, err)
+		}
+
+		importedFiles++
+		fmt.Printf("  ✅ 已导入: %s\n", key)
+	}
+
+	if importedFiles == 0 {
+		return fmt.Errorf("未导入任何文件，S3路径: %s", baseKey)
+	}
+
+	fmt.Printf("🔄 正在同步序列...\n")
+	if err := db.SyncSequenceWithMaxID(); err != nil {
+		return err
+	}
+
+	fmt.Printf("✅ 游戏 %d 导入完成（共导入 %d 个文件）\n", gameID, importedFiles)
+	return nil
+}
+
+// isS3ObjectNotFound 判断S3错误是否为对象不存在
+func isS3ObjectNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "nosuchkey") || strings.Contains(msg, "not found") || strings.Contains(msg, "status code: 404")
+}
+
+// runImportFbMode 运行购买夺宝导入模式

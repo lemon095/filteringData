@@ -145,7 +145,7 @@ func ClassifyDataByMultiplier(data []GameResultData, betAmount float64) map[stri
 }
 
 // GenerateDataByDistribution 根据分布配置生成数据
-func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCount int, dataRanges map[string]MultiplierRange) ([]GameResultData, error) {
+func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCount int, dataRanges map[string]MultiplierRange, rtpLevel int) ([]GameResultData, error) {
 	var result []GameResultData
 
 	// 计算每个区间应该分配的数量
@@ -162,24 +162,112 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 	// 创建随机数生成器
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	// 按区间分配数据，允许不中奖率有2%偏差
+	// 针对高档位（300/500）允许有限重复，以缓解高倍率样本不足的问题
+	allowDuplicate := rtpLevel == 300 || rtpLevel == 500
+
+	// 按区间分配数据
 	for rangeName, allocation := range allocations {
-		if allocation > 0 && len(dataRanges[rangeName].Data) > 0 {
-			// 如果可用数据不足，使用所有可用数据
-			actualCount := allocation
-			if actualCount > len(dataRanges[rangeName].Data) {
-				actualCount = len(dataRanges[rangeName].Data)
+		availableData := dataRanges[rangeName].Data
+
+		// 如果分配数量为0，跳过
+		if allocation <= 0 {
+			continue
+		}
+
+		// 如果该区间没有可用数据
+		if len(availableData) == 0 {
+			// 对于高倍率区间（very_high_multiplier及以上），如果数据为空且分配数量>0
+			highMultiplierRanges := []string{"very_high_multiplier", "mega_multiplier", "super_mega_multiplier", "ultra_mega_multiplier"}
+			isHighMultiplier := false
+			for _, hr := range highMultiplierRanges {
+				if rangeName == hr {
+					isHighMultiplier = true
+					break
+				}
 			}
 
-			// 随机选择数据
-			availableData := dataRanges[rangeName].Data
-			perm := rng.Perm(len(availableData))
-			var selectedData []GameResultData
-			for i := 0; i < actualCount; i++ {
+			if isHighMultiplier {
+				// 对于300/500档位，如果高倍率区间没有数据，向下找次高倍率数据复制补齐
+				if allowDuplicate {
+					// 按优先级向下查找可用的次高倍率数据源（从高到低）
+					// 根据当前区间，优先使用更接近的倍率区间
+					var fallbackRanges []string
+					switch rangeName {
+					case "ultra_mega_multiplier":
+						fallbackRanges = []string{"super_mega_multiplier", "mega_multiplier", "very_high_multiplier", "high_multiplier", "medium_multiplier"}
+					case "super_mega_multiplier":
+						fallbackRanges = []string{"mega_multiplier", "very_high_multiplier", "high_multiplier", "medium_multiplier"}
+					case "mega_multiplier":
+						fallbackRanges = []string{"very_high_multiplier", "high_multiplier", "medium_multiplier"}
+					case "very_high_multiplier":
+						fallbackRanges = []string{"high_multiplier", "medium_multiplier"}
+					default:
+						fallbackRanges = []string{"high_multiplier", "medium_multiplier"}
+					}
+
+					var fallbackData []GameResultData
+					fallbackRangeName := ""
+
+					// 查找第一个有数据的次高倍率区间
+					for _, fbRange := range fallbackRanges {
+						if len(dataRanges[fbRange].Data) > 0 {
+							fallbackData = dataRanges[fbRange].Data
+							fallbackRangeName = fbRange
+							break
+						}
+					}
+
+					if len(fallbackData) > 0 {
+						// 使用次高倍率数据复制补齐
+						fmt.Printf("⚠️ %s 区间需要 %d 条数据，但可用数据为 0 条，将使用 %s 区间的数据复制补齐\n", rangeName, allocation, fallbackRangeName)
+						for i := 0; i < allocation; i++ {
+							selectedData := fallbackData[rng.Intn(len(fallbackData))]
+							result = append(result, selectedData)
+						}
+						continue
+					} else {
+						// 如果次高倍率也没有数据，给出警告并跳过
+						fmt.Printf("⚠️ 警告：%s 区间需要 %d 条数据，但可用数据为 0 条，且无次高倍率数据可替代，将跳过该区间\n", rangeName, allocation)
+						continue
+					}
+				} else {
+					// 非高档位，直接跳过
+					fmt.Printf("⚠️ 警告：%s 区间需要 %d 条数据，但可用数据为 0 条，将跳过该区间\n", rangeName, allocation)
+					continue
+				}
+			}
+			continue
+		}
+
+		// 随机选择数据（优先使用不重复数据）
+		perm := rng.Perm(len(availableData))
+		var selectedData []GameResultData
+
+		if allocation <= len(availableData) {
+			// 数据充足，直接选择
+			for i := 0; i < allocation; i++ {
 				selectedData = append(selectedData, availableData[perm[i]])
 			}
-			result = append(result, selectedData...)
+		} else {
+			// 数据不足时，先把全部可用数据取完
+			for i := 0; i < len(availableData); i++ {
+				selectedData = append(selectedData, availableData[perm[i]])
+			}
+
+			// 在高档位允许重复补齐
+			if allowDuplicate {
+				shortage := allocation - len(selectedData)
+				fmt.Printf("⚠️ %s 区间数据不足：需要 %d 条，可用 %d 条，将通过重复补齐 %d 条\n", rangeName, allocation, len(availableData), shortage)
+				for len(selectedData) < allocation {
+					selectedData = append(selectedData, availableData[rng.Intn(len(availableData))])
+				}
+			} else {
+				// 非高档位，数据不足时给出警告但不补齐
+				fmt.Printf("⚠️ 警告：%s 区间数据不足：需要 %d 条，可用 %d 条，实际只使用 %d 条\n", rangeName, allocation, len(availableData), len(selectedData))
+			}
 		}
+
+		result = append(result, selectedData...)
 	}
 
 	return result, nil
@@ -1042,4 +1130,131 @@ func adjustRTPToLowerLimit(data []GameResultData, targetRTP float64, totalBet fl
 	}
 
 	return result, nil
+}
+
+// ShuffleDataWithMultiplierDistribution 智能打乱数据，确保大倍率数据均匀分布在整个序列中
+// 方案A：将数据分成三类（不中奖、普通中奖、大倍率），先均匀分布普通中奖数据到各个区间，再插入大倍率数据
+func ShuffleDataWithMultiplierDistribution(data []GameResultData, betAmount float64, rng *rand.Rand) {
+	totalSize := len(data)
+	if totalSize == 0 {
+		return
+	}
+
+	// 步骤1：按倍率分类，将数据分成三类
+	var zeroWinData []GameResultData       // 不中奖数据（multiplier == 0）
+	var normalWinData []GameResultData     // 普通中奖数据（0 < multiplier <= 20）
+	var bigMultiplierData []GameResultData // 大倍率数据（20 < multiplier <= 100）
+
+	for _, item := range data {
+		multiplier := item.AW / betAmount
+
+		if multiplier == 0 {
+			zeroWinData = append(zeroWinData, item)
+		} else if multiplier > 0 && multiplier <= 20 {
+			normalWinData = append(normalWinData, item)
+		} else if multiplier > 20 && multiplier <= 100 {
+			bigMultiplierData = append(bigMultiplierData, item)
+		} else {
+			// 超过100倍的数据也归入普通中奖数据
+			normalWinData = append(normalWinData, item)
+		}
+	}
+
+	// 步骤2：计算参数
+	// 总中奖率 = (普通中奖数量 + 大倍率数量) / 总数据量
+	totalWinCount := len(normalWinData) + len(bigMultiplierData)
+	totalWinRate := float64(totalWinCount) / float64(totalSize)
+
+	// 区间数量：如果有大倍率数据，使用大倍率数据数量；否则固定分成10个区间
+	segmentCount := len(bigMultiplierData)
+	if segmentCount == 0 {
+		// 没有大倍率数据时，固定分成10个区间
+		segmentCount = 10
+	}
+
+	// 每个区间的基础大小（不包含大倍率数据）
+	// 基础数据 = 不中奖数据 + 普通中奖数据
+	baseDataCount := len(zeroWinData) + len(normalWinData)
+	baseSegmentSize := baseDataCount / segmentCount
+	if baseSegmentSize == 0 {
+		baseSegmentSize = 1 // 确保至少为1
+	}
+
+	// 步骤3：打乱数据
+	rand.Shuffle(len(zeroWinData), func(i, j int) {
+		zeroWinData[i], zeroWinData[j] = zeroWinData[j], zeroWinData[i]
+	})
+	rand.Shuffle(len(normalWinData), func(i, j int) {
+		normalWinData[i], normalWinData[j] = normalWinData[j], normalWinData[i]
+	})
+	rand.Shuffle(len(bigMultiplierData), func(i, j int) {
+		bigMultiplierData[i], bigMultiplierData[j] = bigMultiplierData[j], bigMultiplierData[i]
+	})
+
+	// 步骤4：按区间分配数据
+	result := make([]GameResultData, 0, totalSize)
+	normalWinIdx := 0
+	zeroWinIdx := 0
+
+	for seg := 0; seg < segmentCount; seg++ {
+		segment := make([]GameResultData, 0)
+
+		// 计算当前区间的实际大小（最后一个区间包含所有剩余数据）
+		currentSegmentSize := baseSegmentSize
+		if seg == segmentCount-1 {
+			// 最后一个区间：包含所有剩余的基础数据
+			remainingNormalWin := len(normalWinData) - normalWinIdx
+			remainingZeroWin := len(zeroWinData) - zeroWinIdx
+			currentSegmentSize = remainingNormalWin + remainingZeroWin
+		}
+
+		// 计算当前区间的目标中奖数
+		currentTargetWin := int(float64(currentSegmentSize) * totalWinRate)
+		if seg == segmentCount-1 {
+			// 最后一个区间：使用所有剩余的普通中奖数据
+			currentTargetWin = len(normalWinData) - normalWinIdx
+		}
+
+		// 分配普通中奖数据到当前区间
+		normalWinAdded := 0
+		for normalWinAdded < currentTargetWin && normalWinIdx < len(normalWinData) {
+			segment = append(segment, normalWinData[normalWinIdx])
+			normalWinIdx++
+			normalWinAdded++
+		}
+
+		// 填充不中奖数据到区间大小
+		for len(segment) < currentSegmentSize && zeroWinIdx < len(zeroWinData) {
+			segment = append(segment, zeroWinData[zeroWinIdx])
+			zeroWinIdx++
+		}
+
+		// 打乱区间内的数据（普通中奖和不中奖数据）
+		rand.Shuffle(len(segment), func(i, j int) {
+			segment[i], segment[j] = segment[j], segment[i]
+		})
+
+		// 在区间内随机位置插入大倍率数据
+		if seg < len(bigMultiplierData) {
+			insertPos := 0
+			if len(segment) > 0 {
+				insertPos = rng.Intn(len(segment) + 1) // +1 允许插入到末尾
+			}
+
+			// 插入大倍率数据
+			if insertPos >= len(segment) {
+				segment = append(segment, bigMultiplierData[seg])
+			} else {
+				segment = append(segment, GameResultData{})
+				copy(segment[insertPos+1:], segment[insertPos:])
+				segment[insertPos] = bigMultiplierData[seg]
+			}
+		}
+
+		// 将区间数据添加到结果
+		result = append(result, segment...)
+	}
+
+	// 步骤5：将结果复制回原数组（不改变数据本身，只改变排列顺序）
+	copy(data, result)
 }
