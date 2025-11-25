@@ -2344,6 +2344,20 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 	// 重新计算RTP偏差
 	rtpDeviation = math.Abs(finalRTP - rtp)
 
+	// 计算实际中奖率
+	actualWinCount := 0
+	for _, item := range adjustedData {
+		if item.AW > 0 {
+			actualWinCount++
+		}
+	}
+	actualWinRate := float64(actualWinCount) / float64(len(adjustedData))
+
+	// 获取设定中奖率（1 - 不中奖率）
+	targetNoWinRate := distribution.MultiplierDistribution.ZeroWin
+	targetWinRate := 1.0 - targetNoWinRate
+	winRateDeviation := math.Abs(actualWinRate - targetWinRate)
+
 	printf("📊 最终统计:\n")
 	printf("  - 总数据量: %d 条\n", len(adjustedData))
 	printf("  - 总投注: %.2f\n", totalBet)
@@ -2351,6 +2365,9 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 	printf("  - 实际RTP: %.6f\n", finalRTP)
 	printf("  - 目标RTP: %.6f\n", rtp)
 	printf("  - RTP偏差: %.6f\n", rtpDeviation)
+	printf("  - 设定中奖率: %.4f (%.2f%%)\n", targetWinRate, targetWinRate*100)
+	printf("  - 实际中奖率: %.4f (%.2f%%)\n", actualWinRate, actualWinRate*100)
+	printf("  - 中奖率偏差: %.4f (%.2f%%)\n", winRateDeviation, winRateDeviation*100)
 
 	// 验证数据量
 	if len(adjustedData) != dataNum {

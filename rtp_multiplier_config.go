@@ -163,7 +163,11 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	// 针对高档位（300/500）允许有限重复，以缓解高倍率样本不足的问题
-	allowDuplicate := rtpLevel == 300 || rtpLevel == 500
+	// 对于高倍率区间（very_high_multiplier及以上），只有300/500档位才允许向下找次高倍率数据
+	allowHighMultiplierFallback := rtpLevel == 300 || rtpLevel == 500
+
+	// 对于所有中奖区间，数据不足时都应该允许重复补齐，以保持中奖率
+	// 只有不中奖区间（zero_win）数据不足时，才需要用其他数据补齐
 
 	// 按区间分配数据
 	for rangeName, allocation := range allocations {
@@ -188,7 +192,7 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 
 			if isHighMultiplier {
 				// 对于300/500档位，如果高倍率区间没有数据，向下找次高倍率数据复制补齐
-				if allowDuplicate {
+				if allowHighMultiplierFallback {
 					// 按优先级向下查找可用的次高倍率数据源（从高到低）
 					// 根据当前区间，优先使用更接近的倍率区间
 					var fallbackRanges []string
@@ -254,20 +258,37 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 				selectedData = append(selectedData, availableData[perm[i]])
 			}
 
-			// 在高档位允许重复补齐
-			if allowDuplicate {
+			// 对于所有中奖区间（非zero_win），数据不足时都允许重复补齐，以保持中奖率
+			if rangeName != "zero_win" {
 				shortage := allocation - len(selectedData)
 				fmt.Printf("⚠️ %s 区间数据不足：需要 %d 条，可用 %d 条，将通过重复补齐 %d 条\n", rangeName, allocation, len(availableData), shortage)
 				for len(selectedData) < allocation {
 					selectedData = append(selectedData, availableData[rng.Intn(len(availableData))])
 				}
 			} else {
-				// 非高档位，数据不足时给出警告但不补齐
+				// 不中奖区间数据不足时，给出警告，后续会用其他数据补齐
 				fmt.Printf("⚠️ 警告：%s 区间数据不足：需要 %d 条，可用 %d 条，实际只使用 %d 条\n", rangeName, allocation, len(availableData), len(selectedData))
 			}
 		}
 
 		result = append(result, selectedData...)
+	}
+
+	// 如果总数据量不足，用不中奖数据补齐
+	if len(result) < totalCount {
+		shortage := totalCount - len(result)
+		zeroWinData := dataRanges["zero_win"].Data
+		if len(zeroWinData) > 0 {
+			fmt.Printf("📊 总数据量不足：需要 %d 条，实际 %d 条，将用不中奖数据补齐 %d 条\n", totalCount, len(result), shortage)
+			// 随机选择不中奖数据补齐
+			for i := 0; i < shortage; i++ {
+				selectedData := zeroWinData[rng.Intn(len(zeroWinData))]
+				result = append(result, selectedData)
+			}
+		} else {
+			// 如果没有不中奖数据，尝试用其他数据补齐
+			fmt.Printf("⚠️ 警告：总数据量不足 %d 条，实际 %d 条，且无不中奖数据可补齐\n", totalCount, len(result))
+		}
 	}
 
 	return result, nil
