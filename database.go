@@ -599,6 +599,71 @@ func (d *Database) GetBestSingleMatch(targetWin float64, excludeIds []int, maxDe
 	return &item, nil
 }
 
+// GetSpecialGameplayDataFb 获取购买模式的所有特殊玩法数据（包含完整的gd字段）
+// 用于13档位生成时确保特殊玩法占比
+// 特殊玩法判断条件：jsonb_array_length(gd -> 0 -> 'data' -> 'props') > 1
+func (d *Database) GetSpecialGameplayDataFb() ([]GameResultData, error) {
+	tableName := d.GetTableName()
+	query := fmt.Sprintf(`
+        SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
+        FROM %s 
+        WHERE fb = %d AND jsonb_array_length(gd -> 0 -> 'data' -> 'props') > 1
+        ORDER BY id
+    `, tableName, d.Config.Game.Mode)
+	
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
+	defer cancel()
+	rows, err := d.DB.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("查询特殊玩法数据失败: %v", err)
+	}
+	defer rows.Close()
+
+	var data []GameResultData
+	for rows.Next() {
+		var item GameResultData
+		err := rows.Scan(
+			&item.ID, &item.TB, &item.AW, &item.GWT,
+			&item.SP, &item.FB, &item.GD,
+			&item.CreatedAt, &item.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		data = append(data, item)
+	}
+
+	return data, nil
+}
+
+// GetSpecialGameplayIds 获取所有特殊玩法的ID列表
+// 特殊玩法判断条件：jsonb_array_length(gd -> 0 -> 'data' -> 'props') > 1
+func (d *Database) GetSpecialGameplayIds() (map[int]bool, error) {
+	tableName := d.GetTableName()
+	query := fmt.Sprintf(`
+		SELECT id
+		FROM %s
+		WHERE jsonb_array_length(gd -> 0 -> 'data' -> 'props') > 1
+	`, tableName)
+
+	rows, err := d.DB.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("查询特殊玩法ID失败: %v", err)
+	}
+	defer rows.Close()
+
+	specialIds := make(map[int]bool)
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		specialIds[id] = true
+	}
+
+	return specialIds, nil
+}
+
 // CleanSpZeroAwData 清理表中 sp=true 且 aw=0 的数据
 func (d *Database) CleanSpZeroAwData() error {
 	tableName := d.GetTableName()

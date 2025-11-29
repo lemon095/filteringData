@@ -49,6 +49,58 @@ func parseDataID(value interface{}) (int64, error) {
 	}
 }
 
+// isSpecialGameplay 判断是否是特殊玩法
+// 特殊玩法判断条件：jsonb_array_length(gd -> 0 -> 'data' -> 'props') > 1
+func isSpecialGameplay(item GameResultData) bool {
+	if item.GD.Data == nil {
+		return false
+	}
+
+	// 将GD.Data转换为map或slice以便访问
+	gdBytes, err := json.Marshal(item.GD.Data)
+	if err != nil {
+		return false
+	}
+
+	var gdData interface{}
+	if err := json.Unmarshal(gdBytes, &gdData); err != nil {
+		return false
+	}
+
+	// 检查是否是数组且长度>0
+	gdArray, ok := gdData.([]interface{})
+	if !ok || len(gdArray) == 0 {
+		return false
+	}
+
+	// 获取第一个元素
+	firstElem, ok := gdArray[0].(map[string]interface{})
+	if !ok {
+		return false
+	}
+
+	// 获取data字段
+	dataField, ok := firstElem["data"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+
+	// 获取props字段
+	propsField, ok := dataField["props"]
+	if !ok {
+		return false
+	}
+
+	// 检查props是否是数组
+	propsArray, ok := propsField.([]interface{})
+	if !ok {
+		return false
+	}
+
+	// 判断props数组长度是否>1
+	return len(propsArray) > 1
+}
+
 // isGameId 检查参数是否为gameId（对应目录存在）
 func isGameId(arg string) bool {
 	if gid, err := strconv.Atoi(arg); err == nil {
@@ -926,6 +978,7 @@ func main() {
 		fmt.Println("  ./filteringData import-s3-normal <gameIds> [level] [env] # 从S3导入普通模式文件")
 		fmt.Println("  ./filteringData import-s3-fb <gameIds> [level] [env] # 从S3导入购买夺宝模式文件")
 		fmt.Println("  ./filteringData sp-stats <gameId>              # 统计指定游戏JSON文件的SP数据")
+		fmt.Println("  ./filteringData check-special <gameId> [rtpLevel] # 检测13档位特殊玩法占比（可选指定档位）")
 		fmt.Println("  ./filteringData importFb-s3 <gameIds> [level] [env] # 从S3导入多个游戏的购买夺宝模式文件")
 		fmt.Println("  ./filteringData export [outputFile] [env]     # 导出source_table_prefix表的数据到SQL文件")
 		fmt.Println("  ./filteringData import-sql <sqlFile> [env]    # 从本地SQL文件导入数据到source_table_prefix表")
@@ -1102,6 +1155,9 @@ func main() {
 	case "sp-stats":
 		// SP统计命令：./filteringData sp-stats <gameId>
 		runSpStatisticsFromJSON()
+	case "check-special":
+		// 检测特殊玩法占比命令：./filteringData check-special <gameId> [rtpLevel]
+		runCheckSpecialGameplay()
 	case "export":
 		// 导出命令：./filteringData export [outputFile] [env]
 		// 导出source_table_prefix表的数据到SQL文件
@@ -2073,6 +2129,26 @@ func runGenerateMode4() {
 	allData := append(winDataAll, noWinDataAll...)
 	fmt.Printf("✅ 总数据量: %d 条（中奖: %d, 不中奖: %d）\n", len(allData), len(winDataAll), len(noWinDataAll))
 
+	// 13档位特殊处理：预先查询所有特殊玩法数据（包含完整gd字段）和ID列表
+	var specialGameplayDataAll []GameResultData
+	var specialGameplayIds map[int]bool
+	if config.Game.IsFb {
+		fmt.Println("🔄 [V4] 正在获取特殊玩法数据（用于13档位占比控制）...")
+		var err error
+		specialGameplayDataAll, err = db.GetSpecialGameplayDataFb()
+		if err != nil {
+			log.Fatalf("获取特殊玩法数据失败: %v", err)
+		}
+		fmt.Printf("✅ [V4] 特殊玩法数据条数: %d\n", len(specialGameplayDataAll))
+
+		// 预先查询特殊玩法ID列表（用于快速判断）
+		specialGameplayIds, err = db.GetSpecialGameplayIds()
+		if err != nil {
+			log.Fatalf("获取特殊玩法ID列表失败: %v", err)
+		}
+		fmt.Printf("✅ [V4] 特殊玩法ID数量: %d\n", len(specialGameplayIds))
+	}
+
 	// 使用RtpLevels配置
 	for rtpNum := 0; rtpNum < len(RtpLevels); rtpNum++ {
 		// 并发度：CPU 核数
@@ -2112,7 +2188,7 @@ func runGenerateMode4() {
 				// 即时输出单次任务开始，便于观察进度
 				fmt.Printf("▶️ 开始生成（V4模式）| RTP等级 %.0f | 第%d次 | 数据量:%d | %s\n", rtpNo, testIndex, dataNum, testStartTime.Format(time.RFC3339))
 
-				if err := runRtpTestV4(db, config, rtpConfig, rtpNo, rtpVal, testIndex, totalBet, allData, dataNum); err != nil {
+				if err := runRtpTestV4(db, config, rtpConfig, rtpNo, rtpVal, testIndex, totalBet, allData, dataNum, specialGameplayDataAll, specialGameplayIds); err != nil {
 					log.Printf("RTP测试V4失败: %v", err)
 				}
 
@@ -2132,7 +2208,7 @@ func runGenerateMode4() {
 }
 
 // runRtpTestV4 执行单次RTP测试V4 - 使用RTP档位倍率分布策略
-func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, rtpLevel float64, rtp float64, testNumber int, totalBet float64, allData []GameResultData, dataNum int) error {
+func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, rtpLevel float64, rtp float64, testNumber int, totalBet float64, allData []GameResultData, dataNum int, specialGameplayDataAll []GameResultData, specialGameplayIds map[int]bool) error {
 	var logBuf bytes.Buffer
 	printf := func(format string, a ...interface{}) {
 		fmt.Fprintf(&logBuf, format, a...)
@@ -2372,6 +2448,500 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 	// 验证数据量
 	if len(adjustedData) != dataNum {
 		return fmt.Errorf("❌ 数据量不匹配：期望 %d 条, 实际 %d 条", dataNum, len(adjustedData))
+	}
+
+	// 13档位特殊处理：在保存前确保特殊玩法占比至少为1%
+	if rtpLevel == 13 && len(specialGameplayIds) > 0 && len(specialGameplayDataAll) > 0 {
+		targetSpecialRatio := 0.01 // 1%
+		currentSpecialCount := 0
+		for _, item := range adjustedData {
+			if specialGameplayIds[item.ID] {
+				currentSpecialCount++
+			}
+		}
+		currentSpecialRatio := float64(currentSpecialCount) / float64(len(adjustedData))
+		targetSpecialCount := int(math.Ceil(float64(len(adjustedData)) * targetSpecialRatio))
+
+		if currentSpecialCount < targetSpecialCount {
+			stillNeed := targetSpecialCount - currentSpecialCount
+			printf("🎯 [V4] 13档位特殊玩法调整: 当前占比=%.4f (%d条), 目标占比≥%.4f (%d条), 需要补充 %d 条\n",
+				currentSpecialRatio, currentSpecialCount, targetSpecialRatio, targetSpecialCount, stillNeed)
+
+			// 找出普通数据索引
+			normalIndices := make([]int, 0)
+			for i, item := range adjustedData {
+				if !specialGameplayIds[item.ID] {
+					normalIndices = append(normalIndices, i)
+				}
+			}
+
+			// 用特殊玩法数据替换（优先使用ID列表验证）
+			validSpecialData := make([]GameResultData, 0)
+			for _, item := range specialGameplayDataAll {
+				if specialGameplayIds[item.ID] {
+					validSpecialData = append(validSpecialData, item)
+				}
+			}
+			// 如果ID验证没有找到数据，尝试使用isSpecialGameplay（备用方案）
+			if len(validSpecialData) == 0 {
+				for _, item := range specialGameplayDataAll {
+					if isSpecialGameplay(item) {
+						validSpecialData = append(validSpecialData, item)
+					}
+				}
+			}
+
+			if len(validSpecialData) > 0 && len(normalIndices) > 0 {
+				// 计算当前总中奖金额
+				var totalWin float64
+				for _, item := range adjustedData {
+					totalWin += item.AW
+				}
+
+				// 智能匹配：为每个普通数据找到金额最接近的特殊玩法数据，优先选择不会导致RTP过高的
+				type indexedNormal struct {
+					idx  int
+					item GameResultData
+				}
+				indexedNormals := make([]indexedNormal, len(normalIndices))
+				for i, idx := range normalIndices {
+					indexedNormals[i] = indexedNormal{idx: idx, item: adjustedData[idx]}
+				}
+				// 按金额排序
+				sort.Slice(indexedNormals, func(i, j int) bool {
+					return indexedNormals[i].item.AW < indexedNormals[j].item.AW
+				})
+
+				// 对特殊玩法数据按金额排序
+				sort.Slice(validSpecialData, func(i, j int) bool {
+					return validSpecialData[i].AW < validSpecialData[j].AW
+				})
+
+				replaced := 0
+				usedSpecialIds := make(map[int]bool)
+				currentTotalWin := totalWin
+				targetWin := totalBet * rtp
+				rtpTolerance := getRTPTolerance(int(rtpLevel))
+				maxAllowedWin := totalBet * (rtp + rtpTolerance)
+
+				// 为每个普通数据找到金额最接近的特殊玩法数据，但优先选择不会导致RTP过高的
+				for _, indexedNormal := range indexedNormals {
+					if replaced >= stillNeed {
+						break
+					}
+
+					normalAW := indexedNormal.item.AW
+					bestSpecialIdx := -1
+					bestDiff := math.MaxFloat64
+
+					// 在特殊玩法数据中查找金额最接近的，且不会导致RTP过高的
+					for i, specialItem := range validSpecialData {
+						if usedSpecialIds[specialItem.ID] {
+							continue
+						}
+
+						// 计算替换后的RTP影响
+						newTotalWin := currentTotalWin - normalAW + specialItem.AW
+						if newTotalWin > maxAllowedWin {
+							// 如果替换后RTP会超出上限，跳过这个选项
+							continue
+						}
+
+						diff := math.Abs(specialItem.AW - normalAW)
+						rtpImpact := math.Abs(newTotalWin - targetWin) // RTP与目标的距离
+
+						// 优先选择金额接近且RTP影响小的
+						score := diff*0.7 + rtpImpact*0.3 // 综合评分，金额接近度权重70%，RTP影响权重30%
+						if score < bestDiff {
+							bestDiff = score
+							bestSpecialIdx = i
+						}
+
+						// 如果找到非常接近的（差异小于5%），且RTP影响小，直接使用
+						if diff < normalAW*0.05 && rtpImpact < totalBet*0.01 {
+							break
+						}
+					}
+
+					// 如果找到了合适的特殊玩法数据，进行替换
+					if bestSpecialIdx >= 0 {
+						specialItem := validSpecialData[bestSpecialIdx]
+						originalItem := adjustedData[indexedNormal.idx]
+						// 整条数据替换
+						adjustedData[indexedNormal.idx] = specialItem
+						// 更新总中奖金额
+						currentTotalWin = currentTotalWin - originalItem.AW + specialItem.AW
+						totalWin = currentTotalWin
+						usedSpecialIds[specialItem.ID] = true
+						replaced++
+					}
+				}
+
+				// 如果还有需要替换的，允许重复使用特殊玩法数据
+				if replaced < stillNeed {
+					printf("⚠️ [V4] 特殊玩法数据不足，允许重复使用以完成替换（还需 %d 条）\n", stillNeed-replaced)
+					perm := rng.Perm(len(validSpecialData))
+					for i := replaced; i < stillNeed && i < len(normalIndices); i++ {
+						normalIdx := normalIndices[i]
+						specialIdx := perm[(i-replaced)%len(perm)]
+						originalItem := adjustedData[normalIdx]
+						specialItem := validSpecialData[specialIdx]
+						// 整条数据替换
+						adjustedData[normalIdx] = specialItem
+						// 更新总中奖金额
+						totalWin = totalWin - originalItem.AW + specialItem.AW
+						replaced++
+					}
+				}
+
+				printf("✅ [V4] 已替换 %d 条数据为特殊玩法（整条替换）\n", replaced)
+
+				// 重新计算RTP和中奖率
+				finalRTP = totalWin / totalBet
+				rtpDeviation := math.Abs(finalRTP - rtp)
+
+				// 计算中奖率
+				actualWinCount := 0
+				for _, item := range adjustedData {
+					if item.AW > 0 {
+						actualWinCount++
+					}
+				}
+				actualWinRate := float64(actualWinCount) / float64(len(adjustedData))
+				targetNoWinRate := distribution.MultiplierDistribution.ZeroWin
+				targetWinRate := 1.0 - targetNoWinRate
+				winRateDeviation := math.Abs(actualWinRate - targetWinRate)
+
+				printf("📊 [V4] 调整后RTP: %.6f (目标: %.6f, 偏差: %.6f)\n", finalRTP, rtp, rtpDeviation)
+				printf("📊 [V4] 调整后中奖率: %.4f (目标: %.4f, 偏差: %.4f)\n", actualWinRate, targetWinRate, winRateDeviation)
+
+				// 如果RTP偏差较大，需要进行RTP补偿（但保护特殊玩法数据）
+				rtpToleranceValue := getRTPTolerance(int(rtpLevel))
+				if rtpDeviation > rtpToleranceValue {
+					printf("🔄 [V4] RTP偏差 %.6f 超出容忍度 %.6f，开始RTP补偿（保护特殊玩法数据）...\n", rtpDeviation, rtpToleranceValue)
+
+					// 找出非特殊玩法的数据索引
+					normalDataIndices := make([]int, 0)
+					for i, item := range adjustedData {
+						if !specialGameplayIds[item.ID] {
+							normalDataIndices = append(normalDataIndices, i)
+						}
+					}
+
+					if finalRTP > rtp {
+						// RTP过高，需要用低金额数据替换高金额数据（非特殊玩法）
+						printf("🔽 [V4] RTP过高 (%.6f > %.6f)，通过替换非特殊玩法数据降低RTP...\n", finalRTP, rtp)
+						// 使用零倍数据替换
+						if len(dataRanges["zero_win"].Data) > 0 {
+							// 对普通数据按金额降序排序
+							type indexedNormal struct {
+								idx  int
+								item GameResultData
+							}
+							indexedNormals := make([]indexedNormal, len(normalDataIndices))
+							for i, idx := range normalDataIndices {
+								indexedNormals[i] = indexedNormal{idx: idx, item: adjustedData[idx]}
+							}
+							sort.Slice(indexedNormals, func(i, j int) bool {
+								return indexedNormals[i].item.AW > indexedNormals[j].item.AW
+							})
+
+							// 替换高金额数据为零倍数据，直到RTP降到目标范围内
+							zeroWinData := dataRanges["zero_win"].Data
+							compensated := 0
+							maxIterations := 5000                              // 增加最大迭代次数
+							targetWinAmount := totalBet * (rtp + rtpTolerance) // 目标总中奖金额（允许上限）
+
+							for _, indexedNormal := range indexedNormals {
+								if totalWin <= targetWinAmount {
+									break
+								}
+								if indexedNormal.item.AW == 0 {
+									continue
+								}
+								zeroWinItem := zeroWinData[compensated%len(zeroWinData)]
+								adjustedData[indexedNormal.idx] = zeroWinItem
+								totalWin = totalWin - indexedNormal.item.AW
+								finalRTP = totalWin / totalBet
+								compensated++
+								if compensated >= maxIterations {
+									break
+								}
+							}
+							printf("✅ [V4] RTP补偿：替换了 %d 条数据，当前RTP: %.6f (目标: %.6f, 偏差: %.6f)\n",
+								compensated, finalRTP, rtp, math.Abs(finalRTP-rtp))
+
+							// 如果RTP仍然超出，继续强制降低
+							if finalRTP > rtp+rtpTolerance {
+								printf("⚠️ [V4] RTP仍然超出，继续强制降低...\n")
+								// 继续替换，更激进
+								for _, indexedNormal := range indexedNormals {
+									if totalWin <= targetWinAmount {
+										break
+									}
+									if adjustedData[indexedNormal.idx].AW == 0 {
+										continue
+									}
+									zeroWinItem := zeroWinData[compensated%len(zeroWinData)]
+									oldAW := adjustedData[indexedNormal.idx].AW
+									adjustedData[indexedNormal.idx] = zeroWinItem
+									totalWin = totalWin - oldAW
+									finalRTP = totalWin / totalBet
+									compensated++
+									if compensated >= maxIterations*2 {
+										break
+									}
+								}
+								printf("✅ [V4] 强制降低完成：总共替换了 %d 条数据，当前RTP: %.6f\n", compensated, finalRTP)
+							}
+						}
+					} else {
+						// RTP过低，需要用高金额数据替换低金额数据（非特殊玩法）
+						printf("🔼 [V4] RTP过低，通过替换非特殊玩法数据提升RTP...\n")
+						// 收集高金额数据（非特殊玩法）
+						var highCandidates []GameResultData
+						for _, rangeName := range []string{"medium_multiplier", "high_multiplier", "very_high_multiplier"} {
+							if len(dataRanges[rangeName].Data) > 0 {
+								for _, item := range dataRanges[rangeName].Data {
+									if !specialGameplayIds[item.ID] {
+										highCandidates = append(highCandidates, item)
+									}
+								}
+							}
+						}
+						sort.Slice(highCandidates, func(i, j int) bool {
+							return highCandidates[i].AW > highCandidates[j].AW
+						})
+
+						if len(highCandidates) > 0 {
+							// 对普通数据按金额升序排序
+							type indexedNormal struct {
+								idx  int
+								item GameResultData
+							}
+							indexedNormals := make([]indexedNormal, len(normalDataIndices))
+							for i, idx := range normalDataIndices {
+								indexedNormals[i] = indexedNormal{idx: idx, item: adjustedData[idx]}
+							}
+							sort.Slice(indexedNormals, func(i, j int) bool {
+								return indexedNormals[i].item.AW < indexedNormals[j].item.AW
+							})
+
+							// 替换低金额数据为高金额数据
+							compensated := 0
+							for i, indexedNormal := range indexedNormals {
+								if finalRTP >= rtp-rtpTolerance {
+									break
+								}
+								if i < len(highCandidates) {
+									highItem := highCandidates[i]
+									if highItem.AW > indexedNormal.item.AW {
+										adjustedData[indexedNormal.idx] = highItem
+										totalWin = totalWin - indexedNormal.item.AW + highItem.AW
+										finalRTP = totalWin / totalBet
+										compensated++
+										if compensated >= 1000 { // 限制最多替换1000条
+											break
+										}
+									}
+								}
+							}
+							printf("✅ [V4] RTP补偿：替换了 %d 条数据，当前RTP: %.6f\n", compensated, finalRTP)
+						}
+					}
+
+					// 重新计算最终RTP和中奖率
+					finalRTP = CalculateRTP(adjustedData, totalBet)
+					rtpDeviation = math.Abs(finalRTP - rtp)
+
+					// 重新计算中奖率
+					actualWinCount = 0
+					for _, item := range adjustedData {
+						if item.AW > 0 {
+							actualWinCount++
+						}
+					}
+					actualWinRate = float64(actualWinCount) / float64(len(adjustedData))
+					winRateDeviation = math.Abs(actualWinRate - targetWinRate)
+
+					printf("📊 [V4] 最终RTP: %.6f (目标: %.6f, 偏差: %.6f)\n", finalRTP, rtp, rtpDeviation)
+					printf("📊 [V4] 最终中奖率: %.4f (目标: %.4f, 偏差: %.4f)\n", actualWinRate, targetWinRate, winRateDeviation)
+				}
+
+				// 如果中奖率偏差较大（>2%），需要调整（但保护特殊玩法数据）
+				if winRateDeviation > 0.02 {
+					printf("🔄 [V4] 中奖率偏差 %.4f 超出2%%范围，开始中奖率调整（保护特殊玩法数据）...\n", winRateDeviation)
+
+					// 找出非特殊玩法的数据索引
+					normalDataIndices := make([]int, 0)
+					for i, item := range adjustedData {
+						if !specialGameplayIds[item.ID] {
+							normalDataIndices = append(normalDataIndices, i)
+						}
+					}
+
+					if actualWinRate > targetWinRate {
+						// 中奖率过高，需要用零倍数据替换中奖数据（非特殊玩法）
+						printf("🔽 [V4] 中奖率过高，通过替换非特殊玩法中奖数据降低中奖率...\n")
+						zeroWinData := dataRanges["zero_win"].Data
+						if len(zeroWinData) > 0 {
+							// 找出非特殊玩法的中奖数据
+							winNormalIndices := make([]int, 0)
+							for _, idx := range normalDataIndices {
+								if adjustedData[idx].AW > 0 {
+									winNormalIndices = append(winNormalIndices, idx)
+								}
+							}
+
+							// 随机选择替换
+							perm := rng.Perm(len(winNormalIndices))
+							needReduce := int(float64(len(adjustedData)) * (actualWinRate - targetWinRate))
+							replaced := 0
+							for i := 0; i < needReduce && i < len(perm) && i < len(zeroWinData); i++ {
+								winIdx := winNormalIndices[perm[i]]
+								zeroWinItem := zeroWinData[i%len(zeroWinData)]
+								originalItem := adjustedData[winIdx]
+								adjustedData[winIdx] = zeroWinItem
+								totalWin = totalWin - originalItem.AW
+								replaced++
+							}
+							printf("✅ [V4] 中奖率调整：替换了 %d 条数据\n", replaced)
+						}
+					} else {
+						// 中奖率过低，需要用中奖数据替换零倍数据（非特殊玩法）
+						printf("🔼 [V4] 中奖率过低，通过替换非特殊玩法零倍数据提升中奖率...\n")
+						// 收集中奖数据（非特殊玩法），优先选择金额最低的
+						var winCandidates []GameResultData
+						// 优先使用low_multiplier（金额最低），然后medium_multiplier
+						for _, rangeName := range []string{"low_multiplier", "medium_multiplier"} {
+							if len(dataRanges[rangeName].Data) > 0 {
+								for _, item := range dataRanges[rangeName].Data {
+									if !specialGameplayIds[item.ID] && item.AW > 0 {
+										winCandidates = append(winCandidates, item)
+									}
+								}
+							}
+						}
+						// 如果还不够，再使用high_multiplier
+						if len(winCandidates) < 500 {
+							for _, item := range dataRanges["high_multiplier"].Data {
+								if !specialGameplayIds[item.ID] && item.AW > 0 {
+									winCandidates = append(winCandidates, item)
+								}
+							}
+						}
+
+						// 按金额升序排序，优先使用金额最低的中奖数据
+						sort.Slice(winCandidates, func(i, j int) bool {
+							return winCandidates[i].AW < winCandidates[j].AW
+						})
+
+						if len(winCandidates) > 0 {
+							// 找出非特殊玩法的零倍数据
+							zeroNormalIndices := make([]int, 0)
+							for _, idx := range normalDataIndices {
+								if adjustedData[idx].AW == 0 {
+									zeroNormalIndices = append(zeroNormalIndices, idx)
+								}
+							}
+
+							// 计算需要替换的数量
+							needIncrease := int(float64(len(adjustedData)) * (targetWinRate - actualWinRate))
+							replaced := 0
+							rtpToleranceValue := getRTPTolerance(int(rtpLevel))
+							maxAllowedWin := totalBet * (rtp + rtpToleranceValue)
+
+							// 逐个替换，确保RTP不会超出上限
+							for i := 0; i < needIncrease && i < len(zeroNormalIndices) && i < len(winCandidates); i++ {
+								zeroIdx := zeroNormalIndices[i]
+								winItem := winCandidates[i%len(winCandidates)]
+
+								// 检查替换后RTP是否会超出上限
+								newTotalWin := totalWin + winItem.AW
+								if newTotalWin > maxAllowedWin {
+									// 如果会超出，跳过这个中奖数据，尝试下一个
+									continue
+								}
+
+								adjustedData[zeroIdx] = winItem
+								totalWin = newTotalWin
+								replaced++
+							}
+							printf("✅ [V4] 中奖率调整：替换了 %d 条数据（使用金额最低的中奖数据）\n", replaced)
+
+							// 重新计算RTP
+							finalRTP = totalWin / totalBet
+							rtpDeviation = math.Abs(finalRTP - rtp)
+							printf("📊 [V4] 中奖率调整后RTP: %.6f (目标: %.6f, 偏差: %.6f)\n", finalRTP, rtp, rtpDeviation)
+
+							// 如果RTP仍然超出，立即进行RTP补偿
+							if finalRTP > rtp+rtpToleranceValue {
+								printf("🔄 [V4] 中奖率调整后RTP超出，立即进行RTP补偿...\n")
+								// 找出非特殊玩法的中奖数据（按金额降序）
+								type indexedWin struct {
+									idx  int
+									item GameResultData
+								}
+								winNormalIndices := make([]indexedWin, 0)
+								for _, idx := range normalDataIndices {
+									if adjustedData[idx].AW > 0 {
+										winNormalIndices = append(winNormalIndices, indexedWin{idx: idx, item: adjustedData[idx]})
+									}
+								}
+								sort.Slice(winNormalIndices, func(i, j int) bool {
+									return winNormalIndices[i].item.AW > winNormalIndices[j].item.AW
+								})
+
+								// 用零倍数据替换高金额的中奖数据
+								zeroWinData := dataRanges["zero_win"].Data
+								if len(zeroWinData) > 0 {
+									compensated := 0
+									targetWinAmount := totalBet * (rtp + rtpToleranceValue)
+									for _, indexedWin := range winNormalIndices {
+										if totalWin <= targetWinAmount {
+											break
+										}
+										zeroWinItem := zeroWinData[compensated%len(zeroWinData)]
+										adjustedData[indexedWin.idx] = zeroWinItem
+										totalWin = totalWin - indexedWin.item.AW
+										finalRTP = totalWin / totalBet
+										compensated++
+										if compensated >= 1000 {
+											break
+										}
+									}
+									printf("✅ [V4] RTP补偿：替换了 %d 条数据，当前RTP: %.6f\n", compensated, finalRTP)
+								}
+							}
+						}
+					}
+
+					// 重新计算最终RTP和中奖率
+					// 重新计算totalWin以确保准确性
+					totalWin = 0
+					for _, item := range adjustedData {
+						totalWin += item.AW
+					}
+					finalRTP = totalWin / totalBet
+					actualWinCount = 0
+					for _, item := range adjustedData {
+						if item.AW > 0 {
+							actualWinCount++
+						}
+					}
+					actualWinRate = float64(actualWinCount) / float64(len(adjustedData))
+					winRateDeviation = math.Abs(actualWinRate - targetWinRate)
+					rtpDeviation = math.Abs(finalRTP - rtp)
+
+					printf("📊 [V4] 最终RTP: %.6f (目标: %.6f, 偏差: %.6f)\n", finalRTP, rtp, rtpDeviation)
+					printf("📊 [V4] 最终中奖率: %.4f (目标: %.4f, 偏差: %.4f)\n", actualWinRate, targetWinRate, winRateDeviation)
+				}
+			} else {
+				printf("⚠️ [V4] 无法调整：有效特殊玩法数据=%d, 普通数据索引=%d\n", len(validSpecialData), len(normalIndices))
+			}
+		} else {
+			printf("✅ [V4] 13档位特殊玩法占比已符合要求(%.4f ≥ %.4f)\n", currentSpecialRatio, targetSpecialRatio)
+		}
 	}
 
 	// 智能打乱输出顺序，确保大倍率数据在整个序列中均匀分布
@@ -2740,6 +3310,226 @@ func runSpStatisticsFromJSON() {
 	}
 	fmt.Printf("============================================================\n")
 }
+
+// runCheckSpecialGameplay 检测JSON文件中13档位的特殊玩法占比
+func runCheckSpecialGameplay() {
+	if len(os.Args) < 3 {
+		fmt.Println("用法: ./filteringData check-special <gameId> [rtpLevel]")
+		fmt.Println("示例: ./filteringData check-special 20099")
+		fmt.Println("      ./filteringData check-special 20099 13")
+		os.Exit(1)
+	}
+
+	gameId, err := strconv.Atoi(os.Args[2])
+	if err != nil {
+		fmt.Printf("❌ 无效的游戏ID: %s\n", os.Args[2])
+		os.Exit(1)
+	}
+
+	var targetRtpLevel *int
+	if len(os.Args) >= 4 {
+		rtpLevel, err := strconv.Atoi(os.Args[3])
+		if err != nil {
+			fmt.Printf("❌ 无效的RTP档位: %s\n", os.Args[3])
+			os.Exit(1)
+		}
+		targetRtpLevel = &rtpLevel
+	}
+
+	// 加载配置并连接数据库
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		fmt.Printf("❌ 加载配置失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 临时设置gameId以便查询正确的表
+	config.Game.ID = gameId
+
+	db, err := NewDatabase(config, "")
+	if err != nil {
+		fmt.Printf("❌ 连接数据库失败: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	outputDir := filepath.Join("output", fmt.Sprintf("%d", gameId))
+	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
+		fmt.Printf("❌ 输出目录不存在: %s\n", outputDir)
+		os.Exit(1)
+	}
+
+	fmt.Printf("🔍 开始检测游戏 %d 的特殊玩法占比（从数据库查询）...\n", gameId)
+	if targetRtpLevel != nil {
+		fmt.Printf("📌 目标档位: %d\n", *targetRtpLevel)
+	}
+
+	// 先从数据库查询所有特殊玩法的ID
+	fmt.Printf("🔄 正在从数据库查询特殊玩法ID列表...\n")
+	specialGameplayIds, err := db.GetSpecialGameplayIds()
+	if err != nil {
+		fmt.Printf("❌ 查询特殊玩法ID失败: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✅ 查询到 %d 个特殊玩法ID\n", len(specialGameplayIds))
+
+	// 读取所有JSON文件
+	files, err := os.ReadDir(outputDir)
+	if err != nil {
+		fmt.Printf("❌ 读取目录失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	type FileStats struct {
+		FileName     string
+		RtpLevel     int
+		TestNumber   int
+		TotalRecords int
+		SpecialCount int
+		SpecialRatio float64
+	}
+
+	var allStats []FileStats
+	rtpLevelStats := make(map[int][]FileStats)
+
+	for _, file := range files {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".json") {
+			continue
+		}
+
+		// 解析文件名：GameResults_{mode}_{rtpLevel}_{testNumber}.json
+		parts := strings.Split(strings.TrimSuffix(file.Name(), ".json"), "_")
+		if len(parts) < 3 {
+			continue
+		}
+
+		rtpLevel, err := strconv.Atoi(parts[len(parts)-2])
+		if err != nil {
+			continue
+		}
+
+		testNumber, err := strconv.Atoi(parts[len(parts)-1])
+		if err != nil {
+			continue
+		}
+
+		// 如果指定了档位，只检测该档位
+		if targetRtpLevel != nil && rtpLevel != *targetRtpLevel {
+			continue
+		}
+
+		filePath := filepath.Join(outputDir, file.Name())
+		fileData, err := os.ReadFile(filePath)
+		if err != nil {
+			fmt.Printf("⚠️ 读取文件失败 %s: %v\n", file.Name(), err)
+			continue
+		}
+
+		var jsonData struct {
+			RtpLevel int                      `json:"rtpLevel"`
+			SrNumber int                      `json:"srNumber"`
+			Data     []map[string]interface{} `json:"data"`
+		}
+
+		if err := json.Unmarshal(fileData, &jsonData); err != nil {
+			fmt.Printf("⚠️ 解析JSON失败 %s: %v\n", file.Name(), err)
+			continue
+		}
+
+		totalCount := len(jsonData.Data)
+		specialCount := 0
+
+		// 检查每条记录的dataId是否在特殊玩法ID列表中
+		for _, item := range jsonData.Data {
+			var dataId int
+			switch v := item["id"].(type) {
+			case float64:
+				dataId = int(v)
+			case int:
+				dataId = v
+			case int64:
+				dataId = int(v)
+			default:
+				continue
+			}
+
+			// 检查dataId是否在特殊玩法ID列表中
+			if specialGameplayIds[dataId] {
+				specialCount++
+			}
+		}
+
+		specialRatio := float64(specialCount) / float64(totalCount)
+		stats := FileStats{
+			FileName:     file.Name(),
+			RtpLevel:     rtpLevel,
+			TestNumber:   testNumber,
+			TotalRecords: totalCount,
+			SpecialCount: specialCount,
+			SpecialRatio: specialRatio,
+		}
+
+		allStats = append(allStats, stats)
+		rtpLevelStats[rtpLevel] = append(rtpLevelStats[rtpLevel], stats)
+	}
+
+	// 输出结果
+	fmt.Printf("\n============================================================\n")
+	fmt.Printf("📊 特殊玩法占比检测结果\n")
+	fmt.Printf("============================================================\n")
+
+	// 按档位排序输出
+	var sortedLevels []int
+	for level := range rtpLevelStats {
+		sortedLevels = append(sortedLevels, level)
+	}
+	sort.Ints(sortedLevels)
+
+	for _, level := range sortedLevels {
+		stats := rtpLevelStats[level]
+		sort.Slice(stats, func(i, j int) bool {
+			return stats[i].TestNumber < stats[j].TestNumber
+		})
+
+		totalRecords := 0
+		totalSpecial := 0
+		for _, s := range stats {
+			totalRecords += s.TotalRecords
+			totalSpecial += s.SpecialCount
+		}
+		avgRatio := float64(totalSpecial) / float64(totalRecords)
+
+		fmt.Printf("\n🎯 档位 %d:\n", level)
+		fmt.Printf("   文件数: %d\n", len(stats))
+		fmt.Printf("   总记录数: %d\n", totalRecords)
+		fmt.Printf("   特殊玩法数: %d\n", totalSpecial)
+		fmt.Printf("   平均占比: %.4f (%.2f%%)\n", avgRatio, avgRatio*100)
+
+		if level == 13 {
+			if avgRatio < 0.01 {
+				fmt.Printf("   ⚠️ 警告：占比 %.4f < 0.01 (1%%)，未达到要求！\n", avgRatio)
+			} else {
+				fmt.Printf("   ✅ 占比 %.4f ≥ 0.01 (1%%)，符合要求\n", avgRatio)
+			}
+		}
+
+		// 显示每个文件的详细统计
+		if len(stats) <= 10 {
+			fmt.Printf("   详细统计:\n")
+			for _, s := range stats {
+				status := "✅"
+				if s.SpecialRatio < 0.01 {
+					status = "⚠️"
+				}
+				fmt.Printf("     %s %s: 总数=%d, 特殊玩法=%d, 占比=%.4f\n",
+					status, s.FileName, s.TotalRecords, s.SpecialCount, s.SpecialRatio)
+			}
+		}
+	}
+
+	fmt.Printf("\n============================================================\n")
+}
+
 func runGenerateFbMode() {
 	// 加载配置
 	config, err := LoadConfig("config.yaml")
@@ -2792,6 +3582,21 @@ func runGenerateFbMode() {
 	}
 	fmt.Printf("✅ [generateFb] 购买模式不中奖数据条数: %d\n", len(noWinDataAll))
 
+	// 13档位特殊处理：预先查询所有特殊玩法数据（包含完整gd字段）和ID列表
+	fmt.Println("🔄 [generateFb] 正在获取特殊玩法数据（用于13档位占比控制）...")
+	specialGameplayDataAll, err := db.GetSpecialGameplayDataFb()
+	if err != nil {
+		log.Fatalf("获取特殊玩法数据失败: %v", err)
+	}
+	fmt.Printf("✅ [generateFb] 特殊玩法数据条数: %d\n", len(specialGameplayDataAll))
+
+	// 预先查询特殊玩法ID列表（用于快速判断）
+	specialGameplayIds, err := db.GetSpecialGameplayIds()
+	if err != nil {
+		log.Fatalf("获取特殊玩法ID列表失败: %v", err)
+	}
+	fmt.Printf("✅ [generateFb] 特殊玩法ID数量: %d\n", len(specialGameplayIds))
+
 	if len(winDataAll) == 0 {
 		fmt.Println("⚠️ [generateFb] 未获取到购买模式中奖数据，无法继续。请检查数据条件 (aw>0, gwt<=3, fb=2, sp=true)。")
 		return
@@ -2830,7 +3635,7 @@ func runGenerateFbMode() {
 				fmt.Printf("▶️ [generateFb] 开始生成 | RTP等级 %.0f | 第%d次 | %s\n", rtpNo, testIndex, testStartTime.Format(time.RFC3339))
 				fmt.Printf("🔧 [generateFb] totalBet=%.2f allowWin_base=%.2f\n", totalBet, totalBet*rtpVal)
 
-				if err := runRtpFbTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, profitDataAll); err != nil {
+				if err := runRtpFbTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, profitDataAll, specialGameplayDataAll, specialGameplayIds); err != nil {
 					log.Printf("[generateFb] RTP测试失败: %v", err)
 					// 记录失败的档位和测试（线程安全）
 					failedMu.Lock()
@@ -2855,7 +3660,7 @@ func runGenerateFbMode() {
 }
 
 // runRtpFbTest 生成购买夺宝 RTP 数据（智能替换策略：精确贪心算法）
-func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData, profitDataAll []GameResultData) error {
+func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, testNumber int, totalBet float64, winDataAll []GameResultData, noWinDataAll []GameResultData, profitDataAll []GameResultData, specialGameplayDataAll []GameResultData, specialGameplayIds map[int]bool) error {
 	var logBuf bytes.Buffer
 	printf := func(format string, a ...interface{}) {
 		fmt.Fprintf(&logBuf, format, a...)
@@ -2911,7 +3716,40 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		printf("[FB] 高RTP档位：优先选择盈利数据(aw>tb)\n")
 	}
 
-	// 从主池随机选择
+	// 13档位特殊处理：在初始选择时就确保特殊玩法占比
+	if rtpLevel == 13 {
+		targetSpecialRatio := 0.01 // 1%
+		targetSpecialCount := int(math.Ceil(float64(targetCount) * targetSpecialRatio))
+		printf("[FB] 🎯 13档位：初始选择时确保特殊玩法占比，目标 %d 条（%.1f%%）\n", targetSpecialCount, targetSpecialRatio*100)
+
+		// 从特殊玩法数据中优先选择
+		specialSelected := 0
+		if len(specialGameplayDataAll) > 0 {
+			// 过滤出有效的特殊玩法数据
+			validSpecialData := make([]GameResultData, 0)
+			for _, item := range specialGameplayDataAll {
+				if isSpecialGameplay(item) && !used[item.ID] {
+					validSpecialData = append(validSpecialData, item)
+				}
+			}
+
+			if len(validSpecialData) > 0 {
+				// 随机选择特殊玩法数据
+				perm := rng.Perm(len(validSpecialData))
+				for i := 0; i < targetSpecialCount && i < len(perm) && len(data) < targetCount; i++ {
+					item := validSpecialData[perm[i]]
+					data = append(data, item)
+					used[item.ID] = true
+					specialSelected++
+				}
+				printf("[FB] ✅ 已优先选择 %d 条特殊玩法数据\n", specialSelected)
+			} else {
+				printf("[FB] ⚠️ 警告：没有可用的特殊玩法数据\n")
+			}
+		}
+	}
+
+	// 从主池随机选择（排除已使用的特殊玩法数据）
 	if len(primaryPool) > 0 {
 		perm := rng.Perm(len(primaryPool))
 		for _, idx := range perm {
@@ -2919,8 +3757,10 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 				break
 			}
 			item := primaryPool[idx]
-			data = append(data, item)
-			used[item.ID] = true
+			if !used[item.ID] {
+				data = append(data, item)
+				used[item.ID] = true
+			}
 		}
 	}
 
@@ -2944,6 +3784,42 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		shortage := targetCount - len(data)
 		printf("[FB] ⚠️ 数据不足：需要 %d 条，可用 %d 条，将通过重复补齐 %d 条\n", targetCount, len(data), shortage)
 
+		// 13档位：补齐时也要确保特殊玩法占比
+		if rtpLevel == 13 {
+			// 统计当前特殊玩法数量
+			currentSpecialCount := 0
+			for _, item := range data {
+				if specialGameplayIds[item.ID] {
+					currentSpecialCount++
+				}
+			}
+			targetSpecialRatio := 0.01
+			targetSpecialCount := int(math.Ceil(float64(targetCount) * targetSpecialRatio))
+			stillNeedSpecial := targetSpecialCount - currentSpecialCount
+
+			if stillNeedSpecial > 0 {
+				printf("[FB] 🎯 补齐时确保特殊玩法占比：当前 %d 条，目标 %d 条，还需 %d 条\n",
+					currentSpecialCount, targetSpecialCount, stillNeedSpecial)
+
+				// 优先用特殊玩法数据补齐
+				if len(specialGameplayDataAll) > 0 {
+					validSpecialData := make([]GameResultData, 0)
+					for _, item := range specialGameplayDataAll {
+						if isSpecialGameplay(item) {
+							validSpecialData = append(validSpecialData, item)
+						}
+					}
+					if len(validSpecialData) > 0 {
+						perm := rng.Perm(len(validSpecialData))
+						for i := 0; i < stillNeedSpecial && i < shortage && i < len(perm); i++ {
+							data = append(data, validSpecialData[perm[i]])
+						}
+						printf("[FB] ✅ 用特殊玩法数据补齐了 %d 条\n", int(math.Min(float64(stillNeedSpecial), float64(shortage))))
+					}
+				}
+			}
+		}
+
 		// 使用已选择的数据作为填充源
 		fillSource := make([]GameResultData, len(data))
 		copy(fillSource, data)
@@ -2960,8 +3836,9 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		}
 
 		if len(fillSource) > 0 {
-			// 重复填充
-			for i := 0; i < shortage; i++ {
+			// 重复填充剩余数量
+			remainingShortage := targetCount - len(data)
+			for i := 0; i < remainingShortage; i++ {
 				idx := rng.Intn(len(fillSource))
 				data = append(data, fillSource[idx])
 			}
@@ -2978,6 +3855,61 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	}
 	currentRTP := totalWin / totalBet
 	printf("[FB] 初始RTP=%.6f (目标=%.6f, 偏差=%.6f)\n", currentRTP, rtp, currentRTP-rtp)
+
+	// 13档位：在RTP调整前，先确保特殊玩法占比达到1%
+	if rtpLevel == 13 {
+		currentSpecialCount := 0
+		for _, item := range data {
+			if specialGameplayIds[item.ID] {
+				currentSpecialCount++
+			}
+		}
+		currentSpecialRatio := float64(currentSpecialCount) / float64(len(data))
+		targetSpecialRatio := 0.01
+		targetSpecialCount := int(math.Ceil(float64(len(data)) * targetSpecialRatio))
+
+		if currentSpecialCount < targetSpecialCount {
+			stillNeed := targetSpecialCount - currentSpecialCount
+			printf("[FB] 🎯 RTP调整前：特殊玩法占比 %.4f，先强制补充 %d 条\n", currentSpecialRatio, stillNeed)
+
+			// 找出普通数据索引
+			normalIndices := make([]int, 0)
+			for i, item := range data {
+				if !specialGameplayIds[item.ID] {
+					normalIndices = append(normalIndices, i)
+				}
+			}
+
+			// 用特殊玩法数据替换
+			if len(specialGameplayDataAll) > 0 && len(normalIndices) > 0 {
+				validSpecialData := make([]GameResultData, 0)
+				for _, item := range specialGameplayDataAll {
+					if isSpecialGameplay(item) {
+						validSpecialData = append(validSpecialData, item)
+					}
+				}
+				if len(validSpecialData) > 0 {
+					perm := rng.Perm(len(validSpecialData))
+					replaced := 0
+					for i := 0; i < stillNeed && i < len(normalIndices); i++ {
+						normalIdx := normalIndices[i]
+						specialIdx := perm[i%len(perm)]
+						originalItem := data[normalIdx]
+						specialItem := validSpecialData[specialIdx]
+						// 整条数据替换
+						data[normalIdx] = specialItem
+						totalWin = totalWin - originalItem.AW + specialItem.AW
+						used[specialItem.ID] = true
+						replaced++
+					}
+					printf("[FB] ✅ RTP调整前补充了 %d 条特殊玩法数据，当前RTP: %.6f\n", replaced, totalWin/totalBet)
+
+					// 重新计算RTP
+					currentRTP = totalWin / totalBet
+				}
+			}
+		}
+	}
 
 	// 步骤2：智能RTP精确调整（贪心算法）
 	if math.Abs(currentRTP-rtp) > rtpTolerance {
@@ -3014,9 +3946,16 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 				idx  int
 				item GameResultData
 			}
-			indexedItems := make([]indexedData, len(data))
+			indexedItems := make([]indexedData, 0)
+			// 13档位：只选择非特殊玩法数据进行替换，保护特殊玩法数据
 			for i, item := range data {
-				indexedItems[i] = indexedData{idx: i, item: item}
+				if rtpLevel == 13 {
+					// 13档位：跳过特殊玩法数据
+					if specialGameplayIds[item.ID] {
+						continue
+					}
+				}
+				indexedItems = append(indexedItems, indexedData{idx: i, item: item})
 			}
 			sort.Slice(indexedItems, func(i, j int) bool {
 				return indexedItems[i].item.AW < indexedItems[j].item.AW
@@ -3031,6 +3970,11 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 
 			for dataIdx := 0; dataIdx < len(indexedItems) && replacedCount < maxReplaceIterations; dataIdx++ {
 				oldItem := indexedItems[dataIdx].item
+
+				// 13档位：确保不替换特殊玩法数据（双重检查）
+				if rtpLevel == 13 && specialGameplayIds[oldItem.ID] {
+					continue
+				}
 
 				// 寻找最佳替换候选（最接近目标增量的）
 				bestCandidateIdx := -1
@@ -3195,9 +4139,16 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 				idx  int
 				item GameResultData
 			}
-			indexedItems := make([]indexedData, len(data))
+			indexedItems := make([]indexedData, 0)
+			// 13档位：只选择非特殊玩法数据进行替换，保护特殊玩法数据
 			for i, item := range data {
-				indexedItems[i] = indexedData{idx: i, item: item}
+				if rtpLevel == 13 {
+					// 13档位：跳过特殊玩法数据
+					if specialGameplayIds[item.ID] {
+						continue
+					}
+				}
+				indexedItems = append(indexedItems, indexedData{idx: i, item: item})
 			}
 			sort.Slice(indexedItems, func(i, j int) bool {
 				return indexedItems[i].item.AW > indexedItems[j].item.AW
@@ -3207,6 +4158,11 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 			candidateIdx := 0
 			for dataIdx := 0; dataIdx < len(indexedItems) && candidateIdx < len(replacementCandidates) && replacedCount < maxReplaceIterations; dataIdx++ {
 				oldItem := indexedItems[dataIdx].item
+
+				// 13档位：确保不替换特殊玩法数据（双重检查）
+				if rtpLevel == 13 && specialGameplayIds[oldItem.ID] {
+					continue
+				}
 
 				// 寻找最佳替换候选（最接近目标减量的）
 				bestCandidateIdx := -1
@@ -3272,6 +4228,57 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		deviationPercent := (rtpDeviation / rtp) * 100
 		printf("[FB] 替换完成：替换了%d条数据，当前RTP=%.6f (偏差=%.6f, %.2f%%)\n",
 			replacedCount, currentRTP, math.Abs(rtpDeviation), math.Abs(deviationPercent))
+
+		// 13档位：RTP调整后立即检查特殊玩法占比，如果不足则补充
+		if rtpLevel == 13 {
+			currentSpecialCount := 0
+			for _, item := range data {
+				if specialGameplayIds[item.ID] {
+					currentSpecialCount++
+				}
+			}
+			currentSpecialRatio := float64(currentSpecialCount) / float64(len(data))
+			targetSpecialRatio := 0.01
+			targetSpecialCount := int(math.Ceil(float64(len(data)) * targetSpecialRatio))
+
+			if currentSpecialCount < targetSpecialCount {
+				stillNeed := targetSpecialCount - currentSpecialCount
+				printf("[FB] 🎯 RTP调整后检查：特殊玩法占比 %.4f，需要补充 %d 条\n", currentSpecialRatio, stillNeed)
+
+				// 找出普通数据索引
+				normalIndices := make([]int, 0)
+				for i, item := range data {
+					if !specialGameplayIds[item.ID] {
+						normalIndices = append(normalIndices, i)
+					}
+				}
+
+				// 用特殊玩法数据替换
+				if len(specialGameplayDataAll) > 0 && len(normalIndices) > 0 {
+					validSpecialData := make([]GameResultData, 0)
+					for _, item := range specialGameplayDataAll {
+						if isSpecialGameplay(item) {
+							validSpecialData = append(validSpecialData, item)
+						}
+					}
+					if len(validSpecialData) > 0 {
+						perm := rng.Perm(len(validSpecialData))
+						replaced := 0
+						for i := 0; i < stillNeed && i < len(normalIndices); i++ {
+							normalIdx := normalIndices[i]
+							specialIdx := perm[i%len(perm)]
+							originalItem := data[normalIdx]
+							specialItem := validSpecialData[specialIdx]
+							// 整条数据替换
+							data[normalIdx] = specialItem
+							totalWin = totalWin - originalItem.AW + specialItem.AW
+							replaced++
+						}
+						printf("[FB] ✅ RTP调整后补充了 %d 条特殊玩法数据\n", replaced)
+					}
+				}
+			}
+		}
 	}
 
 	// 最终统计与保存
@@ -3303,11 +4310,508 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	}
 	printf("🔎 [FB] 去重统计: 总数=%d, 唯一=%d, 重复=%d, 重复率=%.4f\n", len(data), len(uniq), dupCount, dupRate)
 
+	// 13档位特殊处理：调整特殊玩法占比至少为1%
+	if rtpLevel == 13 {
+		targetSpecialRatio := 0.01 // 1%，最低要求
+		currentSpecialCount := 0
+		var normalItems []GameResultData
+		normalItemIndices := make([]int, 0) // 记录普通数据在data中的索引
+
+		// 分类数据：使用特殊玩法ID列表判断（因为data中的GD字段可能是空的）
+		for i, item := range data {
+			if specialGameplayIds[item.ID] {
+				currentSpecialCount++
+			} else {
+				normalItems = append(normalItems, item)
+				normalItemIndices = append(normalItemIndices, i)
+			}
+		}
+
+		currentSpecialRatio := float64(currentSpecialCount) / float64(len(data))
+		targetSpecialCount := int(math.Ceil(float64(len(data)) * targetSpecialRatio)) // 使用Ceil确保至少达到1%
+		printf("[FB] 🎯 13档位特殊玩法调整: 当前占比=%.4f (%d条), 目标占比≥%.4f (%d条)\n",
+			currentSpecialRatio, currentSpecialCount, targetSpecialRatio, targetSpecialCount)
+
+		// 如果当前占比小于目标，需要增加特殊玩法数据
+		if currentSpecialCount < targetSpecialCount {
+			adjustment := targetSpecialCount - currentSpecialCount
+			printf("[FB] 🔼 需要增加 %d 条特殊玩法数据（确保至少达到1%%）\n", adjustment)
+
+			// 使用预先查询的特殊玩法数据
+			if len(specialGameplayDataAll) == 0 {
+				printf("[FB] ⚠️ 警告：未找到任何特殊玩法数据，无法调整占比\n")
+			} else {
+				// 验证特殊玩法数据（使用ID列表验证，更可靠）
+				validSpecialCount := 0
+				for _, item := range specialGameplayDataAll {
+					if specialGameplayIds[item.ID] {
+						validSpecialCount++
+					}
+				}
+				printf("[FB] 📊 特殊玩法数据池: 总数=%d, 有效特殊玩法=%d（通过ID验证）\n", len(specialGameplayDataAll), validSpecialCount)
+
+				// 为每个需要替换的普通数据，找到金额最接近的特殊玩法数据
+				replaced := 0
+				usedSpecialIds := make(map[int]bool) // 记录已使用的特殊玩法数据ID
+
+				// 对普通数据按金额排序，便于匹配
+				type indexedNormalItem struct {
+					idx  int
+					item GameResultData
+				}
+				indexedNormals := make([]indexedNormalItem, len(normalItems))
+				for i, item := range normalItems {
+					indexedNormals[i] = indexedNormalItem{idx: normalItemIndices[i], item: item}
+				}
+				// 按AW排序
+				sort.Slice(indexedNormals, func(i, j int) bool {
+					return indexedNormals[i].item.AW < indexedNormals[j].item.AW
+				})
+
+				// 过滤出有效的特殊玩法数据（确保能被isSpecialGameplay识别）
+				validSpecialData := make([]GameResultData, 0)
+				for _, item := range specialGameplayDataAll {
+					if isSpecialGameplay(item) {
+						validSpecialData = append(validSpecialData, item)
+					}
+				}
+
+				if len(validSpecialData) == 0 {
+					printf("[FB] ⚠️ 警告：特殊玩法数据池中没有能被识别的特殊玩法数据\n")
+				} else {
+					// 对特殊玩法数据按金额排序
+					sort.Slice(validSpecialData, func(i, j int) bool {
+						return validSpecialData[i].AW < validSpecialData[j].AW
+					})
+
+					// 为每个普通数据找到金额最接近的特殊玩法数据
+					for _, indexedNormal := range indexedNormals {
+						if replaced >= adjustment {
+							break
+						}
+
+						normalAW := indexedNormal.item.AW
+						bestSpecialIdx := -1
+						bestDiff := math.MaxFloat64
+
+						// 在特殊玩法数据中查找金额最接近的
+						for i, specialItem := range validSpecialData {
+							if usedSpecialIds[specialItem.ID] {
+								continue
+							}
+							diff := math.Abs(specialItem.AW - normalAW)
+							if diff < bestDiff {
+								bestDiff = diff
+								bestSpecialIdx = i
+							}
+							// 如果找到非常接近的（差异小于5%），直接使用
+							if diff < normalAW*0.05 || diff < 1.0 {
+								break
+							}
+						}
+
+						// 如果找到了合适的特殊玩法数据，进行替换（整条数据替换）
+						if bestSpecialIdx >= 0 {
+							specialItem := validSpecialData[bestSpecialIdx]
+							originalItem := data[indexedNormal.idx]
+							// 整条数据替换
+							data[indexedNormal.idx] = specialItem
+							usedSpecialIds[specialItem.ID] = true
+							replaced++
+							// 更新总中奖金额（因为AW可能改变了）
+							totalWin = totalWin - originalItem.AW + specialItem.AW
+							printf("[FB]   替换: 普通数据(id=%d, aw=%.2f) -> 特殊玩法(id=%d, aw=%.2f, aw变化=%.2f)\n",
+								indexedNormal.item.ID, indexedNormal.item.AW, specialItem.ID, specialItem.AW, specialItem.AW-originalItem.AW)
+						}
+					}
+
+					// 如果还有需要替换的，允许重复使用特殊玩法数据
+					if replaced < adjustment {
+						printf("[FB] ⚠️ 特殊玩法数据不足，允许重复使用以完成替换（还需 %d 条）\n", adjustment-replaced)
+						// 随机选择特殊玩法数据重复使用
+						if len(validSpecialData) > 0 {
+							perm := rng.Perm(len(validSpecialData))
+							for i := replaced; i < adjustment; i++ {
+								normalIdx := normalItemIndices[i-replaced]
+								specialIdx := perm[(i-replaced)%len(perm)]
+								originalItem := data[normalIdx]
+								specialItem := validSpecialData[specialIdx]
+								// 整条数据替换
+								data[normalIdx] = specialItem
+								// 更新总中奖金额
+								totalWin = totalWin - originalItem.AW + specialItem.AW
+								replaced++
+								printf("[FB]   重复替换: 普通数据(id=%d, aw=%.2f) -> 特殊玩法(id=%d, aw=%.2f, aw变化=%.2f)\n",
+									normalItems[i-replaced].ID, originalItem.AW, specialItem.ID, specialItem.AW, specialItem.AW-originalItem.AW)
+							}
+						}
+					}
+
+					printf("[FB] ✅ 已替换 %d 条数据为特殊玩法（目标 %d 条）\n", replaced, adjustment)
+				}
+			}
+		} else {
+			printf("[FB] ✅ 特殊玩法占比已符合要求(%.4f ≥ %.4f)，无需调整\n", currentSpecialRatio, targetSpecialRatio)
+		}
+
+		// 重新统计调整后的占比和RTP，并验证是否达到目标（使用ID列表判断）
+		finalSpecialCount := 0
+		var finalTotalWin float64
+		for _, item := range data {
+			if specialGameplayIds[item.ID] {
+				finalSpecialCount++
+			}
+			finalTotalWin += item.AW
+		}
+		finalSpecialRatio := float64(finalSpecialCount) / float64(len(data))
+		finalRTPAfterAdjust := finalTotalWin / totalBet
+
+		// 如果仍未达到目标，强制替换直到达到1%（循环直到达到目标）
+		maxRetries := 10 // 最多重试10次
+		retryCount := 0
+		for finalSpecialRatio < targetSpecialRatio && retryCount < maxRetries {
+			stillNeed := targetSpecialCount - finalSpecialCount
+			printf("[FB] ⚠️ 调整后占比仍不足(%.4f < %.4f)，需要再替换 %d 条数据（重试 %d/%d）\n",
+				finalSpecialRatio, targetSpecialRatio, stillNeed, retryCount+1, maxRetries)
+
+			// 找出所有普通数据的索引（使用ID列表判断）
+			remainingNormalIndices := make([]int, 0)
+			for i, item := range data {
+				if !specialGameplayIds[item.ID] {
+					remainingNormalIndices = append(remainingNormalIndices, i)
+				}
+			}
+
+			if len(remainingNormalIndices) == 0 {
+				printf("[FB] ⚠️ 没有更多普通数据可替换\n")
+				break
+			}
+
+			// 使用所有可用的特殊玩法数据（包括重复）
+			if len(specialGameplayDataAll) > 0 {
+				validSpecialData := make([]GameResultData, 0)
+				for _, item := range specialGameplayDataAll {
+					if isSpecialGameplay(item) {
+						validSpecialData = append(validSpecialData, item)
+					}
+				}
+
+				if len(validSpecialData) > 0 {
+					perm := rng.Perm(len(validSpecialData))
+					replaced := 0
+					for i := 0; i < stillNeed && i < len(remainingNormalIndices); i++ {
+						normalIdx := remainingNormalIndices[i]
+						specialIdx := perm[i%len(perm)]
+						originalItem := data[normalIdx]
+						specialItem := validSpecialData[specialIdx]
+						// 整条数据替换
+						data[normalIdx] = specialItem
+						// 更新总中奖金额
+						totalWin = totalWin - originalItem.AW + specialItem.AW
+						replaced++
+						printf("[FB]   强制替换[%d]: 普通数据(id=%d, aw=%.2f) -> 特殊玩法(id=%d, aw=%.2f, aw变化=%.2f)\n",
+							i+1, originalItem.ID, originalItem.AW, specialItem.ID, specialItem.AW, specialItem.AW-originalItem.AW)
+					}
+					printf("[FB] 🔄 强制替换了 %d 条数据\n", replaced)
+
+					// 再次统计（使用ID列表判断）
+					finalSpecialCount = 0
+					finalTotalWin = 0
+					for _, item := range data {
+						if specialGameplayIds[item.ID] {
+							finalSpecialCount++
+						}
+						finalTotalWin += item.AW
+					}
+					finalSpecialRatio = float64(finalSpecialCount) / float64(len(data))
+					finalRTPAfterAdjust = finalTotalWin / totalBet
+					retryCount++
+				} else {
+					printf("[FB] ⚠️ 没有有效的特殊玩法数据可用\n")
+					break
+				}
+			} else {
+				printf("[FB] ⚠️ 特殊玩法数据池为空\n")
+				break
+			}
+		}
+
+		// 最终验证是否达到最低要求
+		if finalSpecialRatio >= targetSpecialRatio {
+			printf("[FB] ✅ 最终特殊玩法占比: %.4f (≥目标: %.4f) ✓\n", finalSpecialRatio, targetSpecialRatio)
+		} else {
+			printf("[FB] ⚠️ 最终特殊玩法占比: %.4f (<目标: %.4f)，可能因候选数据不足\n", finalSpecialRatio, targetSpecialRatio)
+		}
+		printf("[FB] 📊 调整后RTP: %.6f (调整前: %.6f, 目标: %.6f)\n", finalRTPAfterAdjust, finalRTP, rtp)
+
+		// 如果RTP有偏差，需要调整其他数据来补偿
+		rtpTolerance := 0.005
+		if math.Abs(finalRTPAfterAdjust-rtp) > rtpTolerance {
+			rtpGap := rtp - finalRTPAfterAdjust
+			targetWin := totalBet * rtp
+			winGap := targetWin - finalTotalWin
+			printf("[FB] 🔧 RTP偏差 %.6f，需要调整 %.2f 中奖金额来补偿\n", finalRTPAfterAdjust-rtp, winGap)
+
+			// 使用现有的RTP调整逻辑来补偿
+			if rtpGap > 0 {
+				// RTP不足，需要增加金额
+				printf("[FB] 🔼 RTP不足，通过替换其他数据增加金额...\n")
+				// 找出非特殊玩法的数据，用高金额数据替换
+				var normalDataIndices []int
+				for i, item := range data {
+					if !specialGameplayIds[item.ID] {
+						normalDataIndices = append(normalDataIndices, i)
+					}
+				}
+
+				// 准备高金额候选数据（排除特殊玩法数据）
+				var highCandidates []GameResultData
+				for _, item := range profitCandidates {
+					if !specialGameplayIds[item.ID] && !used[item.ID] {
+						highCandidates = append(highCandidates, item)
+					}
+				}
+				for _, item := range winCandidates {
+					if !specialGameplayIds[item.ID] && !used[item.ID] {
+						highCandidates = append(highCandidates, item)
+					}
+				}
+				sort.Slice(highCandidates, func(i, j int) bool {
+					return highCandidates[i].AW > highCandidates[j].AW
+				})
+
+				// 对普通数据按金额排序
+				type indexedNormal struct {
+					idx  int
+					item GameResultData
+				}
+				indexedNormals := make([]indexedNormal, len(normalDataIndices))
+				for i, idx := range normalDataIndices {
+					indexedNormals[i] = indexedNormal{idx: idx, item: data[idx]}
+				}
+				sort.Slice(indexedNormals, func(i, j int) bool {
+					return indexedNormals[i].item.AW < indexedNormals[j].item.AW
+				})
+
+				// 替换低金额数据为高金额数据
+				compensated := 0
+				for i, indexedNormal := range indexedNormals {
+					if compensated >= len(highCandidates) || finalTotalWin >= targetWin {
+						break
+					}
+					if i < len(highCandidates) {
+						oldItem := data[indexedNormal.idx]
+						newItem := highCandidates[i]
+						if newItem.AW > oldItem.AW {
+							data[indexedNormal.idx] = newItem
+							finalTotalWin = finalTotalWin - oldItem.AW + newItem.AW
+							compensated++
+							if math.Abs(finalTotalWin-targetWin) < 10 {
+								break
+							}
+						}
+					}
+				}
+				printf("[FB] ✅ 补偿替换了 %d 条数据，当前RTP: %.6f\n", compensated, finalTotalWin/totalBet)
+			} else {
+				// RTP过高，需要减少金额
+				printf("[FB] 🔽 RTP过高，通过替换其他数据减少金额...\n")
+				// 找出非特殊玩法的数据，用低金额数据替换
+				var normalDataIndices []int
+				for i, item := range data {
+					if !specialGameplayIds[item.ID] {
+						normalDataIndices = append(normalDataIndices, i)
+					}
+				}
+
+				// 准备低金额候选数据（排除特殊玩法数据）
+				var lowCandidates []GameResultData
+				for _, item := range noWinDataAll {
+					if !specialGameplayIds[item.ID] && !used[item.ID] {
+						lowCandidates = append(lowCandidates, item)
+					}
+				}
+				for _, item := range winCandidates {
+					if !specialGameplayIds[item.ID] && !used[item.ID] && item.AW < data[normalDataIndices[0]].AW {
+						lowCandidates = append(lowCandidates, item)
+					}
+				}
+				sort.Slice(lowCandidates, func(i, j int) bool {
+					return lowCandidates[i].AW < lowCandidates[j].AW
+				})
+
+				// 对普通数据按金额降序排序
+				type indexedNormal struct {
+					idx  int
+					item GameResultData
+				}
+				indexedNormals := make([]indexedNormal, len(normalDataIndices))
+				for i, idx := range normalDataIndices {
+					indexedNormals[i] = indexedNormal{idx: idx, item: data[idx]}
+				}
+				sort.Slice(indexedNormals, func(i, j int) bool {
+					return indexedNormals[i].item.AW > indexedNormals[j].item.AW
+				})
+
+				// 替换高金额数据为低金额数据
+				compensated := 0
+				for i, indexedNormal := range indexedNormals {
+					if compensated >= len(lowCandidates) || finalTotalWin <= targetWin {
+						break
+					}
+					if i < len(lowCandidates) {
+						oldItem := data[indexedNormal.idx]
+						newItem := lowCandidates[i]
+						if newItem.AW < oldItem.AW {
+							data[indexedNormal.idx] = newItem
+							finalTotalWin = finalTotalWin - oldItem.AW + newItem.AW
+							compensated++
+							if math.Abs(finalTotalWin-targetWin) < 10 {
+								break
+							}
+						}
+					}
+				}
+				printf("[FB] ✅ 补偿替换了 %d 条数据，当前RTP: %.6f\n", compensated, finalTotalWin/totalBet)
+			}
+
+			// 重新计算最终RTP
+			finalTotalWin = 0
+			for _, item := range data {
+				finalTotalWin += item.AW
+			}
+			finalRTPAfterAdjust = finalTotalWin / totalBet
+			printf("[FB] 📊 最终RTP: %.6f (目标: %.6f, 偏差: %.6f)\n", finalRTPAfterAdjust, rtp, math.Abs(finalRTPAfterAdjust-rtp))
+		}
+	}
+
+	// 13档位：保存前最后验证一次特殊玩法占比（使用ID列表判断）
+	if rtpLevel == 13 {
+		verifySpecialCount := 0
+		for _, item := range data {
+			if specialGameplayIds[item.ID] {
+				verifySpecialCount++
+			}
+		}
+		verifySpecialRatio := float64(verifySpecialCount) / float64(len(data))
+		targetSpecialRatio := 0.01
+		if verifySpecialRatio < targetSpecialRatio {
+			printf("[FB] ⚠️ 保存前验证：特殊玩法占比 %.4f < 目标 %.4f，强制最后一次替换\n", verifySpecialRatio, targetSpecialRatio)
+			targetSpecialCount := int(math.Ceil(float64(len(data)) * targetSpecialRatio))
+			stillNeed := targetSpecialCount - verifySpecialCount
+
+			// 找出普通数据索引（使用ID列表判断）
+			normalIndices := make([]int, 0)
+			for i, item := range data {
+				if !specialGameplayIds[item.ID] {
+					normalIndices = append(normalIndices, i)
+				}
+			}
+
+			// 使用特殊玩法数据替换（整条数据替换）
+			if len(specialGameplayDataAll) > 0 && len(normalIndices) > 0 {
+				// 直接使用specialGameplayDataAll，因为查询条件已经确保是特殊玩法
+				// 但为了安全，还是验证一下
+				validSpecialData := make([]GameResultData, 0)
+				for _, item := range specialGameplayDataAll {
+					// 使用ID列表验证，更可靠
+					if specialGameplayIds[item.ID] {
+						validSpecialData = append(validSpecialData, item)
+					}
+				}
+
+				if len(validSpecialData) == 0 {
+					// 如果ID验证失败，尝试使用isSpecialGameplay
+					for _, item := range specialGameplayDataAll {
+						if isSpecialGameplay(item) {
+							validSpecialData = append(validSpecialData, item)
+						}
+					}
+				}
+
+				if len(validSpecialData) > 0 {
+					perm := rng.Perm(len(validSpecialData))
+					replaced := 0
+					for i := 0; i < stillNeed && i < len(normalIndices); i++ {
+						normalIdx := normalIndices[i]
+						specialIdx := perm[i%len(perm)]
+						originalItem := data[normalIdx]
+						specialItem := validSpecialData[specialIdx]
+						// 整条数据替换
+						data[normalIdx] = specialItem
+						// 更新总中奖金额
+						totalWin = totalWin - originalItem.AW + specialItem.AW
+						replaced++
+					}
+					printf("[FB] ✅ 保存前强制替换了 %d 条数据（整条替换，目标 %d 条）\n", replaced, stillNeed)
+
+					// 最终验证（使用ID列表判断）
+					finalVerifyCount := 0
+					var finalVerifyTotalWin float64
+					for _, item := range data {
+						if specialGameplayIds[item.ID] {
+							finalVerifyCount++
+						}
+						finalVerifyTotalWin += item.AW
+					}
+					finalVerifyRatio := float64(finalVerifyCount) / float64(len(data))
+					finalVerifyRTP := finalVerifyTotalWin / totalBet
+					printf("[FB] ✅ 保存前最终验证：特殊玩法占比 %.4f (目标: %.4f), RTP: %.6f (目标: %.6f, 偏差: %.6f)\n",
+						finalVerifyRatio, targetSpecialRatio, finalVerifyRTP, rtp, math.Abs(finalVerifyRTP-rtp))
+
+					// 如果RTP偏差较大，需要调整（但保存前调整可能影响占比，所以只记录）
+					if math.Abs(finalVerifyRTP-rtp) > 0.01 {
+						printf("[FB] ⚠️ 保存前RTP偏差较大 %.6f，建议重新生成以确保RTP准确\n", finalVerifyRTP-rtp)
+					}
+				}
+			}
+		} else {
+			printf("[FB] ✅ 保存前验证：特殊玩法占比 %.4f ≥ 目标 %.4f ✓\n", verifySpecialRatio, targetSpecialRatio)
+		}
+	}
+
 	// 打乱输出顺序并写文件
 	rand.Shuffle(len(data), func(i, j int) { data[i], data[j] = data[j], data[i] })
 	outDir := filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
 	if err := saveToJSON(data, config, rtpLevel, testNumber, outDir); err != nil {
 		return fmt.Errorf("[FB] 保存JSON失败: %v", err)
+	}
+
+	// 13档位：保存后再次检测JSON文件中的特殊玩法占比
+	if rtpLevel == 13 {
+		// 读取刚保存的JSON文件进行验证
+		fileName := fmt.Sprintf("%s%d_%.0f_%d.json", config.Tables.OutputTablePrefix, config.Game.Mode, rtpLevel, testNumber)
+		filePath := filepath.Join(outDir, fileName)
+		if verifyData, err := os.ReadFile(filePath); err == nil {
+			var jsonData struct {
+				Data []map[string]interface{} `json:"data"`
+			}
+			if err := json.Unmarshal(verifyData, &jsonData); err == nil {
+				specialCount := 0
+				totalCount := len(jsonData.Data)
+				for _, item := range jsonData.Data {
+					if gd, ok := item["gd"].([]interface{}); ok && len(gd) > 0 {
+						if firstElem, ok := gd[0].(map[string]interface{}); ok {
+							if dataField, ok := firstElem["data"].(map[string]interface{}); ok {
+								if props, ok := dataField["props"].([]interface{}); ok {
+									if len(props) > 1 {
+										specialCount++
+									}
+								}
+							}
+						}
+					}
+				}
+				verifyRatio := float64(specialCount) / float64(totalCount)
+				printf("[FB] 📊 保存后检测：文件 %s，总记录数=%d，特殊玩法=%d，占比=%.4f\n",
+					fileName, totalCount, specialCount, verifyRatio)
+				if verifyRatio < 0.01 {
+					printf("[FB] ⚠️ 警告：保存后检测发现占比 %.4f < 0.01，可能需要重新生成\n", verifyRatio)
+				} else {
+					printf("[FB] ✅ 保存后检测：占比 %.4f ≥ 0.01 ✓\n", verifyRatio)
+				}
+			}
+		}
 	}
 
 	outputMu.Lock()
