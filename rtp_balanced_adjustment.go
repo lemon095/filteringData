@@ -118,7 +118,84 @@ func adjustRTPBalanced(data []GameResultData, targetRTP float64, totalBet float6
 	}
 
 	// 如果还有RTP差距，进行最后的微调
-	if CalculateRTP(result, totalBet) < targetRTP {
+	currentRTPAfter := CalculateRTP(result, totalBet)
+	if currentRTPAfter < targetRTP {
+		// 如果RTP差距仍然很大（比如差距超过0.1），说明只替换中奖数据无法满足要求
+		// 需要替换零倍数据来提升RTP，但要控制中奖率
+		rtpGapRemaining := targetRTP - currentRTPAfter
+		if rtpGapRemaining > 0.1 {
+			// 计算当前中奖率
+			currentWinCount := 0
+			for _, item := range result {
+				if item.AW > 0 {
+					currentWinCount++
+				}
+			}
+			currentWinRate := float64(currentWinCount) / float64(len(result))
+			
+			// 计算目标中奖率（从配置获取）
+			// 对于13档位，目标中奖率是23%（不中奖率77%）
+			targetWinRate := 0.23 // 默认23%，可以根据需要调整
+			
+			// 如果当前中奖率远低于目标中奖率，允许替换更多零倍数据
+			// 但最多允许中奖率提高到目标中奖率+5%
+			maxAllowedWinRate := targetWinRate + 0.05
+			maxAllowedWinCount := int(float64(len(result)) * maxAllowedWinRate)
+			maxZeroReplacements := maxAllowedWinCount - currentWinCount
+			
+			// 如果当前中奖率已经很低（比如低于10%），说明需要大量替换零倍数据
+			// 此时应该允许替换更多零倍数据，以达到目标中奖率
+			if currentWinRate < 0.1 && currentWinRate < targetWinRate {
+				// 允许替换到目标中奖率
+				maxZeroReplacements = int(float64(len(result)) * targetWinRate) - currentWinCount
+			}
+			
+			if maxZeroReplacements > 0 && rtpGapRemaining > 0.1 {
+				// 找到零倍数据
+				var zeroWinIndices []int
+				for i, item := range result {
+					if item.AW == 0 {
+						zeroWinIndices = append(zeroWinIndices, i)
+					}
+				}
+				
+				// 限制替换数量
+				if len(zeroWinIndices) > maxZeroReplacements {
+					zeroWinIndices = zeroWinIndices[:maxZeroReplacements]
+				}
+				
+				// 收集可用的中奖数据（优先使用低倍率数据，保持中奖率稳定）
+				var winData []GameResultData
+				for _, rangeName := range []string{"low_multiplier", "medium_multiplier", "high_multiplier"} {
+					if len(dataRanges[rangeName].Data) > 0 {
+						winData = append(winData, dataRanges[rangeName].Data...)
+					}
+				}
+				
+				// 按金额从小到大排序，优先使用金额低的数据
+				sort.Slice(winData, func(i, j int) bool {
+					return winData[i].AW < winData[j].AW
+				})
+				
+				// 替换零倍数据
+				zeroReplacedCount := 0
+				for i := 0; i < len(zeroWinIndices) && i < len(winData) && zeroReplacedCount < maxZeroReplacements; i++ {
+					zeroIdx := zeroWinIndices[i]
+					winItem := winData[i%len(winData)]
+					result[zeroIdx] = winItem
+					zeroReplacedCount++
+					
+					// 检查RTP是否满足要求
+					newRTP := CalculateRTP(result, totalBet)
+					rtpTolerance := getRTPTolerance(rtpLevel)
+					if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
+						return result, nil
+					}
+				}
+			}
+		}
+		
+		// 如果还有RTP差距，进行最后的微调
 		return adjustRTPFinalTuning(result, targetRTP, totalBet, dataRanges, rtpLevel)
 	}
 

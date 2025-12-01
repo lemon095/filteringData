@@ -178,6 +178,21 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 			continue
 		}
 
+		// 对于zero_win区间，输出详细信息以便调试
+		if rangeName == "zero_win" {
+			fmt.Printf("🔍 [DEBUG] zero_win区间: 需要 %d 条，可用 %d 条数据\n", allocation, len(availableData))
+			if len(availableData) > 0 && len(availableData) <= 10 {
+				fmt.Printf("🔍 [DEBUG] zero_win可用数据ID列表: ")
+				for i, item := range availableData {
+					if i > 0 {
+						fmt.Printf(", ")
+					}
+					fmt.Printf("%d", item.ID)
+				}
+				fmt.Printf("\n")
+			}
+		}
+
 		// 如果该区间没有可用数据
 		if len(availableData) == 0 {
 			// 对于高倍率区间（very_high_multiplier及以上），如果数据为空且分配数量>0
@@ -258,16 +273,14 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 				selectedData = append(selectedData, availableData[perm[i]])
 			}
 
-			// 对于所有中奖区间（非zero_win），数据不足时都允许重复补齐，以保持中奖率
-			if rangeName != "zero_win" {
-				shortage := allocation - len(selectedData)
-				fmt.Printf("⚠️ %s 区间数据不足：需要 %d 条，可用 %d 条，将通过重复补齐 %d 条\n", rangeName, allocation, len(availableData), shortage)
-				for len(selectedData) < allocation {
-					selectedData = append(selectedData, availableData[rng.Intn(len(availableData))])
-				}
-			} else {
-				// 不中奖区间数据不足时，给出警告，后续会用其他数据补齐
-				fmt.Printf("⚠️ 警告：%s 区间数据不足：需要 %d 条，可用 %d 条，实际只使用 %d 条\n", rangeName, allocation, len(availableData), len(selectedData))
+			// 对于所有区间（包括zero_win），数据不足时都允许重复补齐
+			shortage := allocation - len(selectedData)
+			fmt.Printf("⚠️ %s 区间数据不足：需要 %d 条，可用 %d 条，将通过均匀重复补齐 %d 条\n", rangeName, allocation, len(availableData), shortage)
+			// 使用轮询方式重复使用，确保均匀分布（避免连续重复同一条数据）
+			// 例如：如果有3条数据，需要10条，则使用：0,1,2,0,1,2,0,1,2,0
+			for len(selectedData) < allocation {
+				cycleIdx := (len(selectedData) - len(availableData)) % len(availableData)
+				selectedData = append(selectedData, availableData[perm[cycleIdx]])
 			}
 		}
 
@@ -280,10 +293,25 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 		zeroWinData := dataRanges["zero_win"].Data
 		if len(zeroWinData) > 0 {
 			fmt.Printf("📊 总数据量不足：需要 %d 条，实际 %d 条，将用不中奖数据补齐 %d 条\n", totalCount, len(result), shortage)
-			// 随机选择不中奖数据补齐
-			for i := 0; i < shortage; i++ {
-				selectedData := zeroWinData[rng.Intn(len(zeroWinData))]
-				result = append(result, selectedData)
+			// 先使用所有不重复的数据，然后随机重复使用（避免连续重复）
+			if shortage <= len(zeroWinData) {
+				// 数据充足，打乱后直接选择
+				perm := rng.Perm(len(zeroWinData))
+				for i := 0; i < shortage; i++ {
+					result = append(result, zeroWinData[perm[i]])
+				}
+			} else {
+				// 数据不足，先使用所有不重复的数据
+				perm := rng.Perm(len(zeroWinData))
+				for i := 0; i < len(zeroWinData); i++ {
+					result = append(result, zeroWinData[perm[i]])
+				}
+				// 剩余的需要量，使用轮询方式重复使用（确保均匀分布，避免连续重复）
+				remaining := shortage - len(zeroWinData)
+				for i := 0; i < remaining; i++ {
+					cycleIdx := i % len(zeroWinData)
+					result = append(result, zeroWinData[perm[cycleIdx]])
+				}
 			}
 		} else {
 			// 如果没有不中奖数据，尝试用其他数据补齐
@@ -605,6 +633,11 @@ func adjustRTPDownFlexible(data []GameResultData, targetRTP float64, totalBet fl
 		return allWinItems[i].item.AW > allWinItems[j].item.AW
 	})
 
+	// 创建不中奖数据的随机排列，用于轮询使用（避免总是使用第一个数据）
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	zeroWinPerm := rng.Perm(len(zeroWinData))
+	zeroWinCounter := 0 // 用于轮询的计数器
+
 	// 按区间优先级和金额大小进行替换
 	for _, rangeName := range rangeOrder {
 		// 找到该区间的数据
@@ -629,16 +662,29 @@ func adjustRTPDownFlexible(data []GameResultData, targetRTP float64, totalBet fl
 
 		// 尝试用不中奖数据替换该区间的大金额数据
 		for _, itemInfo := range itemsInRange {
-			// 随机选择一个不中奖数据，直接替换整个数据
-			zeroWinItem := zeroWinData[0] // 使用第一个不中奖数据
+			// 使用轮询方式选择不中奖数据，确保均匀分布，避免连续重复
+			cycleIdx := zeroWinCounter % len(zeroWinData)
+			zeroWinItem := zeroWinData[zeroWinPerm[cycleIdx]]
+			zeroWinCounter++
 			result[itemInfo.index] = zeroWinItem
 
 			// 检查RTP是否满足要求（必须满足最低值，上浮允许根据档位调整）
 			newRTP := CalculateRTP(result, totalBet)
 			rtpTolerance := getRTPTolerance(rtpLevel)
+
+			// 如果RTP已经低于目标值，停止替换（避免过度替换）
+			if newRTP < targetRTP {
+				// 回退最后一次替换
+				result[itemInfo.index] = itemInfo.item
+				return result, nil
+			}
+
+			// 如果RTP在目标范围内，返回结果
 			if newRTP >= targetRTP && newRTP <= targetRTP+rtpTolerance {
 				return result, nil
 			}
+
+			// 如果RTP仍然高于目标值+容忍度，继续替换
 		}
 	}
 
@@ -1089,63 +1135,148 @@ func adjustRTPToLowerLimit(data []GameResultData, targetRTP float64, totalBet fl
 		return result, nil
 	}
 
-	// 找到零中奖数据
-	var zeroWinIndices []int
+	// 优先策略：先尝试用高倍率数据替换低倍率中奖数据，保持中奖率稳定
+	// 找到低倍率中奖数据（0-1倍和1-5倍）
+	type indexedLowWin struct {
+		index int
+		item  GameResultData
+	}
+	var lowWinItems []indexedLowWin
 	for i, item := range result {
-		if item.AW == 0 {
-			zeroWinIndices = append(zeroWinIndices, i)
+		if item.AW > 0 {
+			multiplier := item.AW / totalBet
+			if multiplier > 0 && multiplier <= 5 { // 0-5倍区间
+				lowWinItems = append(lowWinItems, indexedLowWin{index: i, item: item})
+			}
 		}
 	}
 
-	if len(zeroWinIndices) == 0 {
-		return data, fmt.Errorf("没有零中奖数据可替换")
+	// 按金额从小到大排序，优先替换金额低的数据
+	sort.Slice(lowWinItems, func(i, j int) bool {
+		return lowWinItems[i].item.AW < lowWinItems[j].item.AW
+	})
+
+	// 收集高倍率数据（1-5倍、5-10倍等）
+	var highData []GameResultData
+	for _, rangeName := range []string{"medium_multiplier", "high_multiplier", "very_high_multiplier"} {
+		if len(dataRanges[rangeName].Data) > 0 {
+			highData = append(highData, dataRanges[rangeName].Data...)
+		}
 	}
+	// 按金额从大到小排序
+	sort.Slice(highData, func(i, j int) bool {
+		return highData[i].AW > highData[j].AW
+	})
 
-	// 按倍率从低到高排序的区间（优先使用低倍率数据）
-	rangeOrder := []string{
-		"low_multiplier",
-		"medium_multiplier",
-		"high_multiplier",
-		"very_high_multiplier",
-		"mega_multiplier",
-		"super_mega_multiplier",
-		"ultra_mega_multiplier",
-	}
-
-	// 替换零中奖数据直到达到RTP下限
-	replaceCount := 0
-	maxReplacements := len(zeroWinIndices) // 允许替换所有零中奖数据以确保RTP下限
-
-	for _, rangeName := range rangeOrder {
-		if replaceCount >= maxReplacements {
+	// 优先用高倍率数据替换低倍率中奖数据
+	replacedCount := 0
+	for _, lowWinItem := range lowWinItems {
+		if currentRTP >= targetRTP {
 			break
 		}
-
-		rangeData := dataRanges[rangeName].Data
-		if len(rangeData) == 0 {
-			continue
-		}
-
-		// 按倍率从低到高排序
-		sort.Slice(rangeData, func(i, j int) bool {
-			return rangeData[i].AW/float64(rangeData[i].TB) < rangeData[j].AW/float64(rangeData[j].TB)
-		})
-
-		for _, item := range rangeData {
-			if replaceCount >= maxReplacements || len(zeroWinIndices) == 0 {
+		for _, highItem := range highData {
+			if highItem.AW > lowWinItem.item.AW {
+				result[lowWinItem.index] = highItem
+				replacedCount++
+				currentRTP = CalculateRTP(result, totalBet)
+				if currentRTP >= targetRTP {
+					return result, nil
+				}
 				break
 			}
+		}
+	}
 
-			// 替换零中奖数据
-			zeroIndex := zeroWinIndices[0]
-			zeroWinIndices = zeroWinIndices[1:]
-			result[zeroIndex] = item
-			replaceCount++
+	// 如果替换中奖数据后RTP仍然不足，才用中奖数据替换零倍数据
+	// 但需要限制替换数量，避免中奖率大幅提高
+	if currentRTP < targetRTP {
+		// 计算当前中奖率
+		currentWinCount := 0
+		for _, item := range result {
+			if item.AW > 0 {
+				currentWinCount++
+			}
+		}
+		currentWinRate := float64(currentWinCount) / float64(len(result))
 
-			// 检查RTP是否达到下限
-			newRTP := CalculateRTP(result, totalBet)
-			if newRTP >= targetRTP {
-				return result, nil
+		// 限制替换零倍数据的数量，避免中奖率大幅提高
+		// 但如果当前中奖率已经很低（比如低于10%），说明需要大量替换零倍数据
+		// 此时应该允许替换到目标中奖率（23%）
+		targetWinRate := 0.23 // 目标中奖率23%
+		var maxAllowedWinRate float64
+		if currentWinRate < 0.1 && currentWinRate < targetWinRate {
+			// 如果当前中奖率很低，允许替换到目标中奖率
+			maxAllowedWinRate = targetWinRate
+		} else {
+			// 否则，最多允许提高5%
+			maxWinRateIncrease := 0.05 // 最多提高5%
+			maxAllowedWinRate = currentWinRate + maxWinRateIncrease
+		}
+		maxAllowedWinCount := int(float64(len(result)) * maxAllowedWinRate)
+		maxZeroReplacements := maxAllowedWinCount - currentWinCount
+
+		if maxZeroReplacements > 0 {
+			// 找到零中奖数据
+			var zeroWinIndices []int
+			for i, item := range result {
+				if item.AW == 0 {
+					zeroWinIndices = append(zeroWinIndices, i)
+				}
+			}
+
+			if len(zeroWinIndices) > 0 {
+				// 限制替换数量
+				if len(zeroWinIndices) > maxZeroReplacements {
+					zeroWinIndices = zeroWinIndices[:maxZeroReplacements]
+				}
+
+				// 按倍率从低到高排序的区间（优先使用低倍率数据）
+				rangeOrder := []string{
+					"low_multiplier",
+					"medium_multiplier",
+					"high_multiplier",
+					"very_high_multiplier",
+					"mega_multiplier",
+					"super_mega_multiplier",
+					"ultra_mega_multiplier",
+				}
+
+				// 替换零中奖数据直到达到RTP下限或达到最大替换数量
+				maxReplacements := len(zeroWinIndices)
+
+				for _, rangeName := range rangeOrder {
+					if replacedCount >= maxReplacements || len(zeroWinIndices) == 0 {
+						break
+					}
+
+					rangeData := dataRanges[rangeName].Data
+					if len(rangeData) == 0 {
+						continue
+					}
+
+					// 按倍率从低到高排序
+					sort.Slice(rangeData, func(i, j int) bool {
+						return rangeData[i].AW/float64(rangeData[i].TB) < rangeData[j].AW/float64(rangeData[j].TB)
+					})
+
+					for _, item := range rangeData {
+						if replacedCount >= maxReplacements || len(zeroWinIndices) == 0 {
+							break
+						}
+
+						// 替换零中奖数据
+						zeroIndex := zeroWinIndices[0]
+						zeroWinIndices = zeroWinIndices[1:]
+						result[zeroIndex] = item
+						replacedCount++
+						currentRTP = CalculateRTP(result, totalBet)
+
+						// 检查RTP是否达到下限
+						if currentRTP >= targetRTP {
+							return result, nil
+						}
+					}
+				}
 			}
 		}
 	}
