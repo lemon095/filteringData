@@ -1541,8 +1541,8 @@ func runImportFbMode(fileLevelId string, env string) {
 	}
 	defer db.Close()
 
-	// 读取目录：output/<gameId>_fb
-	outputDir := filepath.Join("output", fmt.Sprintf("%d_fb", config.Game.ID))
+	// 读取目录：output/<gameId>（与 generateFb 和 generate4 一致）
+	outputDir := filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
 	envDisplay := ""
 	if env != "" {
 		envDisplay = fmt.Sprintf(" [环境: %s]", env)
@@ -1599,7 +1599,9 @@ func runImportFbMode(fileLevelId string, env string) {
 		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
 			return nil
 		}
-		re := regexp.MustCompile(`GameResults_(\d+)_(\d+)\.json`)
+		// 匹配格式：GameResults_{mode}_{rtpLevel}_{testNumber}.json
+		// 例如：GameResults_2_10_1.json -> mode=2, rtpLevel=10, testNumber=1
+		re := regexp.MustCompile(`GameResults_\d+_(\d+)_(\d+)\.json`)
 		m := re.FindStringSubmatch(d.Name())
 		if len(m) != 3 {
 			return nil
@@ -1803,8 +1805,8 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 	}
 	defer db.Close()
 
-	// 读取目录：output/<gameId>_fb
-	outputDir := filepath.Join("output", fmt.Sprintf("%d_fb", gameId))
+	// 读取目录：output/<gameId>（与 generateFb 和 generate4 一致）
+	outputDir := filepath.Join("output", fmt.Sprintf("%d", gameId))
 	envDisplay := ""
 	if env != "" {
 		envDisplay = fmt.Sprintf(" [环境: %s]", env)
@@ -1861,7 +1863,9 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
 			return nil
 		}
-		re := regexp.MustCompile(`GameResults_(\d+)_(\d+)\.json`)
+		// 匹配格式：GameResults_{mode}_{rtpLevel}_{testNumber}.json
+		// 例如：GameResults_2_10_1.json -> mode=2, rtpLevel=10, testNumber=1
+		re := regexp.MustCompile(`GameResults_\d+_(\d+)_(\d+)\.json`)
 		m := re.FindStringSubmatch(d.Name())
 		if len(m) != 3 {
 			return nil
@@ -2998,6 +3002,19 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 				return unusedHighCandidates[i].AW > unusedHighCandidates[j].AW
 			})
 
+			// 准备所有高金额候选数据（包括已使用的），用于重复替换
+			// 优先profit，然后win，都按aw降序排序
+			allHighCandidates := make([]GameResultData, 0, len(profitCandidates)+len(winCandidates))
+			for _, item := range profitCandidates {
+				allHighCandidates = append(allHighCandidates, item)
+			}
+			for _, item := range winCandidates {
+				allHighCandidates = append(allHighCandidates, item)
+			}
+			sort.Slice(allHighCandidates, func(i, j int) bool {
+				return allHighCandidates[i].AW > allHighCandidates[j].AW
+			})
+
 			// 对当前数据构建索引数组并按aw升序排序
 			type indexedData struct {
 				idx  int
@@ -3013,10 +3030,9 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 
 			// 智能贪心替换：寻找最接近目标的替换组合
 			candidateIdx := 0
-			// 对于高档位（300/500），如果未使用的候选数据用完了，允许重复使用已使用过的高金额数据
-			allowReuseForHighRTP := (rtpLevel == 300 || rtpLevel == 500)
-			allHighCandidates := make([]GameResultData, len(unusedHighCandidates))
-			copy(allHighCandidates, unusedHighCandidates)
+			reuseModeActive := false // 标记是否已进入重复使用模式
+			// 当未使用的候选数据用完了，允许重复使用所有高金额数据（对于所有档位）
+			allowReuse := true
 
 			for dataIdx := 0; dataIdx < len(indexedItems) && replacedCount < maxReplaceIterations; dataIdx++ {
 				oldItem := indexedItems[dataIdx].item
@@ -3064,12 +3080,18 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 				}
 
 				// 如果未使用的候选数据用完了，且允许重复使用，则从所有高金额数据中查找
-				if bestCandidateIdx < 0 && allowReuseForHighRTP && len(allHighCandidates) > 0 {
-					printf("[FB] ⚠️ 未使用的候选数据已用完，允许重复使用高金额数据继续替换\n")
-					// 从所有高金额数据中随机查找
-					for attempt := 0; attempt < 100; attempt++ {
-						randIdx := rng.Intn(len(allHighCandidates))
-						newItem := allHighCandidates[randIdx]
+				if bestCandidateIdx < 0 && allowReuse && len(allHighCandidates) > 0 {
+					if !reuseModeActive {
+						printf("[FB] ⚠️ 未使用的候选数据已用完，切换到重复使用所有高金额数据模式\n")
+						reuseModeActive = true
+					}
+					// 系统性地搜索所有高金额数据，优先使用更高金额的数据
+					searchLimit := len(allHighCandidates)
+					if searchLimit > 200 {
+						searchLimit = 200 // 限制搜索范围，提高效率
+					}
+					for j := 0; j < searchLimit; j++ {
+						newItem := allHighCandidates[j]
 						if newItem.AW <= oldItem.AW {
 							continue
 						}
@@ -3098,7 +3120,7 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 				}
 
 				// 执行最佳替换
-				if bestCandidateIdx >= 0 || (allowReuseForHighRTP && bestDelta < math.MaxFloat64) {
+				if bestCandidateIdx >= 0 || (allowReuse && bestDelta < math.MaxFloat64) {
 					var newItem GameResultData
 					if bestCandidateIdx >= 0 {
 						newItem = unusedHighCandidates[bestCandidateIdx]
@@ -3132,9 +3154,13 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 				} else {
 					candidateIdx++
 					// 如果候选索引超出范围，且不允许重复使用，则停止
-					if candidateIdx >= len(unusedHighCandidates) && !allowReuseForHighRTP {
-						printf("[FB] ⚠️ 未使用的候选数据已用完，停止替换\n")
+					if candidateIdx >= len(unusedHighCandidates) && !allowReuse {
+						printf("[FB] ⚠️ 未使用的候选数据已用完，且不允许重复使用，停止替换\n")
 						break
+					}
+					// 如果允许重复使用但还没进入重复模式，继续尝试
+					if candidateIdx >= len(unusedHighCandidates) && allowReuse && !reuseModeActive {
+						// 下次循环时会进入重复使用模式
 					}
 				}
 			}
@@ -3294,6 +3320,7 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 
 	// 打乱输出顺序并写文件
 	rand.Shuffle(len(data), func(i, j int) { data[i], data[j] = data[j], data[i] })
+	// 使用与 generate4 一致的目录规则：output/<gameId>/
 	outDir := filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
 	if err := saveToJSON(data, config, rtpLevel, testNumber, outDir); err != nil {
 		return fmt.Errorf("[FB] 保存JSON失败: %v", err)
