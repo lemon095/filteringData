@@ -2905,36 +2905,134 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		secondaryPool = profitCandidates
 		printf("[FB] 低RTP档位：优先选择不盈利数据(aw<tb)\n")
 	} else {
-		// 高RTP档位：优先使用盈利数据（aw > tb）
+		// 高RTP档位（RTP >= 1.0）：优先使用盈利数据（aw > tb）
+		// 对于RTP > 1的档位，需要确保盈利数据占比 >= 50%（即0-1倍数据 < 50%）
 		primaryPool = profitCandidates
 		secondaryPool = winCandidates
-		printf("[FB] 高RTP档位：优先选择盈利数据(aw>tb)\n")
-	}
-
-	// 从主池随机选择
-	if len(primaryPool) > 0 {
-		perm := rng.Perm(len(primaryPool))
-		for _, idx := range perm {
-			if len(data) >= targetCount {
-				break
-			}
-			item := primaryPool[idx]
-			data = append(data, item)
-			used[item.ID] = true
+		if rtp > 1.0 {
+			printf("[FB] 高RTP档位(RTP>1)：优先选择盈利数据(aw>tb)，确保盈利数据占比>=50%%\n")
+		} else {
+			printf("[FB] 高RTP档位：优先选择盈利数据(aw>tb)\n")
 		}
 	}
 
-	// 如果主池不够，从副池补充
-	if len(data) < targetCount && len(secondaryPool) > 0 {
-		perm := rng.Perm(len(secondaryPool))
-		for _, idx := range perm {
-			if len(data) >= targetCount {
-				break
-			}
-			item := secondaryPool[idx]
-			if !used[item.ID] {
+	// 对于RTP > 1的档位，需要确保盈利数据（aw > tb）至少占50%
+	if rtp > 1.0 {
+		minProfitCount := int(math.Ceil(float64(targetCount) * 0.5)) // 至少50%的盈利数据
+		printf("[FB] RTP>1约束：需要至少 %d 条盈利数据（占总数的50%%）\n", minProfitCount)
+
+		// 先选择足够的盈利数据
+		if len(primaryPool) > 0 {
+			perm := rng.Perm(len(primaryPool))
+			profitCount := 0
+			for _, idx := range perm {
+				if profitCount >= minProfitCount {
+					break
+				}
+				item := primaryPool[idx]
 				data = append(data, item)
 				used[item.ID] = true
+				profitCount++
+			}
+			printf("[FB] 已选择盈利数据: %d 条（目标: %d 条）\n", profitCount, minProfitCount)
+
+			// 如果盈利数据不足，尝试从已选择的数据中重复补齐
+			if profitCount < minProfitCount && len(data) > 0 {
+				needMore := minProfitCount - profitCount
+				printf("[FB] ⚠️ 盈利数据不足，通过重复补齐 %d 条盈利数据\n", needMore)
+				profitFillSource := make([]GameResultData, 0)
+				for _, item := range data {
+					if item.AW > item.TB {
+						profitFillSource = append(profitFillSource, item)
+					}
+				}
+				if len(profitFillSource) == 0 {
+					profitFillSource = primaryPool
+				}
+				for i := 0; i < needMore && len(profitFillSource) > 0; i++ {
+					idx := rng.Intn(len(profitFillSource))
+					data = append(data, profitFillSource[idx])
+					profitCount++
+				}
+				printf("[FB] 重复补齐后盈利数据: %d 条\n", profitCount)
+			}
+		}
+
+		// 然后选择不盈利数据（aw <= tb）和不中奖数据，但总数不能超过50%
+		maxLowMultiplierCount := targetCount - minProfitCount // 最多允许的数量
+		printf("[FB] 0-1倍数据（不盈利+不中奖）最多允许: %d 条（<50%%）\n", maxLowMultiplierCount)
+
+		// 选择不盈利中奖数据
+		if len(data) < targetCount && len(secondaryPool) > 0 {
+			perm := rng.Perm(len(secondaryPool))
+			lowMultiplierCount := 0
+			for _, idx := range perm {
+				if len(data) >= targetCount || lowMultiplierCount >= maxLowMultiplierCount {
+					break
+				}
+				item := secondaryPool[idx]
+				if !used[item.ID] {
+					data = append(data, item)
+					used[item.ID] = true
+					lowMultiplierCount++
+				}
+			}
+			printf("[FB] 已选择不盈利中奖数据: %d 条\n", lowMultiplierCount)
+		}
+
+		// 选择不中奖数据（aw = 0）
+		if len(data) < targetCount && len(noWinDataAll) > 0 {
+			perm := rng.Perm(len(noWinDataAll))
+			noWinCount := 0
+			currentLowMultiplierCount := 0
+			// 统计当前0-1倍数据的数量
+			for _, item := range data {
+				if item.AW <= item.TB {
+					currentLowMultiplierCount++
+				}
+			}
+			remainingLowMultiplierSlots := maxLowMultiplierCount - currentLowMultiplierCount
+
+			for _, idx := range perm {
+				if len(data) >= targetCount || noWinCount >= remainingLowMultiplierSlots {
+					break
+				}
+				item := noWinDataAll[idx]
+				if !used[item.ID] {
+					data = append(data, item)
+					used[item.ID] = true
+					noWinCount++
+				}
+			}
+			printf("[FB] 已选择不中奖数据: %d 条\n", noWinCount)
+		}
+	} else {
+		// RTP <= 1.0的档位，保持原有逻辑
+		// 从主池随机选择
+		if len(primaryPool) > 0 {
+			perm := rng.Perm(len(primaryPool))
+			for _, idx := range perm {
+				if len(data) >= targetCount {
+					break
+				}
+				item := primaryPool[idx]
+				data = append(data, item)
+				used[item.ID] = true
+			}
+		}
+
+		// 如果主池不够，从副池补充
+		if len(data) < targetCount && len(secondaryPool) > 0 {
+			perm := rng.Perm(len(secondaryPool))
+			for _, idx := range perm {
+				if len(data) >= targetCount {
+					break
+				}
+				item := secondaryPool[idx]
+				if !used[item.ID] {
+					data = append(data, item)
+					used[item.ID] = true
+				}
 			}
 		}
 	}
@@ -2944,31 +3042,112 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		shortage := targetCount - len(data)
 		printf("[FB] ⚠️ 数据不足：需要 %d 条，可用 %d 条，将通过重复补齐 %d 条\n", targetCount, len(data), shortage)
 
-		// 使用已选择的数据作为填充源
-		fillSource := make([]GameResultData, len(data))
-		copy(fillSource, data)
-
-		// 如果填充源为空，尝试使用所有候选数据
-		if len(fillSource) == 0 {
-			fillSource = append(fillSource, primaryPool...)
-			fillSource = append(fillSource, secondaryPool...)
-		}
-
-		// 如果仍然为空，使用不中奖数据
-		if len(fillSource) == 0 && len(noWinDataAll) > 0 {
-			fillSource = noWinDataAll
-		}
-
-		if len(fillSource) > 0 {
-			// 重复填充
-			for i := 0; i < shortage; i++ {
-				idx := rng.Intn(len(fillSource))
-				data = append(data, fillSource[idx])
+		// 对于RTP > 1的档位，在重复补齐时需要保持盈利数据占比 >= 50%
+		if rtp > 1.0 {
+			// 统计当前盈利数据和0-1倍数据的数量
+			currentProfitCount := 0
+			currentLowMultiplierCount := 0
+			for _, item := range data {
+				if item.AW > item.TB {
+					currentProfitCount++
+				} else {
+					currentLowMultiplierCount++
+				}
 			}
-			printf("[FB] ✅ 重复补齐完成，当前数量: %d/%d\n", len(data), targetCount)
+			minProfitCount := int(math.Ceil(float64(targetCount) * 0.5))
+			needProfitCount := minProfitCount - currentProfitCount
+
+			// 优先补齐盈利数据
+			if needProfitCount > 0 {
+				profitFillSource := make([]GameResultData, 0)
+				for _, item := range data {
+					if item.AW > item.TB {
+						profitFillSource = append(profitFillSource, item)
+					}
+				}
+				if len(profitFillSource) == 0 {
+					profitFillSource = profitCandidates
+				}
+				for i := 0; i < needProfitCount && len(profitFillSource) > 0; i++ {
+					idx := rng.Intn(len(profitFillSource))
+					data = append(data, profitFillSource[idx])
+					shortage--
+				}
+				printf("[FB] 优先补齐盈利数据: %d 条，剩余需补齐: %d 条\n", needProfitCount, shortage)
+			}
+
+			// 如果还有剩余，可以补齐0-1倍数据，但需要确保不超过50%
+			if shortage > 0 {
+				maxLowMultiplierCount := targetCount - minProfitCount
+				remainingLowMultiplierSlots := maxLowMultiplierCount - currentLowMultiplierCount
+				if remainingLowMultiplierSlots > 0 {
+					lowMultiplierFillSource := make([]GameResultData, 0)
+					for _, item := range data {
+						if item.AW <= item.TB {
+							lowMultiplierFillSource = append(lowMultiplierFillSource, item)
+						}
+					}
+					if len(lowMultiplierFillSource) == 0 {
+						lowMultiplierFillSource = append(lowMultiplierFillSource, winCandidates...)
+						lowMultiplierFillSource = append(lowMultiplierFillSource, noWinDataAll...)
+					}
+					fillCount := min(shortage, remainingLowMultiplierSlots)
+					for i := 0; i < fillCount && len(lowMultiplierFillSource) > 0; i++ {
+						idx := rng.Intn(len(lowMultiplierFillSource))
+						data = append(data, lowMultiplierFillSource[idx])
+						shortage--
+					}
+					printf("[FB] 补齐0-1倍数据: %d 条，剩余需补齐: %d 条\n", fillCount, shortage)
+				}
+
+				// 如果还有剩余，继续用盈利数据补齐
+				if shortage > 0 {
+					profitFillSource := make([]GameResultData, 0)
+					for _, item := range data {
+						if item.AW > item.TB {
+							profitFillSource = append(profitFillSource, item)
+						}
+					}
+					if len(profitFillSource) == 0 {
+						profitFillSource = profitCandidates
+					}
+					for i := 0; i < shortage && len(profitFillSource) > 0; i++ {
+						idx := rng.Intn(len(profitFillSource))
+						data = append(data, profitFillSource[idx])
+					}
+					printf("[FB] 最后用盈利数据补齐: %d 条\n", shortage)
+				}
+			}
 		} else {
+			// RTP <= 1.0的档位，使用原有逻辑
+			// 使用已选择的数据作为填充源
+			fillSource := make([]GameResultData, len(data))
+			copy(fillSource, data)
+
+			// 如果填充源为空，尝试使用所有候选数据
+			if len(fillSource) == 0 {
+				fillSource = append(fillSource, primaryPool...)
+				fillSource = append(fillSource, secondaryPool...)
+			}
+
+			// 如果仍然为空，使用不中奖数据
+			if len(fillSource) == 0 && len(noWinDataAll) > 0 {
+				fillSource = noWinDataAll
+			}
+
+			if len(fillSource) > 0 {
+				// 重复填充
+				for i := 0; i < shortage; i++ {
+					idx := rng.Intn(len(fillSource))
+					data = append(data, fillSource[idx])
+				}
+			}
+		}
+
+		if len(data) < targetCount {
 			return fmt.Errorf("可用候选数据不足：需要%d条，实际%d条，且无可用填充源", targetCount, len(data))
 		}
+		printf("[FB] ✅ 重复补齐完成，当前数量: %d/%d\n", len(data), targetCount)
 	}
 
 	// 计算初始RTP
@@ -3032,6 +3211,16 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 			for dataIdx := 0; dataIdx < len(indexedItems) && replacedCount < maxReplaceIterations; dataIdx++ {
 				oldItem := indexedItems[dataIdx].item
 
+				// 对于RTP > 1的档位，检查当前盈利数据占比
+				var currentProfitCount int
+				if rtp > 1.0 {
+					for _, item := range data {
+						if item.AW > item.TB {
+							currentProfitCount++
+						}
+					}
+				}
+
 				// 寻找最佳替换候选（最接近目标增量的）
 				bestCandidateIdx := -1
 				bestDelta := math.MaxFloat64
@@ -3048,6 +3237,28 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 						newItem := unusedHighCandidates[j]
 						if newItem.AW <= oldItem.AW {
 							continue
+						}
+
+						// 对于RTP > 1的档位，检查替换后是否满足盈利数据占比 >= 50%的约束
+						if rtp > 1.0 {
+							// 如果oldItem是盈利数据，newItem也必须是盈利数据，否则盈利数据会减少
+							if oldItem.AW > oldItem.TB && newItem.AW <= newItem.TB {
+								continue // 跳过，因为会导致盈利数据占比下降
+							}
+							// 如果oldItem不是盈利数据，newItem必须是盈利数据，才能增加盈利数据占比
+							if oldItem.AW <= oldItem.TB && newItem.AW <= newItem.TB {
+								// 检查替换后盈利数据占比是否仍然 >= 50%
+								newProfitCount := currentProfitCount
+								if oldItem.AW <= oldItem.TB && newItem.AW > newItem.TB {
+									newProfitCount++ // 增加一个盈利数据
+								} else if oldItem.AW > oldItem.TB && newItem.AW <= newItem.TB {
+									newProfitCount-- // 减少一个盈利数据
+								}
+								minProfitCount := int(math.Ceil(float64(len(data)) * 0.5))
+								if newProfitCount < minProfitCount {
+									continue // 跳过，因为会导致盈利数据占比低于50%
+								}
+							}
 						}
 
 						awDelta := newItem.AW - oldItem.AW
@@ -3208,6 +3419,16 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 			for dataIdx := 0; dataIdx < len(indexedItems) && candidateIdx < len(replacementCandidates) && replacedCount < maxReplaceIterations; dataIdx++ {
 				oldItem := indexedItems[dataIdx].item
 
+				// 对于RTP > 1的档位，检查当前0-1倍数据占比
+				var currentLowMultiplierCount int
+				if rtp > 1.0 {
+					for _, item := range data {
+						if item.AW <= item.TB {
+							currentLowMultiplierCount++
+						}
+					}
+				}
+
 				// 寻找最佳替换候选（最接近目标减量的）
 				bestCandidateIdx := -1
 				bestDelta := math.MaxFloat64
@@ -3216,6 +3437,20 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 					newItem := replacementCandidates[j]
 					if newItem.AW >= oldItem.AW {
 						continue
+					}
+
+					// 对于RTP > 1的档位，检查替换后是否满足0-1倍数据占比 < 50%的约束
+					if rtp > 1.0 {
+						// 如果oldItem是盈利数据（aw > tb），newItem是0-1倍数据（aw <= tb），会增加0-1倍数据占比
+						if oldItem.AW > oldItem.TB && newItem.AW <= newItem.TB {
+							newLowMultiplierCount := currentLowMultiplierCount + 1
+							maxLowMultiplierCount := len(data) - int(math.Ceil(float64(len(data))*0.5))
+							if newLowMultiplierCount > maxLowMultiplierCount {
+								continue // 跳过，因为会导致0-1倍数据占比超过50%
+							}
+						}
+						// 如果oldItem是0-1倍数据，newItem也是0-1倍数据，占比不变，可以替换
+						// 如果oldItem是0-1倍数据，newItem是盈利数据，会减少0-1倍数据占比，可以替换
 					}
 
 					awDelta := oldItem.AW - newItem.AW
@@ -3278,13 +3513,42 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 	printf("📊 [FB] 最终验证: 期望 %d 条, 实际 %d 条\n", targetCount, len(data))
 	var finalTotalBet float64
 	var finalTotalWin float64
+	profitCount := 0        // 盈利数据数量（aw > tb）
+	lowMultiplierCount := 0 // 0-1倍数据数量（aw <= tb）
+	noWinCount := 0         // 不中奖数据数量（aw = 0）
 	for _, it := range data {
 		finalTotalBet += float64(it.TB)
 		finalTotalWin += it.AW
+		if it.AW > it.TB {
+			profitCount++
+		} else if it.AW == 0 {
+			noWinCount++
+			lowMultiplierCount++
+		} else {
+			lowMultiplierCount++
+		}
 	}
 	finalRTP := finalTotalWin / finalTotalBet
 	printf("✅ [FB] 档位: %.0f, 目标RTP: %.6f, 实际RTP: %.6f, 偏差: %.6f\n", rtpLevel, rtp, finalRTP, math.Abs(finalRTP-rtp))
 	printf("📊 [FB] 实际投注总额: %.2f (假设值: %.2f), 实际中奖总额: %.2f\n", finalTotalBet, totalBet, finalTotalWin)
+
+	// 对于RTP > 1的档位，显示盈利数据和0-1倍数据的占比
+	if rtp > 1.0 {
+		profitRatio := float64(profitCount) / float64(len(data)) * 100
+		lowMultiplierRatio := float64(lowMultiplierCount) / float64(len(data)) * 100
+		printf("📈 [FB] RTP>1约束检查: 盈利数据(aw>tb)=%d条(%.2f%%), 0-1倍数据(aw<=tb)=%d条(%.2f%%), 不中奖(aw=0)=%d条\n",
+			profitCount, profitRatio, lowMultiplierCount, lowMultiplierRatio, noWinCount)
+		if lowMultiplierRatio >= 50.0 {
+			printf("⚠️ [FB] 警告: 0-1倍数据占比(%.2f%%) >= 50%%，不满足约束要求！\n", lowMultiplierRatio)
+		} else {
+			printf("✅ [FB] 0-1倍数据占比(%.2f%%) < 50%%，满足约束要求\n", lowMultiplierRatio)
+		}
+		if profitRatio < 50.0 {
+			printf("⚠️ [FB] 警告: 盈利数据占比(%.2f%%) < 50%%，不满足约束要求！\n", profitRatio)
+		} else {
+			printf("✅ [FB] 盈利数据占比(%.2f%%) >= 50%%，满足约束要求\n", profitRatio)
+		}
+	}
 
 	// 重复率统计（按 id 去重）
 	uniq := make(map[int]int, len(data))
