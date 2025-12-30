@@ -50,3 +50,6 @@ config.yaml
 config copy.yaml
 /sql/
 /sql/**
+
+# SQL files (ignore all .sql files)
+*.sql
