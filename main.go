@@ -3059,8 +3059,9 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 						newTotalWin := totalWin + awDelta
 						newRTP := newTotalWin / totalBet
 
-						// 不能超过目标太多
-						if newRTP > rtp+rtpTolerance*2 {
+						// 不能超过目标太多（严格限制：只允许超出0.5%）
+						rtpUpperLimit := rtp + 0.005
+						if newRTP > rtpUpperLimit {
 							continue
 						}
 
@@ -3100,8 +3101,9 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 						newTotalWin := totalWin + awDelta
 						newRTP := newTotalWin / totalBet
 
-						// 不能超过目标太多
-						if newRTP > rtp+rtpTolerance*2 {
+						// 不能超过目标太多（严格限制：只允许超出0.5%）
+						rtpUpperLimit := rtp + 0.005
+						if newRTP > rtpUpperLimit {
 							continue
 						}
 
@@ -3298,7 +3300,64 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		finalTotalWin += it.AW
 	}
 	finalRTP := finalTotalWin / finalTotalBet
-	printf("✅ [FB] 档位: %.0f, 目标RTP: %.6f, 实际RTP: %.6f, 偏差: %.6f\n", rtpLevel, rtp, finalRTP, math.Abs(finalRTP-rtp))
+	rtpDeviation := math.Abs(finalRTP - rtp)
+
+	// RTP上限检查：如果超出目标值太多，强制降低
+	rtpUpperLimit := rtp + 0.01 // 允许超出1%
+	if finalRTP > rtpUpperLimit {
+		excessRTP := finalRTP - rtpUpperLimit
+		printf("⚠️ [FB] RTP超出上限 %.6f (超出允许范围 %.6f)，开始强制降低...\n", finalRTP, excessRTP)
+
+		// 按金额从大到小排序当前数据
+		type indexedData struct {
+			idx  int
+			item GameResultData
+		}
+		indexedItems := make([]indexedData, len(data))
+		for i, item := range data {
+			indexedItems[i] = indexedData{idx: i, item: item}
+		}
+		sort.Slice(indexedItems, func(i, j int) bool {
+			return indexedItems[i].item.AW > indexedItems[j].item.AW
+		})
+
+		// 准备不中奖数据用于替换
+		if len(noWinDataAll) > 0 {
+			forceReplaced := 0
+			maxForceReplace := len(data) / 2 // 最多替换一半数据
+			for dataIdx := 0; dataIdx < len(indexedItems) && forceReplaced < maxForceReplace && len(noWinDataAll) > 0; dataIdx++ {
+				oldItem := indexedItems[dataIdx].item
+				if oldItem.AW == 0 {
+					continue
+				}
+
+				// 使用不中奖数据替换
+				zeroWinItem := noWinDataAll[forceReplaced%len(noWinDataAll)]
+				realIdx := indexedItems[dataIdx].idx
+				data[realIdx] = zeroWinItem
+				finalTotalWin = finalTotalWin - oldItem.AW + zeroWinItem.AW
+				finalTotalBet = finalTotalBet - float64(oldItem.TB) + float64(zeroWinItem.TB)
+				forceReplaced++
+
+				finalRTP = finalTotalWin / finalTotalBet
+				rtpDeviation = math.Abs(finalRTP - rtp)
+
+				// 如果RTP已经降到允许范围内，停止
+				if finalRTP <= rtpUpperLimit {
+					printf("✅ [FB] 强制降低完成：替换了%d条数据，最终RTP=%.6f\n", forceReplaced, finalRTP)
+					break
+				}
+			}
+
+			if finalRTP > rtpUpperLimit {
+				printf("⚠️ [FB] 强制降低后RTP仍超出允许范围：%.6f (允许范围: [%.6f, %.6f])\n", finalRTP, rtp, rtpUpperLimit)
+			}
+		} else {
+			printf("⚠️ [FB] 无可用不中奖数据用于降低RTP\n")
+		}
+	}
+
+	printf("✅ [FB] 档位: %.0f, 目标RTP: %.6f, 实际RTP: %.6f, 偏差: %.6f\n", rtpLevel, rtp, finalRTP, rtpDeviation)
 	printf("📊 [FB] 实际投注总额: %.2f (假设值: %.2f), 实际中奖总额: %.2f\n", finalTotalBet, totalBet, finalTotalWin)
 
 	// 重复率统计（按 id 去重）
