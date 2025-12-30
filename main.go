@@ -2074,6 +2074,15 @@ func runGenerateMode4() {
 	fmt.Printf("✅ 总数据量: %d 条（中奖: %d, 不中奖: %d）\n", len(allData), len(winDataAll), len(noWinDataAll))
 
 	// 使用RtpLevels配置
+	fmt.Printf("📋 准备生成 %d 个RTP档位: ", len(RtpLevels))
+	for i, level := range RtpLevels {
+		if i > 0 {
+			fmt.Printf(", ")
+		}
+		fmt.Printf("%.0f", level.RtpNo)
+	}
+	fmt.Printf("\n")
+
 	for rtpNum := 0; rtpNum < len(RtpLevels); rtpNum++ {
 		// 并发度：CPU 核数
 		worker := runtime.NumCPU()
@@ -2083,6 +2092,14 @@ func runGenerateMode4() {
 		// 捕获当前循环变量
 		rtpNo := RtpLevels[rtpNum].RtpNo
 		rtpVal := RtpLevels[rtpNum].Rtp
+
+		// 检查配置是否存在
+		_, err := rtpConfig.GetRtpDistribution(int(rtpNo))
+		if err != nil {
+			fmt.Printf("⚠️ RTP档位 %.0f 配置不存在，跳过生成: %v\n", rtpNo, err)
+			continue
+		}
+		fmt.Printf("🔄 开始处理RTP档位 %.0f (目标RTP: %.2f)\n", rtpNo, rtpVal)
 
 		// 根据RTP档位选择配置
 		var dataNum, tableNum int
@@ -2113,6 +2130,7 @@ func runGenerateMode4() {
 				fmt.Printf("▶️ 开始生成（V4模式）| RTP等级 %.0f | 第%d次 | 数据量:%d | %s\n", rtpNo, testIndex, dataNum, testStartTime.Format(time.RFC3339))
 
 				if err := runRtpTestV4(db, config, rtpConfig, rtpNo, rtpVal, testIndex, totalBet, allData, dataNum); err != nil {
+					fmt.Printf("❌ RTP测试V4失败 | RTP等级 %.0f | 第%d次 | 错误: %v\n", rtpNo, testIndex, err)
 					log.Printf("RTP测试V4失败: %v", err)
 				}
 
