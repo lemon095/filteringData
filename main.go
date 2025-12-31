@@ -2891,17 +2891,6 @@ func runGenerateFbMode() {
 	// 	log.Fatalf("清理数据失败: %v", err)
 	// }
 
-	// 获取一条该模式的数据，用于获取TB值（单次投注额）
-	sampleData, err := db.GetOneDataByMode()
-	if err != nil {
-		log.Fatalf("获取模式数据失败: %v", err)
-	}
-	perBetAmount := sampleData.TB // 单次投注额（从数据库获取，TB字段已包含该模式的所有投注参数）
-	fmt.Printf("💰 [generateFb] 单次投注额（从数据库获取）: %.2f\n", perBetAmount)
-
-	// 计算总投注：使用从数据库获取的单次投注额乘以数据条数
-	totalBet := perBetAmount * float64(config.Tables.DataNumFb)
-
 	// 预取共享只读数据（购买模式）
 	fmt.Println("🔄 [generateFb] 正在获取购买模式中奖数据...")
 	winDataAll, err := db.GetWinDataFb()
@@ -2926,6 +2915,22 @@ func runGenerateFbMode() {
 		log.Fatalf("获取购买模式不中奖数据失败: %v", err)
 	}
 	fmt.Printf("✅ [generateFb] 购买模式不中奖数据条数: %d\n", len(noWinDataAll))
+
+	// 从已获取的数据中获取TB值（单次投注额），优先使用盈利数据，如果没有则使用其他数据
+	var perBetAmount float64
+	if len(profitDataAll) > 0 {
+		perBetAmount = profitDataAll[0].TB
+	} else if len(winDataAll) > 0 {
+		perBetAmount = winDataAll[0].TB
+	} else if len(noWinDataAll) > 0 {
+		perBetAmount = noWinDataAll[0].TB
+	} else {
+		log.Fatalf("无法获取TB值：所有数据源都为空")
+	}
+	fmt.Printf("💰 [generateFb] 单次投注额（从已获取数据中提取）: %.2f\n", perBetAmount)
+
+	// 计算总投注：使用从已获取数据中提取的单次投注额乘以数据条数
+	totalBet := perBetAmount * float64(config.Tables.DataNumFb)
 
 	if len(winDataAll) == 0 {
 		fmt.Println("⚠️ [generateFb] 未获取到购买模式中奖数据，无法继续。请检查数据条件 (aw>0, gwt<=3, fb=2, sp=true)。")
