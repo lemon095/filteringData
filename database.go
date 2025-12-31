@@ -599,6 +599,34 @@ func (d *Database) GetBestSingleMatch(targetWin float64, excludeIds []int, maxDe
 	return &item, nil
 }
 
+// GetOneDataByMode 获取一条指定模式的数据，用于获取该模式的TB值
+func (d *Database) GetOneDataByMode() (*GameResultData, error) {
+	tableName := d.GetTableName()
+	query := fmt.Sprintf(`
+		SELECT id, tb, aw, gwt, sp, fb, '[]'::jsonb AS gd, "createdAt", "updatedAt"
+		FROM %s 
+		WHERE fb = %d
+		LIMIT 1
+	`, tableName, d.Config.Game.Mode)
+
+	var item GameResultData
+	err := d.DB.QueryRow(query).Scan(
+		&item.ID, &item.TB, &item.AW, &item.GWT,
+		&item.SP, &item.FB, &item.GD,
+		&item.CreatedAt, &item.UpdatedAt,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("未找到模式 %d 的数据", d.Config.Game.Mode)
+		}
+		return nil, fmt.Errorf("查询数据失败: %v", err)
+	}
+
+	item.GD = JsonData{Data: []interface{}{}}
+	return &item, nil
+}
+
 // CleanSpZeroAwData 清理表中 sp=true 且 aw=0 的数据
 func (d *Database) CleanSpZeroAwData() error {
 	tableName := d.GetTableName()

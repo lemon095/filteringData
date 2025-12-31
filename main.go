@@ -1881,7 +1881,18 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 		return files[i].RtpLevel < files[j].RtpLevel
 	})
 
-	bet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB
+	// 获取一条该模式的数据，用于获取TB值（单次投注额）作为后备值
+	sampleData, err := db.GetOneDataByMode()
+	var defaultBet float64
+	if err != nil {
+		// 如果获取失败，使用配置计算（作为后备）
+		defaultBet = config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB
+		fmt.Printf("⚠️ [importFb] 无法从数据库获取TB值，使用配置计算: %.2f\n", defaultBet)
+	} else {
+		defaultBet = sampleData.TB
+		fmt.Printf("💰 [importFb] 单次投注额（从数据库获取）: %.2f\n", defaultBet)
+	}
+
 	importOne := func(f FileInfo) error {
 		fmt.Printf("\n🔄 [importFb] 正在导入: %s\n", f.Name)
 		fh, err := os.Open(f.Path)
@@ -1949,6 +1960,11 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 					if aw, ok := item["aw"].(float64); ok {
 						winValue = math.Round(aw*100) / 100
 					}
+					// 使用数据中的tb字段作为bet值，如果没有则使用从数据库获取的值作为后备
+					var betValue float64 = defaultBet
+					if tb, ok := item["tb"].(float64); ok && tb > 0 {
+						betValue = math.Round(tb*100) / 100
+					}
 					detailVal := "[]"
 					if item["gd"] != nil {
 						gdJSON, err := json.Marshal(item["gd"])
@@ -1967,7 +1983,7 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 						return fmt.Errorf("解析dataId失败: %w", err)
 					}
 
-					if _, err := stmt.Exec(rtpLevelVal, srNumber, srId, dataID, bet, winValue, detailVal); err != nil {
+					if _, err := stmt.Exec(rtpLevelVal, srNumber, srId, dataID, betValue, winValue, detailVal); err != nil {
 						_ = stmt.Close()
 						_ = tx.Rollback()
 						return fmt.Errorf("插入失败: %w", err)
@@ -2073,7 +2089,24 @@ func runGenerateMode4() {
 	allData := append(winDataAll, noWinDataAll...)
 	fmt.Printf("✅ 总数据量: %d 条（中奖: %d, 不中奖: %d）\n", len(allData), len(winDataAll), len(noWinDataAll))
 
+	// 获取一条该模式的数据，用于获取TB值（单次投注额）
+	sampleData, err := db.GetOneDataByMode()
+	if err != nil {
+		log.Fatalf("获取模式数据失败: %v", err)
+	}
+	perBetAmount := sampleData.TB // 单次投注额（从数据库获取，TB字段已包含该模式的所有投注参数）
+	fmt.Printf("💰 单次投注额（从数据库获取）: %.2f\n", perBetAmount)
+
 	// 使用RtpLevels配置
+	fmt.Printf("📋 准备生成 %d 个RTP档位: ", len(RtpLevels))
+	for i, level := range RtpLevels {
+		if i > 0 {
+			fmt.Printf(", ")
+		}
+		fmt.Printf("%.0f", level.RtpNo)
+	}
+	fmt.Printf("\n")
+
 	for rtpNum := 0; rtpNum < len(RtpLevels); rtpNum++ {
 		// 并发度：CPU 核数
 		worker := runtime.NumCPU()
@@ -2083,6 +2116,14 @@ func runGenerateMode4() {
 		// 捕获当前循环变量
 		rtpNo := RtpLevels[rtpNum].RtpNo
 		rtpVal := RtpLevels[rtpNum].Rtp
+
+		// 检查配置是否存在
+		_, err := rtpConfig.GetRtpDistribution(int(rtpNo))
+		if err != nil {
+			fmt.Printf("⚠️ RTP档位 %.0f 配置不存在，跳过生成: %v\n", rtpNo, err)
+			continue
+		}
+		fmt.Printf("🔄 开始处理RTP档位 %.0f (目标RTP: %.2f)\n", rtpNo, rtpVal)
 
 		// 根据RTP档位选择配置
 		var dataNum, tableNum int
@@ -2095,8 +2136,8 @@ func runGenerateMode4() {
 			tableNum = config.Tables.DataTableNum
 		}
 
-		// 计算总投注
-		totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB * float64(dataNum)
+		// 计算总投注：使用从数据库获取的单次投注额乘以数据条数
+		totalBet := perBetAmount * float64(dataNum)
 
 		for t := 0; t < tableNum; t++ {
 			sem <- struct{}{}
@@ -2104,7 +2145,7 @@ func runGenerateMode4() {
 
 			testIndex := t + 1
 
-			go func(rtpNo float64, rtpVal float64, testIndex int, dataNum int, totalBet float64) {
+			go func(rtpNo float64, rtpVal float64, testIndex int, dataNum int, totalBet float64, perBetAmount float64) {
 				defer func() { <-sem; wg.Done() }()
 
 				// 记录单次测试开始时间
@@ -2112,14 +2153,15 @@ func runGenerateMode4() {
 				// 即时输出单次任务开始，便于观察进度
 				fmt.Printf("▶️ 开始生成（V4模式）| RTP等级 %.0f | 第%d次 | 数据量:%d | %s\n", rtpNo, testIndex, dataNum, testStartTime.Format(time.RFC3339))
 
-				if err := runRtpTestV4(db, config, rtpConfig, rtpNo, rtpVal, testIndex, totalBet, allData, dataNum); err != nil {
+				if err := runRtpTestV4(db, config, rtpConfig, rtpNo, rtpVal, testIndex, totalBet, allData, dataNum, perBetAmount); err != nil {
+					fmt.Printf("❌ RTP测试V4失败 | RTP等级 %.0f | 第%d次 | 错误: %v\n", rtpNo, testIndex, err)
 					log.Printf("RTP测试V4失败: %v", err)
 				}
 
 				// 计算并输出单次测试耗时
 				testDuration := time.Since(testStartTime)
 				fmt.Printf("⏱️  RTP等级 %.0f (第%d次生成-V4模式) 耗时: %v\n", rtpNo, testIndex, testDuration)
-			}(rtpNo, rtpVal, testIndex, dataNum, totalBet)
+			}(rtpNo, rtpVal, testIndex, dataNum, totalBet, perBetAmount)
 		}
 
 		wg.Wait()
@@ -2132,7 +2174,7 @@ func runGenerateMode4() {
 }
 
 // runRtpTestV4 执行单次RTP测试V4 - 使用RTP档位倍率分布策略
-func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, rtpLevel float64, rtp float64, testNumber int, totalBet float64, allData []GameResultData, dataNum int) error {
+func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, rtpLevel float64, rtp float64, testNumber int, totalBet float64, allData []GameResultData, dataNum int, perBetAmount float64) error {
 	var logBuf bytes.Buffer
 	printf := func(format string, a ...interface{}) {
 		fmt.Fprintf(&logBuf, format, a...)
@@ -2159,12 +2201,9 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 	seed := time.Now().UnixNano() ^ int64(config.Game.ID)*1_000_003 ^ int64(testNumber)*1_000_033 ^ int64(rtpLevel)*1_000_037
 	rng := rand.New(rand.NewSource(seed))
 
-	// 计算单次投注金额
-	perSpinBet := config.Bet.CS * config.Bet.ML * config.Bet.BL
-
-	// 按倍率区间分类数据
+	// 按倍率区间分类数据（使用从数据库获取的单次投注额，虽然函数内部已改为使用item.TB）
 	printf("🔄 正在按倍率区间分类数据...\n")
-	dataRanges := ClassifyDataByMultiplier(allData, perSpinBet)
+	dataRanges := ClassifyDataByMultiplier(allData, perBetAmount)
 
 	// 输出各区间数据统计
 	for rangeName, rangeData := range dataRanges {
@@ -2240,9 +2279,15 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 		printf("🔄 数据量超出，需要移除 %d 条数据\n", excess)
 
 		// 按RTP从低到高排序，优先移除低RTP数据
+		// 直接使用数据中的TB字段计算倍率
 		sort.Slice(adjustedData, func(i, j int) bool {
-			rtpI := adjustedData[i].AW / perSpinBet
-			rtpJ := adjustedData[j].AW / perSpinBet
+			var rtpI, rtpJ float64
+			if adjustedData[i].TB > 0 {
+				rtpI = adjustedData[i].AW / adjustedData[i].TB
+			}
+			if adjustedData[j].TB > 0 {
+				rtpJ = adjustedData[j].AW / adjustedData[j].TB
+			}
 			return rtpI < rtpJ
 		})
 
@@ -2374,8 +2419,11 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 		return fmt.Errorf("❌ 数据量不匹配：期望 %d 条, 实际 %d 条", dataNum, len(adjustedData))
 	}
 
-	// 智能打乱输出顺序，确保大倍率数据在整个序列中均匀分布
-	ShuffleDataWithMultiplierDistribution(adjustedData, perSpinBet, rng)
+	// 智能打乱输出顺序，确保大倍率数据在整个序列中均匀分布（使用从数据库获取的单次投注额，虽然函数内部已改为使用item.TB）
+	ShuffleDataWithMultiplierDistribution(adjustedData, perBetAmount, rng)
+
+	// 确保前30%数据中不出现大于20倍的大奖
+	ensureNoHighMultiplierInFirst30Percent(adjustedData, rng, printf)
 
 	// 保存到JSON文件
 	var outputDir string = filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
@@ -2391,6 +2439,85 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 	fmt.Print(logBuf.String())
 	outputMu.Unlock()
 	return nil
+}
+
+// ensureNoHighMultiplierInFirst30Percent 确保前30%数据中不出现大于20倍的大奖
+// 直接使用数据中的TB字段计算倍率
+func ensureNoHighMultiplierInFirst30Percent(data []GameResultData, rng *rand.Rand, printf func(string, ...interface{})) {
+	if len(data) == 0 {
+		return
+	}
+
+	// 计算前30%的数据量
+	first30PercentCount := int(math.Ceil(float64(len(data)) * 0.3))
+	if first30PercentCount == 0 {
+		return
+	}
+
+	// 检查前30%中是否有大于20倍的大奖
+	var highMultiplierIndices []int // 存储前30%中大于20倍的数据索引
+	var lowMultiplierIndices []int  // 存储后70%中小于等于20倍的数据索引
+
+	for i := 0; i < first30PercentCount; i++ {
+		// 直接使用数据中的TB字段计算倍率
+		if data[i].TB <= 0 {
+			continue // 跳过TB为0或负数的异常数据
+		}
+		multiplier := data[i].AW / data[i].TB
+		if multiplier > 20 {
+			highMultiplierIndices = append(highMultiplierIndices, i)
+		}
+	}
+
+	// 如果前30%中没有大于20倍的大奖，直接返回
+	if len(highMultiplierIndices) == 0 {
+		return
+	}
+
+	printf("🔄 前30%%数据中发现 %d 条大于20倍的大奖，开始调整...\n", len(highMultiplierIndices))
+
+	// 在后70%中查找小于等于20倍的数据用于替换
+	for i := first30PercentCount; i < len(data); i++ {
+		if data[i].TB <= 0 {
+			continue // 跳过TB为0或负数的异常数据
+		}
+		multiplier := data[i].AW / data[i].TB
+		if multiplier <= 20 {
+			lowMultiplierIndices = append(lowMultiplierIndices, i)
+		}
+	}
+
+	// 如果后70%中没有足够的小于等于20倍数据，输出警告
+	if len(lowMultiplierIndices) < len(highMultiplierIndices) {
+		printf("⚠️ 后70%%中小于等于20倍的数据不足（需要 %d 条，实际 %d 条），无法完全调整\n", len(highMultiplierIndices), len(lowMultiplierIndices))
+		// 只调整能调整的部分
+		if len(lowMultiplierIndices) == 0 {
+			return
+		}
+		// 限制调整数量
+		highMultiplierIndices = highMultiplierIndices[:len(lowMultiplierIndices)]
+	}
+
+	// 执行交换：将前30%中的大于20倍数据与后70%中的小于等于20倍数据交换
+	// 使用随机交换，避免大奖位置变得可预测
+	swappedCount := 0
+	swapCount := len(highMultiplierIndices)
+	if swapCount > len(lowMultiplierIndices) {
+		swapCount = len(lowMultiplierIndices)
+	}
+
+	// 随机打乱后70%中可交换数据的顺序
+	perm := rng.Perm(len(lowMultiplierIndices))
+	for i := 0; i < swapCount; i++ {
+		highIdx := highMultiplierIndices[i]
+		lowIdx := lowMultiplierIndices[perm[i]] // 使用随机排列后的索引
+
+		// 交换数据
+		data[highIdx], data[lowIdx] = data[lowIdx], data[highIdx]
+		swappedCount++
+	}
+
+	printf("✅ 已调整 %d 条数据，前30%%数据中不再包含大于20倍的大奖\n", swappedCount)
 }
 
 // parseGameIds 解析游戏ID字符串
@@ -2764,8 +2891,16 @@ func runGenerateFbMode() {
 	// 	log.Fatalf("清理数据失败: %v", err)
 	// }
 
-	// 计算总投注：cs * ml * bl * bet.fb * 数据条数
-	totalBet := config.Bet.CS * config.Bet.ML * config.Bet.BL * config.Bet.FB * float64(config.Tables.DataNumFb)
+	// 获取一条该模式的数据，用于获取TB值（单次投注额）
+	sampleData, err := db.GetOneDataByMode()
+	if err != nil {
+		log.Fatalf("获取模式数据失败: %v", err)
+	}
+	perBetAmount := sampleData.TB // 单次投注额（从数据库获取，TB字段已包含该模式的所有投注参数）
+	fmt.Printf("💰 [generateFb] 单次投注额（从数据库获取）: %.2f\n", perBetAmount)
+
+	// 计算总投注：使用从数据库获取的单次投注额乘以数据条数
+	totalBet := perBetAmount * float64(config.Tables.DataNumFb)
 
 	// 预取共享只读数据（购买模式）
 	fmt.Println("🔄 [generateFb] 正在获取购买模式中奖数据...")

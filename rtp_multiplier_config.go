@@ -87,7 +87,16 @@ func ClassifyDataByMultiplier(data []GameResultData, betAmount float64) map[stri
 
 	// 分类数据
 	for _, item := range data {
-		multiplier := item.AW / betAmount
+		// 直接使用数据中的TB字段计算倍率
+		if item.TB <= 0 {
+			// TB为0或负数，归入不中奖数据
+			rangeData := ranges["zero_win"]
+			rangeData.Data = append(rangeData.Data, item)
+			rangeData.Count++
+			ranges["zero_win"] = rangeData
+			continue
+		}
+		multiplier := item.AW / item.TB
 
 		if multiplier == 0 {
 			rangeData := ranges["zero_win"]
@@ -1167,7 +1176,13 @@ func ShuffleDataWithMultiplierDistribution(data []GameResultData, betAmount floa
 	var bigMultiplierData []GameResultData // 大倍率数据（20 < multiplier <= 100）
 
 	for _, item := range data {
-		multiplier := item.AW / betAmount
+		// 直接使用数据中的TB字段计算倍率
+		if item.TB <= 0 {
+			// TB为0或负数，归入不中奖数据
+			zeroWinData = append(zeroWinData, item)
+			continue
+		}
+		multiplier := item.AW / item.TB
 
 		if multiplier == 0 {
 			zeroWinData = append(zeroWinData, item)
