@@ -18,6 +18,19 @@ func adjustRTPBalanced(data []GameResultData, targetRTP float64, totalBet float6
 		return result, nil
 	}
 
+	// 保护机制：统计当前不中奖数据数量，确保不会过度替换
+	initialZeroWinCount := 0
+	for _, item := range result {
+		if item.AW == 0 {
+			initialZeroWinCount++
+		}
+	}
+	// 确保至少保留70%的不中奖数据（允许30%的偏差）
+	minZeroWinCount := int(float64(initialZeroWinCount) * 0.7)
+	if minZeroWinCount < 0 {
+		minZeroWinCount = 0
+	}
+
 	// 计算需要替换的总数据量（基于RTP差距）
 	totalDataCount := len(data)
 	// 估算需要替换的数据量：RTP差距越大，需要替换的数据越多
@@ -98,7 +111,19 @@ func adjustRTPBalanced(data []GameResultData, targetRTP float64, totalBet float6
 				break
 			}
 
-			// 寻找合适的高倍率数据替换
+			// 保护机制：检查当前不中奖数据数量
+			currentZeroWinCount := 0
+			for _, item := range result {
+				if item.AW == 0 {
+					currentZeroWinCount++
+				}
+			}
+			// 如果当前不中奖数据已经低于最小值，停止替换
+			if currentZeroWinCount <= minZeroWinCount {
+				break
+			}
+
+			// 寻找合适的高倍率数据替换（只替换低倍率数据，不替换不中奖数据）
 			for _, highItem := range availableHighData {
 				if highItem.AW > itemInfo.item.AW {
 					result[itemInfo.index] = highItem
@@ -129,6 +154,19 @@ func adjustRTPBalanced(data []GameResultData, targetRTP float64, totalBet float6
 func adjustRTPFinalTuning(data []GameResultData, targetRTP float64, totalBet float64, dataRanges map[string]MultiplierRange, rtpLevel int) ([]GameResultData, error) {
 	result := make([]GameResultData, len(data))
 	copy(result, data)
+
+	// 统计当前不中奖数据数量，用于保护
+	initialZeroWinCount := 0
+	for _, item := range result {
+		if item.AW == 0 {
+			initialZeroWinCount++
+		}
+	}
+	// 保护机制：确保至少保留70%的初始不中奖数据（允许30%的偏差）
+	minZeroWinCount := int(float64(initialZeroWinCount) * 0.7)
+	if minZeroWinCount < 0 {
+		minZeroWinCount = 0
+	}
 
 	// 收集所有可用的高倍率数据
 	var allHighData []GameResultData
@@ -167,8 +205,19 @@ func adjustRTPFinalTuning(data []GameResultData, targetRTP float64, totalBet flo
 		return lowMultiplierItems[i].item.AW < lowMultiplierItems[j].item.AW
 	})
 
-	// 执行最终替换
+	// 执行最终替换（不替换不中奖数据）
 	for _, itemInfo := range lowMultiplierItems {
+		// 检查当前不中奖数据数量，如果已经低于最小值，停止替换
+		currentZeroWinCount := 0
+		for _, item := range result {
+			if item.AW == 0 {
+				currentZeroWinCount++
+			}
+		}
+		if currentZeroWinCount <= minZeroWinCount {
+			break
+		}
+
 		for _, highItem := range allHighData {
 			if highItem.AW > itemInfo.item.AW {
 				result[itemInfo.index] = highItem
@@ -235,3 +284,4 @@ func validateDistributionAccuracy(data []GameResultData, totalBet float64, confi
 
 	return deviation
 }
+

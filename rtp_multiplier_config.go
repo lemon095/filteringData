@@ -362,7 +362,27 @@ func AdjustRTPByReplacement(data []GameResultData, targetRTP float64, totalBet f
 	// 如果RTP不足，使用灵活的调整策略
 	if currentRTP < targetRTP {
 		fmt.Printf("📈 RTP过低，需要提升...\n")
-		// 优先在1-5倍和5-10倍区间内调整
+		// 保护机制：确保不中奖率不会低于目标值太多
+		// 计算当前不中奖数据数量
+		currentZeroWinCount := 0
+		for _, item := range data {
+			if item.AW == 0 {
+				currentZeroWinCount++
+			}
+		}
+		// 计算目标不中奖数据数量（允许2%偏差）
+		targetZeroWinCountMin := int(float64(len(data)) * (targetNoWinRate - 0.02))
+		if targetZeroWinCountMin < 0 {
+			targetZeroWinCountMin = 0
+		}
+
+		// 如果当前不中奖数据已经低于最小值，不允许继续替换
+		if currentZeroWinCount <= targetZeroWinCountMin {
+			fmt.Printf("⚠️ 不中奖数据已接近下限（当前: %d, 最小: %d），停止RTP提升以避免中奖率偏差过大\n", currentZeroWinCount, targetZeroWinCountMin)
+			return data, nil
+		}
+
+		// 优先在1-5倍和5-10倍区间内调整（不替换不中奖数据）
 		return adjustRTPUpFlexible(data, targetRTP, totalBet, dataRanges, rtpLevel)
 	}
 
@@ -554,6 +574,24 @@ func adjustRTPDownFlexible(data []GameResultData, targetRTP float64, totalBet fl
 	result := make([]GameResultData, len(data))
 	copy(result, data)
 
+	// 保护机制：统计初始中奖数据数量，确保不会替换掉所有中奖数据
+	initialWinCount := 0
+	for _, item := range result {
+		if item.AW > 0 {
+			initialWinCount++
+		}
+	}
+	// 确保至少保留30%的中奖数据（对应70%的不中奖率，允许2%偏差）
+	minWinCount := int(float64(initialWinCount) * 0.3)
+	if minWinCount < 1 {
+		// 至少保留1条中奖数据，防止全部为0
+		minWinCount = 1
+	}
+	// 如果初始中奖数据为0，说明数据异常，直接返回
+	if initialWinCount == 0 {
+		return result, fmt.Errorf("初始数据中没有中奖数据，无法调整RTP")
+	}
+
 	// 获取不中奖数据
 	zeroWinData := dataRanges["zero_win"].Data
 	if len(zeroWinData) == 0 {
@@ -638,6 +676,24 @@ func adjustRTPDownFlexible(data []GameResultData, targetRTP float64, totalBet fl
 
 		// 尝试用不中奖数据替换该区间的大金额数据
 		for _, itemInfo := range itemsInRange {
+			// 保护机制：检查当前中奖数据数量
+			currentWinCount := 0
+			for _, item := range result {
+				if item.AW > 0 {
+					currentWinCount++
+				}
+			}
+			// 如果当前中奖数据已经低于最小值，停止替换
+			if currentWinCount <= minWinCount {
+				break
+			}
+
+			// 检查当前位置是否仍然是中奖数据（可能已经被之前的替换修改了）
+			if result[itemInfo.index].AW == 0 {
+				// 这个位置已经被替换成不中奖数据了，跳过
+				continue
+			}
+
 			// 随机选择一个不中奖数据，直接替换整个数据
 			zeroWinItem := zeroWinData[0] // 使用第一个不中奖数据
 			result[itemInfo.index] = zeroWinItem
@@ -1122,8 +1178,12 @@ func adjustRTPToLowerLimit(data []GameResultData, targetRTP float64, totalBet fl
 	}
 
 	// 替换零中奖数据直到达到RTP下限
+	// 保护机制：最多替换80%的不中奖数据，确保至少保留20%的不中奖数据
 	replaceCount := 0
-	maxReplacements := len(zeroWinIndices) // 允许替换所有零中奖数据以确保RTP下限
+	maxReplacements := int(float64(len(zeroWinIndices)) * 0.8) // 最多替换80%的不中奖数据
+	if maxReplacements < 1 {
+		maxReplacements = 1 // 至少允许替换1条
+	}
 
 	for _, rangeName := range rangeOrder {
 		if replaceCount >= maxReplacements {

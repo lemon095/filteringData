@@ -2236,23 +2236,60 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 
 	// 设置RTP下限（目标值-0.1）
 	rtpLowerLimit := rtp - 0.1
-	if finalRTP < rtpLowerLimit {
+	// 保护机制：如果RTP过低（接近0或负数），可能是数据异常，跳过动态调整
+	// 只有在RTP在合理范围内（>0.1）且低于下限时才进行调整
+	if finalRTP < rtpLowerLimit && finalRTP > 0.1 {
 		printf("⚠️ RTP低于下限 (%.6f < %.6f)，开始动态调整RTP\n", finalRTP, rtpLowerLimit)
 
-		// 动态调整RTP到下限
-		adjustedData, err = adjustRTPToLowerLimit(adjustedData, rtpLowerLimit, totalBet, dataRanges)
+		// 统计当前不中奖数据数量，用于保护
+		currentZeroWinCount := 0
+		for _, item := range adjustedData {
+			if item.AW == 0 {
+				currentZeroWinCount++
+			}
+		}
+		// 计算目标不中奖数据数量（基于配置的不中奖率，允许2%偏差）
+		targetNoWinRate := distribution.MultiplierDistribution.ZeroWin
+		targetZeroWinCountMin := int(float64(len(adjustedData)) * (targetNoWinRate - 0.02))
+		if targetZeroWinCountMin < 0 {
+			targetZeroWinCountMin = 0
+		}
+
+		// 如果当前不中奖数据已经接近下限，跳过动态调整
+		if currentZeroWinCount <= targetZeroWinCountMin {
+			printf("⚠️ 不中奖数据已接近下限（当前: %d, 最小: %d），跳过RTP动态调整以避免中奖率偏差过大\n", currentZeroWinCount, targetZeroWinCountMin)
+		} else {
+			// 动态调整RTP到下限
+			adjustedData, err = adjustRTPToLowerLimit(adjustedData, rtpLowerLimit, totalBet, dataRanges)
+			if err == nil {
+				newRTP := CalculateRTP(adjustedData, totalBet)
+				// 只有新RTP确实提升了才使用
+				if newRTP > finalRTP {
+					finalRTP = newRTP
+					rtpDeviation = math.Abs(finalRTP - rtp)
+					printf("✅ RTP动态调整完成，最终RTP: %.6f (提升: %.6f)\n", finalRTP, newRTP-finalRTP)
+				} else {
+					printf("⚠️ RTP动态调整失败，保持原RTP: %.6f\n", finalRTP)
+				}
+			} else {
+				printf("⚠️ RTP动态调整出错: %v\n", err)
+			}
+		}
+	} else if finalRTP <= 0.1 {
+		printf("⚠️ RTP过低 (%.6f)，可能是数据异常，尝试重新调整RTP\n", finalRTP)
+		// 当RTP异常低时，尝试重新调整RTP（但会受保护机制限制）
+		adjustedData, err = AdjustRTPByReplacement(adjustedData, rtp, totalBet, dataRanges, int(rtpLevel), rtpConfig)
 		if err == nil {
 			newRTP := CalculateRTP(adjustedData, totalBet)
-			// 只有新RTP确实提升了才使用
 			if newRTP > finalRTP {
 				finalRTP = newRTP
 				rtpDeviation = math.Abs(finalRTP - rtp)
-				printf("✅ RTP动态调整完成，最终RTP: %.6f (提升: %.6f)\n", finalRTP, newRTP-finalRTP)
+				printf("✅ RTP重新调整完成，最终RTP: %.6f\n", finalRTP)
 			} else {
-				printf("⚠️ RTP动态调整失败，保持原RTP: %.6f\n", finalRTP)
+				printf("⚠️ RTP重新调整失败，保持原RTP: %.6f\n", finalRTP)
 			}
 		} else {
-			printf("⚠️ RTP动态调整出错: %v\n", err)
+			printf("⚠️ RTP重新调整出错: %v\n", err)
 		}
 	}
 
@@ -2413,6 +2450,121 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 	printf("  - 设定中奖率: %.4f (%.2f%%)\n", targetWinRate, targetWinRate*100)
 	printf("  - 实际中奖率: %.4f (%.2f%%)\n", actualWinRate, actualWinRate*100)
 	printf("  - 中奖率偏差: %.4f (%.2f%%)\n", winRateDeviation, winRateDeviation*100)
+
+	// 检查中奖率偏差是否过大（超过5%），如果过大则重新生成
+	maxWinRateDeviation := 0.05 // 允许的最大中奖率偏差为5%
+	if winRateDeviation > maxWinRateDeviation {
+		printf("⚠️ 中奖率偏差过大 (%.4f > %.4f)，重新生成数据...\n", winRateDeviation, maxWinRateDeviation)
+		// 重新生成数据（最多重试3次）
+		maxRetries := 3
+		for retry := 0; retry < maxRetries; retry++ {
+			printf("🔄 第 %d 次重新生成...\n", retry+1)
+
+			// 重新生成数据
+			regeneratedData, err := GenerateDataByDistribution(distribution, dataNum, dataRanges, int(rtpLevel))
+			if err != nil {
+				printf("⚠️ 重新生成数据失败: %v\n", err)
+				break
+			}
+
+			// 重新调整RTP
+			readjustedData, err := AdjustRTPByReplacement(regeneratedData, rtp, totalBet, dataRanges, int(rtpLevel), rtpConfig)
+			if err != nil {
+				printf("⚠️ 重新调整RTP失败: %v\n", err)
+				break
+			}
+
+			// 重新计算中奖率
+			reactualWinCount := 0
+			for _, item := range readjustedData {
+				if item.AW > 0 {
+					reactualWinCount++
+				}
+			}
+			reactualWinRate := float64(reactualWinCount) / float64(len(readjustedData))
+			rewinRateDeviation := math.Abs(reactualWinRate - targetWinRate)
+
+			// 重新生成的数据也需要经过数据量补充/移除和RTP最终验证
+			// 如果数据量不足，用不中奖数据补充
+			if len(readjustedData) < dataNum {
+				needMore := dataNum - len(readjustedData)
+				// 从零倍数据中随机选择
+				if len(dataRanges["zero_win"].Data) > 0 {
+					perm := rng.Perm(len(dataRanges["zero_win"].Data))
+					for i := 0; i < needMore && i < len(perm); i++ {
+						idx := perm[i]
+						readjustedData = append(readjustedData, dataRanges["zero_win"].Data[idx])
+					}
+				}
+			}
+
+			// 如果数据量超出，优先移除低RTP数据
+			if len(readjustedData) > dataNum {
+				excess := len(readjustedData) - dataNum
+				// 按RTP从低到高排序，优先移除低RTP数据
+				sort.Slice(readjustedData, func(i, j int) bool {
+					var rtpI, rtpJ float64
+					if readjustedData[i].TB > 0 {
+						rtpI = readjustedData[i].AW / readjustedData[i].TB
+					}
+					if readjustedData[j].TB > 0 {
+						rtpJ = readjustedData[j].AW / readjustedData[j].TB
+					}
+					return rtpI < rtpJ
+				})
+				// 移除前excess个低RTP数据
+				readjustedData = readjustedData[excess:]
+			}
+
+			// 补充或移除数据后，重新计算RTP
+			refinalRTP := CalculateRTP(readjustedData, totalBet)
+
+			// 对于低档位，如果补充数据后RTP低于目标值，需要重新提升
+			if rtp <= 2.0 && refinalRTP < rtp {
+				readjustedData, err = AdjustRTPByReplacement(readjustedData, rtp, totalBet, dataRanges, int(rtpLevel), rtpConfig)
+				if err == nil {
+					refinalRTP = CalculateRTP(readjustedData, totalBet)
+				}
+			} else if rtp > 2.0 && refinalRTP < rtp {
+				// 对于高档位，如果低于目标值，也需要重新提升
+				readjustedData, err = AdjustRTPByReplacement(readjustedData, rtp, totalBet, dataRanges, int(rtpLevel), rtpConfig)
+				if err == nil {
+					refinalRTP = CalculateRTP(readjustedData, totalBet)
+				}
+			}
+
+			// 重新计算中奖率（使用处理后的数据）
+			reactualWinCount = 0
+			for _, item := range readjustedData {
+				if item.AW > 0 {
+					reactualWinCount++
+				}
+			}
+			reactualWinRate = float64(reactualWinCount) / float64(len(readjustedData))
+			rewinRateDeviation = math.Abs(reactualWinRate - targetWinRate)
+
+			// 如果中奖率偏差在可接受范围内，使用重新生成的数据
+			if rewinRateDeviation <= maxWinRateDeviation {
+				printf("✅ 重新生成成功，中奖率偏差: %.4f (%.2f%%)\n", rewinRateDeviation, rewinRateDeviation*100)
+				adjustedData = readjustedData
+				finalRTP = refinalRTP
+				rtpDeviation = math.Abs(finalRTP - rtp)
+				actualWinRate = reactualWinRate
+				winRateDeviation = rewinRateDeviation
+				break
+			} else {
+				printf("⚠️ 重新生成后中奖率偏差仍过大: %.4f (%.2f%%)\n", rewinRateDeviation, rewinRateDeviation*100)
+				if retry == maxRetries-1 {
+					printf("⚠️ 已达到最大重试次数，使用最后一次生成的数据\n")
+					adjustedData = readjustedData
+					finalRTP = refinalRTP
+					rtpDeviation = math.Abs(finalRTP - rtp)
+					actualWinRate = reactualWinRate
+					winRateDeviation = rewinRateDeviation
+				}
+			}
+		}
+	}
 
 	// 验证数据量
 	if len(adjustedData) != dataNum {
