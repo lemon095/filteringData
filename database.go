@@ -193,7 +193,7 @@ func (d *Database) GetWinData() ([]GameResultData, error) {
 	query := fmt.Sprintf(`
 		SELECT id, tb, aw, gwt, sp, fb, '[]'::jsonb AS gd, "createdAt", "updatedAt"
 		FROM %s 
-		WHERE aw > 0 AND aw < tb * 100
+		WHERE aw > 0 AND aw < tb * 100::bigint
 		AND fb = %d
 		ORDER BY id
 	`, tableName, d.Config.Game.Mode)

@@ -543,7 +543,7 @@ func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName str
 			totalBet = 0.0
 		}
 		// 根据文件mode计算rtpLevel：rtpLevel + mode/10 (如档位200+mode2=200.2)
-		rtpLevelVal := float64(rtpLevel) + float64(mode)/10.0
+		rtpLevelVal := float64(rtpLevel) + float64(mode)/100.0
 		dataID, err := parseDataID(item["id"])
 		if err != nil {
 			return fmt.Errorf("解析dataId失败: %v", err)
@@ -978,7 +978,7 @@ func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName str
 		}
 
 		// 根据文件名解析的mode计算rtpLevel：rtpLevel + fileMode/10 (如档位200+mode2=200.2)
-		rtpLevelVal := float64(rtpLevel) + float64(fileMode)/10.0
+		rtpLevelVal := float64(rtpLevel) + float64(fileMode)/100.0
 
 		*globalSrId++ // 递增全局srId
 
