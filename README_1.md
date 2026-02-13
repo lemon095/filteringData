@@ -70,9 +70,9 @@ rsync -av \
 ```
 
 ```
-ssh -i /Users/shihao/Desktop/shihao/hk.pem ec2-user@16.163.156.48
+ssh -i /Users/shihao/Desktop/shihao/hk.pem ec2-user@43.198.105.24
 ssh -i /Users/shihao/Desktop/shihao/bx.pem ec2-user@18.229.148.69
-ssh -i /Users/shihao/Desktop/shihao/us.pem ec2-user@54.88.164.42
+ssh -i /Users/shihao/Desktop/shihao/us.pem ec2-user@54.144.24.30
 ```
 
 ### 查看磁盘空间
