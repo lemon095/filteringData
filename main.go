@@ -2912,80 +2912,207 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 
 	printf("[FB] 步骤1：智能选择%d条数据（根据RTP档位）...\n", targetCount)
 
+	type ratioBucket int
+	const (
+		bucketLow ratioBucket = iota
+		bucketMid
+		bucketHigh
+		bucketInvalid
+	)
+
+	getBucket := func(item GameResultData) ratioBucket {
+		if item.TB <= 0 {
+			return bucketInvalid
+		}
+		ratio := item.AW / item.TB
+		if ratio >= 10 {
+			return bucketInvalid
+		}
+		if ratio < 0.5 {
+			return bucketLow
+		}
+		if ratio <= 1.0 {
+			return bucketMid
+		}
+		if ratio < 10.0 {
+			return bucketHigh
+		}
+		return bucketInvalid
+	}
+
+	constrainRatio := rtp > 0.7 && rtp <= 0.97
+	targetLow, targetMid, targetHigh := 0, 0, 0
+	maxHighCount := 0
+	bucketCounts := map[ratioBucket]int{}
+
 	// 步骤1：根据目标RTP智能选择初始数据
 	var primaryPool, secondaryPool []GameResultData
 	var data []GameResultData
 	used := make(map[int]bool)
 
-	if rtp < 1.0 {
-		// 低RTP档位：优先使用不盈利数据（aw < tb）
-		primaryPool = winCandidates
-		secondaryPool = profitCandidates
-		printf("[FB] 低RTP档位：优先选择不盈利数据(aw<tb)\n")
-	} else {
-		// 高RTP档位：优先使用盈利数据（aw > tb）
-		primaryPool = profitCandidates
-		secondaryPool = winCandidates
-		printf("[FB] 高RTP档位：优先选择盈利数据(aw>tb)\n")
-	}
-
-	// 从主池随机选择
-	if len(primaryPool) > 0 {
-		perm := rng.Perm(len(primaryPool))
-		for _, idx := range perm {
-			if len(data) >= targetCount {
-				break
-			}
-			item := primaryPool[idx]
-			data = append(data, item)
-			used[item.ID] = true
+	if constrainRatio {
+		targetHigh = int(math.Round(float64(targetCount) * 0.20))
+		maxHighCount = int(math.Floor(float64(targetCount) * 0.25))
+		if targetHigh > maxHighCount {
+			targetHigh = maxHighCount
 		}
-	}
+		remaining := targetCount - targetHigh
+		targetLow = int(math.Round(float64(remaining) * (0.35 / 0.80)))
+		if targetLow < 0 {
+			targetLow = 0
+		}
+		if targetLow > remaining {
+			targetLow = remaining
+		}
+		targetMid = remaining - targetLow
 
-	// 如果主池不够，从副池补充
-	if len(data) < targetCount && len(secondaryPool) > 0 {
-		perm := rng.Perm(len(secondaryPool))
-		for _, idx := range perm {
-			if len(data) >= targetCount {
-				break
+		printf("[FB] 启用倍率区间约束 (0.7<rtp<=0.97)：low=%d mid=%d high=%d (high上限=%d)\n",
+			targetLow, targetMid, targetHigh, maxHighCount)
+
+		var lowPool []GameResultData
+		var midPool []GameResultData
+		var highPool []GameResultData
+
+		for _, item := range winCandidates {
+			switch getBucket(item) {
+			case bucketLow:
+				lowPool = append(lowPool, item)
+			case bucketMid:
+				midPool = append(midPool, item)
 			}
-			item := secondaryPool[idx]
-			if !used[item.ID] {
+		}
+		for _, item := range profitCandidates {
+			switch getBucket(item) {
+			case bucketHigh:
+				highPool = append(highPool, item)
+			case bucketMid:
+				midPool = append(midPool, item)
+			}
+		}
+		for _, item := range noWinDataAll {
+			if getBucket(item) == bucketLow {
+				lowPool = append(lowPool, item)
+			}
+		}
+
+		pickFromPool := func(pool []GameResultData, target int, label string) ([]GameResultData, error) {
+			if target <= 0 {
+				return nil, nil
+			}
+			if len(pool) == 0 {
+				return nil, fmt.Errorf("%s 区间候选为空，无法满足比例约束", label)
+			}
+			var picked []GameResultData
+			perm := rng.Perm(len(pool))
+			for _, idx := range perm {
+				if len(picked) >= target {
+					break
+				}
+				item := pool[idx]
+				if !used[item.ID] {
+					picked = append(picked, item)
+					used[item.ID] = true
+				}
+			}
+			for len(picked) < target {
+				item := pool[rng.Intn(len(pool))]
+				picked = append(picked, item)
+				used[item.ID] = true
+			}
+			return picked, nil
+		}
+
+		lowPick, err := pickFromPool(lowPool, targetLow, "low(<0.5x)")
+		if err != nil {
+			return err
+		}
+		midPick, err := pickFromPool(midPool, targetMid, "mid(0.5x-1x)")
+		if err != nil {
+			return err
+		}
+		highPick, err := pickFromPool(highPool, targetHigh, "high(1x-10x)")
+		if err != nil {
+			return err
+		}
+
+		data = append(data, lowPick...)
+		data = append(data, midPick...)
+		data = append(data, highPick...)
+
+		for _, item := range data {
+			bucketCounts[getBucket(item)]++
+		}
+	} else {
+		if rtp < 1.0 {
+			// 低RTP档位：优先使用不盈利数据（aw < tb）
+			primaryPool = winCandidates
+			secondaryPool = profitCandidates
+			printf("[FB] 低RTP档位：优先选择不盈利数据(aw<tb)\n")
+		} else {
+			// 高RTP档位：优先使用盈利数据（aw > tb）
+			primaryPool = profitCandidates
+			secondaryPool = winCandidates
+			printf("[FB] 高RTP档位：优先选择盈利数据(aw>tb)\n")
+		}
+
+		// 从主池随机选择
+		if len(primaryPool) > 0 {
+			perm := rng.Perm(len(primaryPool))
+			for _, idx := range perm {
+				if len(data) >= targetCount {
+					break
+				}
+				item := primaryPool[idx]
 				data = append(data, item)
 				used[item.ID] = true
 			}
 		}
-	}
 
-	// 如果数据仍不足，通过重复补齐（类似 generate4 的逻辑）
-	if len(data) < targetCount {
-		shortage := targetCount - len(data)
-		printf("[FB] ⚠️ 数据不足：需要 %d 条，可用 %d 条，将通过重复补齐 %d 条\n", targetCount, len(data), shortage)
-
-		// 使用已选择的数据作为填充源
-		fillSource := make([]GameResultData, len(data))
-		copy(fillSource, data)
-
-		// 如果填充源为空，尝试使用所有候选数据
-		if len(fillSource) == 0 {
-			fillSource = append(fillSource, primaryPool...)
-			fillSource = append(fillSource, secondaryPool...)
-		}
-
-		// 如果仍然为空，使用不中奖数据
-		if len(fillSource) == 0 && len(noWinDataAll) > 0 {
-			fillSource = noWinDataAll
-		}
-
-		if len(fillSource) > 0 {
-			// 重复填充
-			for i := 0; i < shortage; i++ {
-				idx := rng.Intn(len(fillSource))
-				data = append(data, fillSource[idx])
+		// 如果主池不够，从副池补充
+		if len(data) < targetCount && len(secondaryPool) > 0 {
+			perm := rng.Perm(len(secondaryPool))
+			for _, idx := range perm {
+				if len(data) >= targetCount {
+					break
+				}
+				item := secondaryPool[idx]
+				if !used[item.ID] {
+					data = append(data, item)
+					used[item.ID] = true
+				}
 			}
-			printf("[FB] ✅ 重复补齐完成，当前数量: %d/%d\n", len(data), targetCount)
-		} else {
-			return fmt.Errorf("可用候选数据不足：需要%d条，实际%d条，且无可用填充源", targetCount, len(data))
+		}
+
+		// 如果数据仍不足，通过重复补齐（类似 generate4 的逻辑）
+		if len(data) < targetCount {
+			shortage := targetCount - len(data)
+			printf("[FB] ⚠️ 数据不足：需要 %d 条，可用 %d 条，将通过重复补齐 %d 条\n", targetCount, len(data), shortage)
+
+			// 使用已选择的数据作为填充源
+			fillSource := make([]GameResultData, len(data))
+			copy(fillSource, data)
+
+			// 如果填充源为空，尝试使用所有候选数据
+			if len(fillSource) == 0 {
+				fillSource = append(fillSource, primaryPool...)
+				fillSource = append(fillSource, secondaryPool...)
+			}
+
+			// 如果仍然为空，使用不中奖数据
+			if len(fillSource) == 0 && len(noWinDataAll) > 0 {
+				fillSource = noWinDataAll
+			}
+
+			if len(fillSource) > 0 {
+				// 重复填充
+				for i := 0; i < shortage; i++ {
+					idx := rng.Intn(len(fillSource))
+					data = append(data, fillSource[idx])
+				}
+				printf("[FB] ✅ 重复补齐完成，当前数量: %d/%d\n", len(data), targetCount)
+			} else {
+				return fmt.Errorf("可用候选数据不足：需要%d条，实际%d条，且无可用填充源", targetCount, len(data))
+			}
 		}
 	}
 
@@ -3004,6 +3131,73 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 		replacedCount := 0
 		targetWin := totalBet * rtp
 		winGap := targetWin - totalWin
+		allowBucketTol := int(math.Max(1, math.Round(float64(targetCount)*0.03)))
+		minLow := 0
+		maxLow := targetCount
+		minMid := 0
+		maxMid := targetCount
+		minHigh := 0
+		maxHigh := targetCount
+		if constrainRatio {
+			minLow = targetLow - allowBucketTol
+			if minLow < 0 {
+				minLow = 0
+			}
+			maxLow = targetLow + allowBucketTol
+			minMid = targetMid - allowBucketTol
+			if minMid < 0 {
+				minMid = 0
+			}
+			maxMid = targetMid + allowBucketTol
+			minHigh = targetHigh - allowBucketTol
+			if minHigh < 0 {
+				minHigh = 0
+			}
+			maxHigh = maxHighCount
+		}
+
+		canReplace := func(oldItem GameResultData, newItem GameResultData) bool {
+			if !constrainRatio {
+				return true
+			}
+			oldBucket := getBucket(oldItem)
+			newBucket := getBucket(newItem)
+			if oldBucket == bucketInvalid || newBucket == bucketInvalid {
+				return false
+			}
+			if oldBucket == newBucket {
+				return true
+			}
+			newLow := bucketCounts[bucketLow]
+			newMid := bucketCounts[bucketMid]
+			newHigh := bucketCounts[bucketHigh]
+			switch oldBucket {
+			case bucketLow:
+				newLow--
+			case bucketMid:
+				newMid--
+			case bucketHigh:
+				newHigh--
+			}
+			switch newBucket {
+			case bucketLow:
+				newLow++
+			case bucketMid:
+				newMid++
+			case bucketHigh:
+				newHigh++
+			}
+			if newLow < minLow || newLow > maxLow {
+				return false
+			}
+			if newMid < minMid || newMid > maxMid {
+				return false
+			}
+			if newHigh < minHigh || newHigh > maxHigh {
+				return false
+			}
+			return true
+		}
 
 		if currentRTP < rtp {
 			// RTP过低：用高金额数据替换低金额数据
@@ -3012,12 +3206,12 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 			// 准备未使用的替换候选数据：优先profit，然后win
 			var unusedHighCandidates []GameResultData
 			for _, item := range profitCandidates {
-				if !used[item.ID] {
+				if !used[item.ID] && (!constrainRatio || getBucket(item) != bucketInvalid) {
 					unusedHighCandidates = append(unusedHighCandidates, item)
 				}
 			}
 			for _, item := range winCandidates {
-				if !used[item.ID] {
+				if !used[item.ID] && (!constrainRatio || getBucket(item) != bucketInvalid) {
 					unusedHighCandidates = append(unusedHighCandidates, item)
 				}
 			}
@@ -3067,6 +3261,9 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 						if newItem.AW <= oldItem.AW {
 							continue
 						}
+						if !canReplace(oldItem, newItem) {
+							continue
+						}
 
 						awDelta := newItem.AW - oldItem.AW
 						newTotalWin := totalWin + awDelta
@@ -3100,6 +3297,9 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 						randIdx := rng.Intn(len(allHighCandidates))
 						newItem := allHighCandidates[randIdx]
 						if newItem.AW <= oldItem.AW {
+							continue
+						}
+						if !canReplace(oldItem, newItem) {
 							continue
 						}
 
@@ -3140,6 +3340,12 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 					data[realIdx] = newItem
 					totalWin = totalWin - oldItem.AW + newItem.AW
 					delete(used, oldItem.ID)
+					if constrainRatio {
+						oldBucket := getBucket(oldItem)
+						newBucket := getBucket(newItem)
+						bucketCounts[oldBucket]--
+						bucketCounts[newBucket]++
+					}
 
 					// 如果使用的是未使用的数据，标记为已使用并从列表中移除
 					if bestCandidateIdx >= 0 {
@@ -3177,7 +3383,7 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 
 			// 1. 优先使用不中奖数据（aw=0）
 			for _, item := range noWinDataAll {
-				if !used[item.ID] {
+				if !used[item.ID] && (!constrainRatio || getBucket(item) != bucketInvalid) {
 					replacementCandidates = append(replacementCandidates, item)
 				}
 			}
@@ -3185,7 +3391,7 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 			// 2. 补充低金额的不盈利中奖数据（aw < tb）
 			var unusedWinCandidates []GameResultData
 			for _, item := range winCandidates {
-				if !used[item.ID] {
+				if !used[item.ID] && (!constrainRatio || getBucket(item) != bucketInvalid) {
 					unusedWinCandidates = append(unusedWinCandidates, item)
 				}
 			}
@@ -3197,7 +3403,7 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 			// 3. 补充低金额的盈利数据（aw > tb）
 			var unusedProfitCandidates []GameResultData
 			for _, item := range profitCandidates {
-				if !used[item.ID] {
+				if !used[item.ID] && (!constrainRatio || getBucket(item) != bucketInvalid) {
 					unusedProfitCandidates = append(unusedProfitCandidates, item)
 				}
 			}
@@ -3235,6 +3441,9 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 					if newItem.AW >= oldItem.AW {
 						continue
 					}
+					if !canReplace(oldItem, newItem) {
+						continue
+					}
 
 					awDelta := oldItem.AW - newItem.AW
 					newTotalWin := totalWin - awDelta
@@ -3267,6 +3476,12 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 					totalWin = totalWin - oldItem.AW + newItem.AW
 					delete(used, oldItem.ID)
 					used[newItem.ID] = true
+					if constrainRatio {
+						oldBucket := getBucket(oldItem)
+						newBucket := getBucket(newItem)
+						bucketCounts[oldBucket]--
+						bucketCounts[newBucket]++
+					}
 					replacedCount++
 
 					// 移除已使用的候选
