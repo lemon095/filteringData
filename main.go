@@ -930,6 +930,7 @@ func main() {
 		fmt.Println("  ./filteringData export [outputFile] [env]     # 导出source_table_prefix表的数据到SQL文件")
 		fmt.Println("  ./filteringData import-sql <sqlFile> [env]    # 从本地SQL文件导入数据到source_table_prefix表")
 		fmt.Println("  ./filteringData import-s3-sql [gameId] [env]  # 从S3的SQL文件导入数据到source_table_prefix表")
+		fmt.Println("  ./filteringData migrate-remote [sourceEnv]     # 按 fb=0/1/2 从源库复制 GameResultData_* 到目标库（见 migrate_gameresult_remote.go）")
 		fmt.Println("     gameIds: 逗号分隔的游戏ID列表，如: 112,103,105")
 		fmt.Println("     level: 可选的RTP等级过滤")
 		fmt.Println("     env: 可选的数据库环境 (local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp)")
@@ -1114,9 +1115,18 @@ func main() {
 		// S3导入SQL命令：./filteringData import-s3-sql [gameId] [env]
 		// 从S3的SQL文件导入数据到source_table_prefix表
 		handleS3SQLImportCommand()
+	case "migrate-remote":
+		// ./filteringData migrate-remote [sourceEnv] — 目标库连接见环境变量 MIGRATE_TARGET_*
+		srcEnv := ""
+		if len(os.Args) >= 3 {
+			srcEnv = ResolveEnv(os.Args[2])
+		}
+		if err := runMigrateGameResultToRemote(srcEnv); err != nil {
+			log.Fatalf("migrate-remote: %v", err)
+		}
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate4, import, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats, export, import-sql, import-s3-sql")
+		fmt.Println("支持的命令: generate4, import, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats, export, import-sql, import-s3-sql, migrate-remote")
 		os.Exit(1)
 	}
 }
@@ -3654,44 +3664,23 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 			}
 
 		} else {
-			// RTP过高：用低金额数据替换高金额数据
+			// RTP过高：用低金额数据替换高金额数据（允许重复使用同一条低金额数据替换多条高金额）
 			printf("[FB] 🔽 RTP过高，需减少%.2f中奖金额 (智能贪心替换)...\n", -winGap)
 
-			// 准备替换候选数据：按优先级：nowin > 低aw的win > 低aw的profit
+			// 准备替换候选：所有低金额数据（不限制“未使用”，以便在没有不中奖数据时仍能用 0-1 倍替换高倍）
+			// 优先级：nowin(aw=0) > 低aw的win(aw<tb) > 低aw的profit(aw>tb)，按 AW 升序便于优先选最小
 			var replacementCandidates []GameResultData
+			replacementCandidates = append(replacementCandidates, noWinDataAll...)
+			lowAWWin := make([]GameResultData, len(winCandidates))
+			copy(lowAWWin, winCandidates)
+			sort.Slice(lowAWWin, func(i, j int) bool { return lowAWWin[i].AW < lowAWWin[j].AW })
+			replacementCandidates = append(replacementCandidates, lowAWWin...)
+			lowAWProfit := make([]GameResultData, len(profitCandidates))
+			copy(lowAWProfit, profitCandidates)
+			sort.Slice(lowAWProfit, func(i, j int) bool { return lowAWProfit[i].AW < lowAWProfit[j].AW })
+			replacementCandidates = append(replacementCandidates, lowAWProfit...)
 
-			// 1. 优先使用不中奖数据（aw=0）
-			for _, item := range noWinDataAll {
-				if !used[item.ID] {
-					replacementCandidates = append(replacementCandidates, item)
-				}
-			}
-
-			// 2. 补充低金额的不盈利中奖数据（aw < tb）
-			var unusedWinCandidates []GameResultData
-			for _, item := range winCandidates {
-				if !used[item.ID] {
-					unusedWinCandidates = append(unusedWinCandidates, item)
-				}
-			}
-			sort.Slice(unusedWinCandidates, func(i, j int) bool {
-				return unusedWinCandidates[i].AW < unusedWinCandidates[j].AW
-			})
-			replacementCandidates = append(replacementCandidates, unusedWinCandidates...)
-
-			// 3. 补充低金额的盈利数据（aw > tb）
-			var unusedProfitCandidates []GameResultData
-			for _, item := range profitCandidates {
-				if !used[item.ID] {
-					unusedProfitCandidates = append(unusedProfitCandidates, item)
-				}
-			}
-			sort.Slice(unusedProfitCandidates, func(i, j int) bool {
-				return unusedProfitCandidates[i].AW < unusedProfitCandidates[j].AW
-			})
-			replacementCandidates = append(replacementCandidates, unusedProfitCandidates...)
-
-			printf("[FB] 可用低金额替换数据: %d条\n", len(replacementCandidates))
+			printf("[FB] 可用低金额替换数据: %d条（含重复使用）\n", len(replacementCandidates))
 
 			// 对当前数据构建索引数组并按aw降序排序
 			type indexedData struct {
@@ -3706,9 +3695,8 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 				return indexedItems[i].item.AW > indexedItems[j].item.AW
 			})
 
-			// 智能贪心替换：寻找最接近目标的替换组合
-			candidateIdx := 0
-			for dataIdx := 0; dataIdx < len(indexedItems) && candidateIdx < len(replacementCandidates) && replacedCount < maxReplaceIterations; dataIdx++ {
+			// 智能贪心替换：从高到低逐条用低金额候选替换，同一低金额候选可重复使用
+			for dataIdx := 0; dataIdx < len(indexedItems) && replacedCount < maxReplaceIterations; dataIdx++ {
 				oldItem := indexedItems[dataIdx].item
 
 				// 对于RTP > 1的档位，检查当前0-1倍数据占比
@@ -3721,11 +3709,14 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 					}
 				}
 
-				// 寻找最佳替换候选（最接近目标减量的）
+				// 寻找最佳替换候选（新AW < 旧AW，且替换后RTP最接近目标）
 				bestCandidateIdx := -1
 				bestDelta := math.MaxFloat64
-
-				for j := candidateIdx; j < len(replacementCandidates) && j < candidateIdx+50; j++ {
+				searchLimit := len(replacementCandidates)
+				if searchLimit > 300 {
+					searchLimit = 300
+				}
+				for j := 0; j < searchLimit; j++ {
 					newItem := replacementCandidates[j]
 					if newItem.AW >= oldItem.AW {
 						continue
@@ -3733,41 +3724,34 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 
 					// 对于RTP > 1的档位，检查替换后是否满足0-1倍数据占比 < 50%的约束
 					if rtp > 1.0 {
-						// 如果oldItem是盈利数据（aw > tb），newItem是0-1倍数据（aw <= tb），会增加0-1倍数据占比
 						if oldItem.AW > oldItem.TB && newItem.AW <= newItem.TB {
 							newLowMultiplierCount := currentLowMultiplierCount + 1
 							maxLowMultiplierCount := len(data) - int(math.Ceil(float64(len(data))*0.5))
 							if newLowMultiplierCount > maxLowMultiplierCount {
-								continue // 跳过，因为会导致0-1倍数据占比超过50%
+								continue
 							}
 						}
-						// 如果oldItem是0-1倍数据，newItem也是0-1倍数据，占比不变，可以替换
-						// 如果oldItem是0-1倍数据，newItem是盈利数据，会减少0-1倍数据占比，可以替换
 					}
 
 					awDelta := oldItem.AW - newItem.AW
 					newTotalWin := totalWin - awDelta
 					newRTP := newTotalWin / totalBet
 
-					// 不能低于目标太多
 					if newRTP < rtp-rtpTolerance*2 {
 						continue
 					}
 
-					// 计算与目标的距离
 					rtpDelta := math.Abs(newRTP - rtp)
 					if rtpDelta < bestDelta {
 						bestDelta = rtpDelta
 						bestCandidateIdx = j
 					}
-
-					// 如果找到完美匹配，立即使用
 					if rtpDelta <= rtpTolerance {
 						break
 					}
 				}
 
-				// 执行最佳替换
+				// 执行最佳替换（不删除候选，允许同一条低金额数据被多次用来替换）
 				if bestCandidateIdx >= 0 {
 					newItem := replacementCandidates[bestCandidateIdx]
 					realIdx := indexedItems[dataIdx].idx
@@ -3778,18 +3762,12 @@ func runRtpFbTest(db *Database, config *Config, rtpLevel float64, rtp float64, t
 					used[newItem.ID] = true
 					replacedCount++
 
-					// 移除已使用的候选
-					replacementCandidates = append(replacementCandidates[:bestCandidateIdx], replacementCandidates[bestCandidateIdx+1:]...)
-
 					currentRTP = totalWin / totalBet
 
-					// 如果已经达到目标，提前退出
 					if math.Abs(currentRTP-rtp) <= rtpTolerance {
 						printf("[FB] ✅ 已达到目标RTP，提前结束替换\n")
 						break
 					}
-				} else {
-					candidateIdx++
 				}
 			}
 		}
