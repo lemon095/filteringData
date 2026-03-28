@@ -25,6 +25,41 @@ type Database struct {
 	pingInterval time.Duration
 }
 
+// configureSQLDBPool 按 config 设置连接池，返回 EnsureConnection 使用的 ping 间隔。
+func configureSQLDBPool(db *sql.DB, config *Config) (maxOpenConns, maxIdleConns int, connMaxLifetime, connMaxIdleTime, pingInterval time.Duration) {
+	maxOpenConns = 25
+	maxIdleConns = 10
+	connMaxLifetime = 30 * time.Minute
+	connMaxIdleTime = 5 * time.Minute
+	pingInterval = 2 * time.Minute
+
+	if config.Settings.Database.MaxOpenConns > 0 {
+		maxOpenConns = config.Settings.Database.MaxOpenConns
+	}
+	if config.Settings.Database.MaxIdleConns > 0 {
+		maxIdleConns = config.Settings.Database.MaxIdleConns
+	}
+	if config.Settings.Database.ConnMaxLifetime > 0 {
+		connMaxLifetime = time.Duration(config.Settings.Database.ConnMaxLifetime) * time.Minute
+	} else if config.Settings.Database.ConnMaxLifetime == 0 {
+		connMaxLifetime = 0
+	}
+	if config.Settings.Database.ConnMaxIdleTime > 0 {
+		connMaxIdleTime = time.Duration(config.Settings.Database.ConnMaxIdleTime) * time.Minute
+	}
+	if config.Settings.Database.PingInterval > 0 {
+		pingInterval = time.Duration(config.Settings.Database.PingInterval) * time.Minute
+	}
+
+	db.SetMaxOpenConns(maxOpenConns)
+	db.SetMaxIdleConns(maxIdleConns)
+	if connMaxLifetime > 0 {
+		db.SetConnMaxLifetime(connMaxLifetime)
+	}
+	db.SetConnMaxIdleTime(connMaxIdleTime)
+	return maxOpenConns, maxIdleConns, connMaxLifetime, connMaxIdleTime, pingInterval
+}
+
 // NewDatabase 创建数据库连接
 func NewDatabase(config *Config, env string) (*Database, error) {
 	dbConfig, err := config.GetDatabaseConfig(env)
@@ -47,38 +82,7 @@ func NewDatabase(config *Config, env string) (*Database, error) {
 		return nil, fmt.Errorf("连接数据库失败: %v", err)
 	}
 
-	// 优化连接池配置 - 使用配置文件
-	maxOpenConns := 25
-	maxIdleConns := 10
-	connMaxLifetime := 30 * time.Minute
-	connMaxIdleTime := 5 * time.Minute
-	pingInterval := 2 * time.Minute
-
-	// 如果配置文件中有设置，使用配置文件的值
-	if config.Settings.Database.MaxOpenConns > 0 {
-		maxOpenConns = config.Settings.Database.MaxOpenConns
-	}
-	if config.Settings.Database.MaxIdleConns > 0 {
-		maxIdleConns = config.Settings.Database.MaxIdleConns
-	}
-	if config.Settings.Database.ConnMaxLifetime > 0 {
-		connMaxLifetime = time.Duration(config.Settings.Database.ConnMaxLifetime) * time.Minute
-	} else if config.Settings.Database.ConnMaxLifetime == 0 {
-		connMaxLifetime = 0 // 0表示无限制
-	}
-	if config.Settings.Database.ConnMaxIdleTime > 0 {
-		connMaxIdleTime = time.Duration(config.Settings.Database.ConnMaxIdleTime) * time.Minute
-	}
-	if config.Settings.Database.PingInterval > 0 {
-		pingInterval = time.Duration(config.Settings.Database.PingInterval) * time.Minute
-	}
-
-	db.SetMaxOpenConns(maxOpenConns)
-	db.SetMaxIdleConns(maxIdleConns)
-	if connMaxLifetime > 0 {
-		db.SetConnMaxLifetime(connMaxLifetime)
-	}
-	db.SetConnMaxIdleTime(connMaxIdleTime)
+	maxOpenConns, maxIdleConns, connMaxLifetime, connMaxIdleTime, pingInterval := configureSQLDBPool(db, config)
 
 	// 测试连接
 	if err := db.Ping(); err != nil {
