@@ -24,8 +24,8 @@ const migrateBatchSize = 500
 // 每个 fb 最多迁移条数（按 id 升序；源不足则只迁现有条数）
 const (
 	migrateMaxRowsFB0 = 5000
-	migrateMaxRowsFB1 = 1000
-	migrateMaxRowsFB2 = 1000
+	migrateMaxRowsFB1 = 500
+	migrateMaxRowsFB2 = 500
 )
 
 func migrateMaxRowsForFB(fb int) int {
