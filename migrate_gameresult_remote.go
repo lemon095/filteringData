@@ -49,8 +49,8 @@ func min64(a, b int64) int64 {
 }
 
 // 目标库连接从环境变量读取（勿把密码写进代码或提交仓库）：
-//   MIGRATE_TARGET_HOST, MIGRATE_TARGET_PORT, MIGRATE_TARGET_USER, MIGRATE_TARGET_PASSWORD, MIGRATE_TARGET_DBNAME
-// 可选：MIGRATE_TARGET_SSLMODE（默认 disable）
+//   MIGRATE_TARGET_HOST, MIGRATE_TARGET_PORT, MIGRATE_TARGET_USER, MIGRATE_TARGET_PASSWORD
+// 可选：MIGRATE_TARGET_DBNAME（未设置时默认数据库名 mpg）、MIGRATE_TARGET_SSLMODE（默认 disable）
 
 func targetDBConfigFromEnv() (DatabaseConfig, error) {
 	host := os.Getenv("MIGRATE_TARGET_HOST")
@@ -59,7 +59,7 @@ func targetDBConfigFromEnv() (DatabaseConfig, error) {
 	pass := os.Getenv("MIGRATE_TARGET_PASSWORD")
 	dbname := os.Getenv("MIGRATE_TARGET_DBNAME")
 	if dbname == "" {
-		dbname = "postgres"
+		dbname = "mpg"
 	}
 	ssl := os.Getenv("MIGRATE_TARGET_SSLMODE")
 	if ssl == "" {
