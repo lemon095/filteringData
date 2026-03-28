@@ -110,7 +110,8 @@ func openSQLDB(cfg DatabaseConfig) (*sql.DB, error) {
 	return db, nil
 }
 
-// openTargetDatabaseForJSONImport 使用 MIGRATE_TARGET_* 连接目标库并包装为 *Database，供 import-remote 写入 GameResults_* 表。
+// openTargetDatabaseForJSONImport 使用 MIGRATE_TARGET_* 连接远程库并包装为 *Database。
+// 供 import-remote 写入 GameResults_*，以及 generate4-remote 只读拉取 GameResultData_* 源表。
 func openTargetDatabaseForJSONImport(cfg *Config) (*Database, error) {
 	targetCfg, err := targetDBConfigFromEnv()
 	if err != nil {

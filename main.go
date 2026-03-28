@@ -919,7 +919,8 @@ func main() {
 	// 检查命令行参数
 	if len(os.Args) < 2 {
 		fmt.Println("使用方法:")
-		fmt.Println("  ./filteringData generate4                   # 生成RTP测试数据V4（RTP档位倍率分布策略）")
+		fmt.Println("  ./filteringData generate4                   # 生成RTP测试数据V4（从默认环境库读源表）")
+		fmt.Println("  ./filteringData generate4-remote            # 同 generate4，源表从 MIGRATE_TARGET_* 远程库只读")
 		fmt.Println("  ./filteringData import                     # 导入output目录下的所有JSON文件到数据库")
 		fmt.Println("  ./filteringData import [fileLevelId]       # 只导入指定fileLevelId的JSON文件")
 		fmt.Println("  ./filteringData import-remote ...          # 与 import 参数相同，写入 MIGRATE_TARGET_* 目标库（不写源环境库）")
@@ -966,6 +967,8 @@ func main() {
 	switch command {
 	case "generate4":
 		runGenerateMode4()
+	case "generate4-remote":
+		runGenerateMode4Remote()
 	case "generateFb":
 		runGenerateFbMode()
 	case "import":
@@ -1175,7 +1178,7 @@ func main() {
 		}
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate4, import, import-remote, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats, export, import-sql, import-s3-sql, migrate-remote")
+		fmt.Println("支持的命令: generate4, generate4-remote, import, import-remote, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats, export, import-sql, import-s3-sql, migrate-remote")
 		os.Exit(1)
 	}
 }
@@ -2136,51 +2139,76 @@ func runImportFbModeWithGameId(gameId int, levelId string, env string) {
 	fmt.Println("\n🎉 [importFb] 所有文件导入完成！")
 }
 
-// runGenerateMode4 运行生成模式V4 - 使用RTP档位倍率分布策略
+// runGenerateMode4 运行生成模式V4 - 使用RTP档位倍率分布策略（源表：config 默认环境库）
 func runGenerateMode4() {
-	// 记录程序开始时间
 	startTime := time.Now()
-
-	// 初始化随机数种子
 	rand.Seed(time.Now().UnixNano())
 
-	// 加载配置文件
 	config, err := LoadConfig("config.yaml")
 	if err != nil {
 		log.Fatalf("加载配置文件失败: %v", err)
 	}
-	fmt.Printf("配置加载成功（V4模式）- 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNum)
-	fmt.Printf("🔧 V4策略：RTP档位倍率分布策略\n")
-	fmt.Printf("📋 高RTP档位(14,15,120,150,200,300,500)将使用V3配置: data_num_v3=%d, data_table_num_3=%d\n",
-		config.Tables.DataNum, config.Tables.DataTableNum)
-
-	// 加载RTP倍率分布配置
 	rtpConfig, err := LoadRtpMultiplierConfig("rtp_multiplier_config.yaml")
 	if err != nil {
 		log.Fatalf("加载RTP倍率分布配置失败: %v", err)
 	}
 
-	// 连接数据库
 	db, err := NewDatabase(config, "")
 	if err != nil {
 		log.Fatalf("数据库连接失败: %v", err)
 	}
 	defer db.Close()
 
-	// 清理 sp=true 且 aw=0 的数据（根据配置决定是否执行）
-	shouldClean := true // 默认值为true
-	if config.Game.CleanSpZeroAw != nil {
-		shouldClean = *config.Game.CleanSpZeroAw
+	runGenerateMode4Connected(startTime, db, config, rtpConfig, false)
+}
+
+// runGenerateMode4Remote 与 generate4 相同逻辑，但从 MIGRATE_TARGET_* 只读源表；不在远程库执行 CleanSpZeroAw。
+func runGenerateMode4Remote() {
+	startTime := time.Now()
+	rand.Seed(time.Now().UnixNano())
+
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("加载配置文件失败: %v", err)
 	}
-	if shouldClean {
-		if err := db.CleanSpZeroAwData(); err != nil {
-			log.Fatalf("清理数据失败: %v", err)
-		}
-	} else {
-		fmt.Println("⏭️  跳过清理 sp=true 且 aw=0 的数据（配置中 clean_sp_zero_aw=false）")
+	rtpConfig, err := LoadRtpMultiplierConfig("rtp_multiplier_config.yaml")
+	if err != nil {
+		log.Fatalf("加载RTP倍率分布配置失败: %v", err)
 	}
 
-	// 预取共享只读数据
+	db, err := openTargetDatabaseForJSONImport(config)
+	if err != nil {
+		log.Fatalf("连接远程源库失败: %v", err)
+	}
+	defer db.Close()
+
+	fmt.Println("📡 generate4-remote：从 MIGRATE_TARGET_* 读取 GameResultData_*（只读）；JSON 写入本地 output/；不会在远程库执行清理。")
+	runGenerateMode4Connected(startTime, db, config, rtpConfig, true)
+}
+
+func runGenerateMode4Connected(startTime time.Time, db *Database, config *Config, rtpConfig *RtpMultiplierConfig, remoteReadOnlySource bool) {
+	fmt.Printf("配置加载成功（V4模式）- 游戏ID: %d, 目标数据量: %d\n", config.Game.ID, config.Tables.DataNum)
+	fmt.Printf("🔧 V4策略：RTP档位倍率分布策略\n")
+	fmt.Printf("📋 高RTP档位(14,15,120,150,200,300,500)将使用V3配置: data_num_v3=%d, data_table_num_3=%d\n",
+		config.Tables.DataNum, config.Tables.DataTableNum)
+	fmt.Printf("📂 源表: %s（mode/fb 来自 config.game）\n", db.GetTableName())
+
+	if remoteReadOnlySource {
+		fmt.Println("⏭️  远程读库：跳过 CleanSpZeroAw（避免在远程库 DELETE）")
+	} else {
+		shouldClean := true
+		if config.Game.CleanSpZeroAw != nil {
+			shouldClean = *config.Game.CleanSpZeroAw
+		}
+		if shouldClean {
+			if err := db.CleanSpZeroAwData(); err != nil {
+				log.Fatalf("清理数据失败: %v", err)
+			}
+		} else {
+			fmt.Println("⏭️  跳过清理 sp=true 且 aw=0 的数据（配置中 clean_sp_zero_aw=false）")
+		}
+	}
+
 	winDataAll, err := db.GetWinData()
 	if err != nil {
 		log.Fatalf("获取中奖数据失败: %v", err)
@@ -2190,19 +2218,16 @@ func runGenerateMode4() {
 		log.Fatalf("获取不中奖数据失败: %v", err)
 	}
 
-	// 合并所有数据
 	allData := append(winDataAll, noWinDataAll...)
 	fmt.Printf("✅ 总数据量: %d 条（中奖: %d, 不中奖: %d）\n", len(allData), len(winDataAll), len(noWinDataAll))
 
-	// 获取一条该模式的数据，用于获取TB值（单次投注额）
 	sampleData, err := db.GetOneDataByMode()
 	if err != nil {
 		log.Fatalf("获取模式数据失败: %v", err)
 	}
-	perBetAmount := sampleData.TB // 单次投注额（从数据库获取，TB字段已包含该模式的所有投注参数）
+	perBetAmount := sampleData.TB
 	fmt.Printf("💰 单次投注额（从数据库获取）: %.2f\n", perBetAmount)
 
-	// 使用RtpLevels配置
 	fmt.Printf("📋 准备生成 %d 个RTP档位: ", len(RtpLevels))
 	for i, level := range RtpLevels {
 		if i > 0 {
@@ -2213,16 +2238,13 @@ func runGenerateMode4() {
 	fmt.Printf("\n")
 
 	for rtpNum := 0; rtpNum < len(RtpLevels); rtpNum++ {
-		// 并发度：CPU 核数
 		worker := runtime.NumCPU()
 		sem := make(chan struct{}, worker)
 		var wg sync.WaitGroup
 
-		// 捕获当前循环变量
 		rtpNo := RtpLevels[rtpNum].RtpNo
 		rtpVal := RtpLevels[rtpNum].Rtp
 
-		// 检查配置是否存在
 		_, err := rtpConfig.GetRtpDistribution(int(rtpNo))
 		if err != nil {
 			fmt.Printf("⚠️ RTP档位 %.0f 配置不存在，跳过生成: %v\n", rtpNo, err)
@@ -2230,7 +2252,6 @@ func runGenerateMode4() {
 		}
 		fmt.Printf("🔄 开始处理RTP档位 %.0f (目标RTP: %.2f)\n", rtpNo, rtpVal)
 
-		// 根据RTP档位选择配置
 		var dataNum, tableNum int
 		if isHighRtpLevel(rtpNo) {
 			dataNum = config.Tables.DataNumV3
@@ -2241,7 +2262,6 @@ func runGenerateMode4() {
 			tableNum = config.Tables.DataTableNum
 		}
 
-		// 计算总投注：使用从数据库获取的单次投注额乘以数据条数
 		totalBet := perBetAmount * float64(dataNum)
 
 		for t := 0; t < tableNum; t++ {
@@ -2253,9 +2273,7 @@ func runGenerateMode4() {
 			go func(rtpNo float64, rtpVal float64, testIndex int, dataNum int, totalBet float64, perBetAmount float64) {
 				defer func() { <-sem; wg.Done() }()
 
-				// 记录单次测试开始时间
 				testStartTime := time.Now()
-				// 即时输出单次任务开始，便于观察进度
 				fmt.Printf("▶️ 开始生成（V4模式）| RTP等级 %.0f | 第%d次 | 数据量:%d | %s\n", rtpNo, testIndex, dataNum, testStartTime.Format(time.RFC3339))
 
 				if err := runRtpTestV4(db, config, rtpConfig, rtpNo, rtpVal, testIndex, totalBet, allData, dataNum, perBetAmount); err != nil {
@@ -2263,7 +2281,6 @@ func runGenerateMode4() {
 					log.Printf("RTP测试V4失败: %v", err)
 				}
 
-				// 计算并输出单次测试耗时
 				testDuration := time.Since(testStartTime)
 				fmt.Printf("⏱️  RTP等级 %.0f (第%d次生成-V4模式) 耗时: %v\n", rtpNo, testIndex, testDuration)
 			}(rtpNo, rtpVal, testIndex, dataNum, totalBet, perBetAmount)
@@ -2272,9 +2289,12 @@ func runGenerateMode4() {
 		wg.Wait()
 	}
 
-	// 计算并输出整个程序的总耗时
 	totalDuration := time.Since(startTime)
-	fmt.Printf("\n🎉 RTP数据筛选和保存完成（V4模式）！\n")
+	if remoteReadOnlySource {
+		fmt.Printf("\n🎉 RTP数据筛选和保存完成（V4模式 · 远程源表）！\n")
+	} else {
+		fmt.Printf("\n🎉 RTP数据筛选和保存完成（V4模式）！\n")
+	}
 	fmt.Printf("⏱️  整个程序总耗时: %v\n", totalDuration)
 }
 
