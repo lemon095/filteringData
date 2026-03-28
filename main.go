@@ -922,6 +922,7 @@ func main() {
 		fmt.Println("  ./filteringData generate4                   # 生成RTP测试数据V4（RTP档位倍率分布策略）")
 		fmt.Println("  ./filteringData import                     # 导入output目录下的所有JSON文件到数据库")
 		fmt.Println("  ./filteringData import [fileLevelId]       # 只导入指定fileLevelId的JSON文件")
+		fmt.Println("  ./filteringData import-remote ...          # 与 import 参数相同，写入 MIGRATE_TARGET_* 目标库（不写源环境库）")
 		fmt.Println("  ./filteringData import-s3 <gameIds> [level] [env] # 从S3智能导入（自动检测normal和fb模式）")
 		fmt.Println("  ./filteringData import-s3-normal <gameIds> [level] [env] # 从S3导入普通模式文件")
 		fmt.Println("  ./filteringData import-s3-fb <gameIds> [level] [env] # 从S3导入购买夺宝模式文件")
@@ -930,7 +931,8 @@ func main() {
 		fmt.Println("  ./filteringData export [outputFile] [env]     # 导出source_table_prefix表的数据到SQL文件")
 		fmt.Println("  ./filteringData import-sql <sqlFile> [env]    # 从本地SQL文件导入数据到source_table_prefix表")
 		fmt.Println("  ./filteringData import-s3-sql [gameId] [env]  # 从S3的SQL文件导入数据到source_table_prefix表")
-		fmt.Println("  ./filteringData migrate-remote [sourceEnv]     # 按 fb=0/1/2 从源库复制 GameResultData_* 到目标库（见 migrate_gameresult_remote.go）")
+		fmt.Println("  ./filteringData migrate-remote [sourceEnv]     # 按 fb=0/1/2 从源库复制 GameResultData_* 到目标库（MIGRATE_TARGET_*）")
+		fmt.Println("  ./filteringData import-remote ...              # 将 output 下 JSON 导入目标库 GameResults_*（MIGRATE_TARGET_*，参数同 import）")
 		fmt.Println("     gameIds: 逗号分隔的游戏ID列表，如: 112,103,105")
 		fmt.Println("     level: 可选的RTP等级过滤")
 		fmt.Println("     env: 可选的数据库环境 (local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp)")
@@ -940,6 +942,7 @@ func main() {
 		fmt.Println("")
 		fmt.Println("示例:")
 		fmt.Println("  ./filteringData import                     # 导入所有文件")
+		fmt.Println("  ./filteringData import-remote              # 同上，写入目标库（需 MIGRATE_TARGET_*）")
 		fmt.Println("  ./filteringData import 1                   # 只导入GameResults_1_*.json文件")
 		fmt.Println("  ./filteringData import 93                  # 只导入GameResults_93_*.json文件")
 		fmt.Println("  ./filteringData import-s3 112,103,105      # 智能导入游戏112,103,105（自动检测模式）")
@@ -1025,6 +1028,52 @@ func main() {
 			fmt.Println("用法5: ./filteringData import <levelId> <env>")
 			fmt.Println("用法6: ./filteringData import <gameId> <level> <env>")
 			fmt.Println("\n环境代码: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp")
+			os.Exit(1)
+		}
+	case "import-remote":
+		// 与 import 相同参数，数据写入 MIGRATE_TARGET_*；第二、三参数中的 env 仅用于与 import 用法对齐，不参与目标库连接
+		if len(os.Args) == 2 {
+			runImportRemoteMode("", "")
+		} else if len(os.Args) == 3 {
+			arg := os.Args[2]
+			if isGameId(arg) {
+				gid, _ := strconv.Atoi(arg)
+				runImportRemoteModeWithGameId(gid, "", "")
+			} else {
+				runImportRemoteMode(arg, "")
+			}
+		} else if len(os.Args) == 4 {
+			arg1, arg2 := os.Args[2], os.Args[3]
+			if isGameId(arg1) && IsEnv(arg2) {
+				gid, _ := strconv.Atoi(arg1)
+				runImportRemoteModeWithGameId(gid, "", "")
+			} else if IsEnv(arg2) {
+				runImportRemoteMode(arg1, "")
+			} else if isGameId(arg1) {
+				gid, _ := strconv.Atoi(arg1)
+				runImportRemoteModeWithGameId(gid, arg2, "")
+			} else {
+				fmt.Printf("❌ 参数错误: 无法识别参数组合\n")
+				os.Exit(1)
+			}
+		} else if len(os.Args) == 5 {
+			gidStr, lvl, _ := os.Args[2], os.Args[3], os.Args[4]
+			gid, err := strconv.Atoi(gidStr)
+			if err != nil {
+				fmt.Printf("❌ 参数错误: gameId 必须为整数\n")
+				os.Exit(1)
+			}
+			runImportRemoteModeWithGameId(gid, lvl, "")
+		} else {
+			fmt.Printf("❌ 参数错误: import-remote 参数过多\n")
+			fmt.Println("用法与 import 相同；数据库始终为 MIGRATE_TARGET_*，无需也不使用环境库连接。")
+			fmt.Println("用法1: ./filteringData import-remote")
+			fmt.Println("用法2: ./filteringData import-remote <gameId>")
+			fmt.Println("用法3: ./filteringData import-remote <levelId>")
+			fmt.Println("用法4: ./filteringData import-remote <gameId> <levelId>")
+			fmt.Println("用法5: ./filteringData import-remote <gameId> <env>  # env 会被忽略，仅兼容习惯")
+			fmt.Println("用法6: ./filteringData import-remote <levelId> <env>  # env 忽略")
+			fmt.Println("用法7: ./filteringData import-remote <gameId> <levelId> <env>  # env 忽略")
 			os.Exit(1)
 		}
 	case "importFb":
@@ -1126,7 +1175,7 @@ func main() {
 		}
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate4, import, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats, export, import-sql, import-s3-sql, migrate-remote")
+		fmt.Println("支持的命令: generate4, import, import-remote, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats, export, import-sql, import-s3-sql, migrate-remote")
 		os.Exit(1)
 	}
 }
@@ -1199,6 +1248,52 @@ func runImportModeWithGameId(gameId int, levelId string, env string) {
 		log.Fatalf("❌ 导入失败: %v", err)
 	}
 	fmt.Println("✅ 导入完成！")
+}
+
+func runImportRemoteMode(fileLevelId string, _ string) {
+	tag := " [目标库: MIGRATE_TARGET_*]"
+	if fileLevelId == "" {
+		fmt.Printf("🔄 import-remote：导入 config.game 对应 output 目录 JSON 到目标库%s\n", tag)
+	} else {
+		fmt.Printf("🔄 import-remote：只导入 levelId=%s 的 JSON 到目标库%s\n", fileLevelId, tag)
+	}
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("❌ 加载配置失败: %v", err)
+	}
+	db, err := openTargetDatabaseForJSONImport(config)
+	if err != nil {
+		log.Fatalf("❌ %v", err)
+	}
+	defer db.Close()
+	importer := NewJSONImporter(db, config)
+	if err := importer.ImportAllFiles(fileLevelId); err != nil {
+		log.Fatalf("❌ import-remote 失败: %v", err)
+	}
+	fmt.Println("✅ import-remote 完成！")
+}
+
+func runImportRemoteModeWithGameId(gameId int, levelId string, _ string) {
+	tag := " [目标库: MIGRATE_TARGET_*]"
+	if levelId == "" {
+		fmt.Printf("🔄 import-remote：导入 output/%d 下全部 JSON 到目标库%s\n", gameId, tag)
+	} else {
+		fmt.Printf("🔄 import-remote：只导入 output/%d 下 levelId=%s 的 JSON 到目标库%s\n", gameId, levelId, tag)
+	}
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("❌ 加载配置失败: %v", err)
+	}
+	db, err := openTargetDatabaseForJSONImport(config)
+	if err != nil {
+		log.Fatalf("❌ %v", err)
+	}
+	defer db.Close()
+	importer := NewJSONImporter(db, config)
+	if err := importer.ImportAllFilesWithGameId(gameId, levelId); err != nil {
+		log.Fatalf("❌ import-remote 失败: %v", err)
+	}
+	fmt.Println("✅ import-remote 完成！")
 }
 
 // smartFillFbData 智能填充购买夺宝数据（动态平衡数量和RTP）

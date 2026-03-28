@@ -110,6 +110,27 @@ func openSQLDB(cfg DatabaseConfig) (*sql.DB, error) {
 	return db, nil
 }
 
+// openTargetDatabaseForJSONImport 使用 MIGRATE_TARGET_* 连接目标库并包装为 *Database，供 import-remote 写入 GameResults_* 表。
+func openTargetDatabaseForJSONImport(cfg *Config) (*Database, error) {
+	targetCfg, err := targetDBConfigFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	sqlDB, err := openSQLDB(targetCfg)
+	if err != nil {
+		return nil, fmt.Errorf("连接目标库: %w", err)
+	}
+	maxOpen, maxIdle, connLife, connIdle, pingInterval := configureSQLDBPool(sqlDB, cfg)
+	log.Printf("import-remote 目标库已连接 [%s:%d db=%s 连接池:最大%d/空闲%d 生存:%v 空闲:%v]",
+		targetCfg.Host, targetCfg.Port, targetCfg.Dbname, maxOpen, maxIdle, connLife, connIdle)
+	return &Database{
+		DB:           sqlDB,
+		Config:       cfg,
+		lastPingTime: time.Now(),
+		pingInterval: pingInterval,
+	}, nil
+}
+
 func regclassExists(db *sql.DB, fqName string) (bool, error) {
 	var reg sql.NullString
 	err := db.QueryRow(`SELECT to_regclass($1)::text`, fqName).Scan(&reg)
