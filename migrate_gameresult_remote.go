@@ -15,11 +15,12 @@ import (
 
 // migrateGameIDs 源库中要迁移的游戏 ID 列表
 var migrateGameIDs = []int{
-	3,
-	25, 28, 29, 36, 58, 59, 62, 64, 67, 70, 79, 82, 83, 85, 86, 88, 91, 92, 94, 100, 102, 107, 108, 113, 119, 120, 121, 129,
-	1338274, 1381200, 1397455, 1418544, 1420892, 1432733, 1448762, 1473388, 1529867, 1555350, 1568554, 1594259, 1615454, 1648578,
-	1702123, 1755623, 1760238, 1778752, 1804577, 1815268, 1834850, 1849515, 1865521, 1881268, 1929177, 1940257, 1964781,
+	58, 33, 24, 59, 62, 64, 70, 82, 86, 107, 93, 130,
+	1338274, 1418544, 1432733, 1489936, 1601012, 1615454, 1702123, 1804577,
 }
+
+// migrateFBValues 迁移时按 fb 分桶拉取与上限控制
+var migrateFBValues = []int{0, 1, 2, 3}
 
 const migrateBatchSize = 500
 
@@ -28,6 +29,7 @@ const (
 	migrateMaxRowsFB0 = 2000
 	migrateMaxRowsFB1 = 500
 	migrateMaxRowsFB2 = 500
+	migrateMaxRowsFB3 = 500
 )
 
 func migrateMaxRowsForFB(fb int) int {
@@ -38,6 +40,8 @@ func migrateMaxRowsForFB(fb int) int {
 		return migrateMaxRowsFB1
 	case 2:
 		return migrateMaxRowsFB2
+	case 3:
+		return migrateMaxRowsFB3
 	default:
 		return 0
 	}
@@ -220,6 +224,9 @@ func runMigrateGameResultToRemote(sourceEnv string) error {
 		sourceEnv, targetCfg.Host, targetCfg.Port, targetCfg.Dbname)
 	log.Printf("ℹ️  数据路径: 源库 SELECT → 本进程 → 目标库 INSERT；跨网络时下行(读源)+上行(写目标)都会走流量，总量约等于所选行（含 gd JSON）的字节体积。")
 
+	var noSourceTableGameIDs []int
+	var noDataAnyFBGameIDs []int
+
 	totalGames := len(migrateGameIDs)
 	for gi, gameID := range migrateGameIDs {
 		srcTable := quotedTableIdent(prefix, gameID)
@@ -229,6 +236,7 @@ func runMigrateGameResultToRemote(sourceEnv string) error {
 		}
 		if !existsSrc {
 			log.Printf("⏭️  [%d/%d] 跳过 gameId=%d：源库不存在表 %s", gi+1, totalGames, gameID, srcTable)
+			noSourceTableGameIDs = append(noSourceTableGameIDs, gameID)
 			continue
 		}
 
@@ -243,7 +251,7 @@ func runMigrateGameResultToRemote(sourceEnv string) error {
 		}
 
 		var totalToCopy int64
-		for _, fb := range []int{0, 1, 2} {
+		for _, fb := range migrateFBValues {
 			var c int64
 			q := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE "fb" = $1`, srcTable)
 			if err := srcDB.DB.QueryRow(q, fb).Scan(&c); err != nil {
@@ -256,13 +264,14 @@ func runMigrateGameResultToRemote(sourceEnv string) error {
 			totalToCopy += min64(c, capN)
 		}
 		if totalToCopy == 0 {
-			log.Printf("⏭️  [%d/%d] 跳过 gameId=%d：fb=0/1/2 均无数据", gi+1, totalGames, gameID)
+			log.Printf("⏭️  [%d/%d] 跳过 gameId=%d：fb=0/1/2/3 均无数据", gi+1, totalGames, gameID)
+			noDataAnyFBGameIDs = append(noDataAnyFBGameIDs, gameID)
 			continue
 		}
 
 		gameStart := time.Now()
-		log.Printf("▶️  [%d/%d] gameId=%d 开始迁移，预计约 %d 行（fb=0≤%d，fb=1≤%d，fb=2≤%d，按 id 升序）",
-			gi+1, totalGames, gameID, totalToCopy, migrateMaxRowsFB0, migrateMaxRowsFB1, migrateMaxRowsFB2)
+		log.Printf("▶️  [%d/%d] gameId=%d 开始迁移，预计约 %d 行（fb=0≤%d，fb=1/2/3≤%d/%d/%d，按 id 升序）",
+			gi+1, totalGames, gameID, totalToCopy, migrateMaxRowsFB0, migrateMaxRowsFB1, migrateMaxRowsFB2, migrateMaxRowsFB3)
 
 		if err := createGameResultDataTableOnRemote(dstDB, prefix, gameID); err != nil {
 			return fmt.Errorf("目标库建表 gameId=%d: %w", gameID, err)
@@ -274,7 +283,7 @@ func runMigrateGameResultToRemote(sourceEnv string) error {
 			srcTable,
 		)
 
-		for _, fb := range []int{0, 1, 2} {
+		for _, fb := range migrateFBValues {
 			var sourceCnt int64
 			countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE "fb" = $1`, srcTable)
 			if err := srcDB.DB.QueryRow(countQ, fb).Scan(&sourceCnt); err != nil {
@@ -387,6 +396,18 @@ func runMigrateGameResultToRemote(sourceEnv string) error {
 			return fmt.Errorf("同步序列 gameId=%d: %w", gameID, err)
 		}
 		log.Printf("🎉 [%d/%d] gameId=%d 迁移完成，共 %d 行，本游戏耗时 %v", gi+1, totalGames, gameID, totalToCopy, time.Since(gameStart).Round(time.Millisecond))
+	}
+
+	log.Println("======== 未导出汇总（仅：源表不存在，或源表存在但 fb=0/1/2/3 均无任何行）========")
+	if len(noSourceTableGameIDs) == 0 && len(noDataAnyFBGameIDs) == 0 {
+		log.Println("无：上述两类均未出现。")
+	} else {
+		if len(noSourceTableGameIDs) > 0 {
+			log.Printf("源表不存在（未迁移任何数据）gameId 共 %d 个: %v", len(noSourceTableGameIDs), noSourceTableGameIDs)
+		}
+		if len(noDataAnyFBGameIDs) > 0 {
+			log.Printf("源表存在但 fb=0/1/2/3 均无数据 gameId 共 %d 个: %v", len(noDataAnyFBGameIDs), noDataAnyFBGameIDs)
+		}
 	}
 
 	return nil

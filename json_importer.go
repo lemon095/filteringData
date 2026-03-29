@@ -482,43 +482,19 @@ func (ji *JSONImporter) skipToDataArray(file *os.File) (*bufio.Reader, error) {
 	return nil, fmt.Errorf("未找到 data 数组的起始位置")
 }
 
-// insertBatch 批量插入数据
+// insertBatch 批量插入数据（单条 INSERT 多行 VALUES，减少远程库往返）
 func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName string, rtpLevel, testNum int, batchNum int, mode int) error {
 	if len(data) == 0 {
 		return nil
 	}
 
-	// 显示当前批次进度
 	fmt.Printf("    🔄 正在处理第 %d 批数据 (%d 条记录)...\n", batchNum, len(data))
 
-	// 开始事务
-	tx, err := ji.db.DB.Begin()
-	if err != nil {
-		return fmt.Errorf("开始事务失败: %v", err)
-	}
-	defer tx.Rollback()
-
-	// 准备插入语句
-	query := fmt.Sprintf(`
-		INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "dataId", "bet", "win", "detail")
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, tableName)
-
-	stmt, err := tx.Prepare(query)
-	if err != nil {
-		return fmt.Errorf("准备语句失败: %v", err)
-	}
-	defer stmt.Close()
-
-	// 计算投注金额
-	// bet := ji.config.Bet.CS * ji.config.Bet.ML * ji.config.Bet.BL
-
-	// 批量插入数据
+	rtpLevelVal := float64(rtpLevel) + float64(mode)/10.0
+	args := make([]interface{}, 0, len(data)*7)
 	for i, item := range data {
-		// 将gd字段转换为JSON字符串以适配JSONB类型
 		detailVal := "[]"
 		if item["gd"] != nil {
-			// 将gd字段转换为JSON字符串
 			gdJSON, err := json.Marshal(item["gd"])
 			if err != nil {
 				return fmt.Errorf("序列化gd字段失败: %v", err)
@@ -526,49 +502,63 @@ func (ji *JSONImporter) insertBatch(data []map[string]interface{}, tableName str
 			detailVal = string(gdJSON)
 		}
 
-		// 精度修正：将win字段四舍五入到2位小数
 		var winValue float64
 		if aw, ok := item["aw"].(float64); ok {
-			// 四舍五入到2位小数，避免浮点数精度问题
 			winValue = math.Round(aw*100) / 100
-		} else {
-			winValue = 0.0
 		}
 
 		var totalBet float64
-		if aw, ok := item["tb"].(float64); ok {
-			// 四舍五入到2位小数，避免浮点数精度问题
-			totalBet = math.Round(aw*100) / 100
-		} else {
-			totalBet = 0.0
+		if tb, ok := item["tb"].(float64); ok {
+			totalBet = math.Round(tb*100) / 100
 		}
-		// 根据文件mode计算rtpLevel：rtpLevel + mode/10 (如档位200+mode2=200.2)
-		rtpLevelVal := float64(rtpLevel) + float64(mode)/10.0
+
 		dataID, err := parseDataID(item["id"])
 		if err != nil {
 			return fmt.Errorf("解析dataId失败: %v", err)
 		}
-		_, err = stmt.Exec(
-			rtpLevelVal, // rtpLevel
-			testNum,     // srNumber
-			i+1,         // srId (从1开始)
-			dataID,      // dataId 源数据id
-			totalBet,    // bet
-			winValue,    // win (精度修正后)
-			detailVal,   // detail (JSONB)
-		)
-		if err != nil {
-			return fmt.Errorf("插入记录 %d 失败: %v", i+1, err)
-		}
+		args = append(args, rtpLevelVal, testNum, i+1, dataID, totalBet, winValue, detailVal)
 	}
 
-	// 提交事务
+	query := fmt.Sprintf(`
+		INSERT INTO "%s" ("rtpLevel", "srNumber", "srId", "dataId", "bet", "win", "detail")
+		VALUES %s
+	`, tableName, sqlPlaceholders7PerRow(len(data)))
+
+	tx, err := ji.db.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("开始事务失败: %v", err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("批量插入失败: %v", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("提交事务失败: %v", err)
 	}
 
 	fmt.Printf("    ✅ 第 %d 批数据处理完成\n", batchNum)
 	return nil
+}
+
+// sqlPlaceholders7PerRow 生成 n 行 (每行 7 列) 的 PostgreSQL 占位符，供单语句多行 INSERT。
+func sqlPlaceholders7PerRow(rows int) string {
+	if rows <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(rows * 32)
+	for i := 0; i < rows; i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		o := i * 7
+		fmt.Fprintf(&b, "($%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			o+1, o+2, o+3, o+4, o+5, o+6, o+7)
+	}
+	return b.String()
 }
 
 // ImportS3Files 从S3导入多个游戏的文件
@@ -1016,23 +1006,9 @@ func (si *S3Importer) insertS3Batch(data []map[string]interface{}, tableName str
 	return nil
 }
 
-// generatePlaceholders 生成占位符字符串
+// generatePlaceholders 生成占位符字符串（与 JSONImporter 批量 INSERT 共用）
 func (si *S3Importer) generatePlaceholders(count int) string {
-	if count <= 0 {
-		return ""
-	}
-
-	// 生成 (?, ?, ?, ?, ?, ?, ?) 格式的占位符
-	placeholder := "($1, $2, $3, $4, $5, $6, $7)"
-	result := placeholder
-
-	for i := 1; i < count; i++ {
-		offset := i * 7
-		result += fmt.Sprintf(", ($%d, $%d, $%d, $%d, $%d, $%d, $%d)",
-			offset+1, offset+2, offset+3, offset+4, offset+5, offset+6, offset+7)
-	}
-
-	return result
+	return sqlPlaceholders7PerRow(count)
 }
 
 // importS3FilesConcurrentStream 并发流式导入S3文件 - 优化版本

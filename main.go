@@ -921,6 +921,8 @@ func main() {
 		fmt.Println("使用方法:")
 		fmt.Println("  ./filteringData generate4                   # 生成RTP测试数据V4（从默认环境库读源表）")
 		fmt.Println("  ./filteringData generate4-remote            # 同 generate4，源表从 MIGRATE_TARGET_* 远程库只读")
+		fmt.Println("  ./filteringData generateFb                  # 购买夺宝 RTP 生成（从默认环境库读源表，需 game.is_fb=true）")
+		fmt.Println("  ./filteringData generateFb-remote           # 同 generateFb，源表从 MIGRATE_TARGET_* 远程库只读")
 		fmt.Println("  ./filteringData import                     # 导入output目录下的所有JSON文件到数据库")
 		fmt.Println("  ./filteringData import [fileLevelId]       # 只导入指定fileLevelId的JSON文件")
 		fmt.Println("  ./filteringData import-remote ...          # 与 import 参数相同，写入 MIGRATE_TARGET_* 目标库（不写源环境库）")
@@ -932,7 +934,7 @@ func main() {
 		fmt.Println("  ./filteringData export [outputFile] [env]     # 导出source_table_prefix表的数据到SQL文件")
 		fmt.Println("  ./filteringData import-sql <sqlFile> [env]    # 从本地SQL文件导入数据到source_table_prefix表")
 		fmt.Println("  ./filteringData import-s3-sql [gameId] [env]  # 从S3的SQL文件导入数据到source_table_prefix表")
-		fmt.Println("  ./filteringData migrate-remote [sourceEnv]     # 按 fb=0/1/2 从源库复制 GameResultData_* 到目标库（MIGRATE_TARGET_*）")
+		fmt.Println("  ./filteringData migrate-remote [sourceEnv]     # 按 fb=0/1/2/3 从源库复制 GameResultData_* 到目标库（MIGRATE_TARGET_*）")
 		fmt.Println("  ./filteringData import-remote ...              # 将 output 下 JSON 导入目标库 GameResults_*（MIGRATE_TARGET_*，参数同 import）")
 		fmt.Println("     gameIds: 逗号分隔的游戏ID列表，如: 112,103,105")
 		fmt.Println("     level: 可选的RTP等级过滤")
@@ -969,6 +971,8 @@ func main() {
 		runGenerateMode4()
 	case "generate4-remote":
 		runGenerateMode4Remote()
+	case "generateFb-remote":
+		runGenerateFbModeRemote()
 	case "generateFb":
 		runGenerateFbMode()
 	case "import":
@@ -1178,7 +1182,7 @@ func main() {
 		}
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate4, generate4-remote, import, import-remote, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats, export, import-sql, import-s3-sql, migrate-remote")
+		fmt.Println("支持的命令: generate4, generate4-remote, generateFb, generateFb-remote, import, import-remote, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats, export, import-sql, import-s3-sql, migrate-remote")
 		os.Exit(1)
 	}
 }
@@ -2209,14 +2213,17 @@ func runGenerateMode4Connected(startTime time.Time, db *Database, config *Config
 		}
 	}
 
+	fmt.Printf("📥 正在从源表 %s 拉取中奖数据（fb=%d，可能较慢且无中间进度）…\n", db.GetTableName(), config.Game.Mode)
 	winDataAll, err := db.GetWinData()
 	if err != nil {
 		log.Fatalf("获取中奖数据失败: %v", err)
 	}
+	fmt.Printf("📥 中奖数据 %d 条；正在拉取不中奖数据…\n", len(winDataAll))
 	noWinDataAll, err := db.GetNoWinData()
 	if err != nil {
 		log.Fatalf("获取不中奖数据失败: %v", err)
 	}
+	fmt.Printf("📥 不中奖数据 %d 条\n", len(noWinDataAll))
 
 	allData := append(winDataAll, noWinDataAll...)
 	fmt.Printf("✅ 总数据量: %d 条（中奖: %d, 不中奖: %d）\n", len(allData), len(winDataAll), len(noWinDataAll))
@@ -3145,7 +3152,6 @@ func runSpStatisticsFromJSON() {
 	fmt.Printf("============================================================\n")
 }
 func runGenerateFbMode() {
-	// 加载配置
 	config, err := LoadConfig("config.yaml")
 	if err != nil {
 		log.Fatalf("加载配置文件失败: %v", err)
@@ -3154,29 +3160,47 @@ func runGenerateFbMode() {
 		fmt.Println("⚠️ 当前游戏未启用购买夺宝 (game.is_fb=false)，退出。")
 		return
 	}
-	fmt.Println("▶️ [generateFb] 购买夺宝生成模式启动")
-
-	// 连接数据库
 	db, err := NewDatabase(config, "")
 	if err != nil {
 		log.Fatalf("数据库连接失败: %v", err)
 	}
 	defer db.Close()
+	fmt.Println("▶️ [generateFb] 购买夺宝生成模式启动")
+	fmt.Printf("📂 源表: %s（fb=%d，购买模式查询条件见 GetWinDataFb 等）\n", db.GetTableName(), config.Game.Mode)
+	runGenerateFbModeCore(db, config, false)
+}
 
-	// 清理 sp=true 且 aw=0 的数据
-	// if err := db.CleanSpZeroAwData(); err != nil {
-	// 	log.Fatalf("清理数据失败: %v", err)
-	// }
+func runGenerateFbModeRemote() {
+	config, err := LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("加载配置文件失败: %v", err)
+	}
+	if !config.Game.IsFb {
+		fmt.Println("⚠️ 当前游戏未启用购买夺宝 (game.is_fb=false)，退出。")
+		return
+	}
+	db, err := openTargetDatabaseForJSONImport(config)
+	if err != nil {
+		log.Fatalf("连接远程源库失败: %v", err)
+	}
+	defer db.Close()
+	fmt.Println("📡 [generateFb-remote] 从 MIGRATE_TARGET_* 只读拉取 GameResultData_*；JSON 写入本地 output/<gameId>_fb/；不在远程库执行清理。")
+	fmt.Println("▶️ [generateFb-remote] 购买夺宝生成模式启动")
+	fmt.Printf("📂 源表: %s（fb=%d）\n", db.GetTableName(), config.Game.Mode)
+	runGenerateFbModeCore(db, config, true)
+}
 
-	// 预取共享只读数据（购买模式）
-	fmt.Println("🔄 [generateFb] 正在获取购买模式中奖数据...")
+func runGenerateFbModeCore(db *Database, config *Config, remoteSource bool) {
+	// 与 generate4-remote 一致：不在远程执行 CleanSpZeroAw（generateFb 本地模式亦未启用该清理）
+
+	fmt.Printf("📥 正在从源表 %s 拉取购买模式中奖数据（GetWinDataFb，可能较慢）…\n", db.GetTableName())
 	winDataAll, err := db.GetWinDataFb()
 	if err != nil {
 		log.Fatalf("获取购买模式中奖数据失败: %v", err)
 	}
-
 	fmt.Printf("✅ [generateFb] 购买模式中奖但是不盈利的数据条数: %d\n", len(winDataAll))
 
+	fmt.Println("🔄 [generateFb] 正在获取购买模式盈利中奖数据（GetProfitDataFb）…")
 	profitDataAll, err := db.GetProfitDataFb()
 	if err != nil {
 		log.Fatalf("获取购买模式中奖数据失败: %v", err)
@@ -3186,14 +3210,13 @@ func runGenerateFbMode() {
 	}
 	fmt.Printf("✅ [generateFb] 购买模式中奖并且盈利的数据条数: %d\n", len(profitDataAll))
 
-	fmt.Println("🔄 [generateFb] 正在获取购买模式不中奖数据...")
+	fmt.Println("🔄 [generateFb] 正在获取购买模式不中奖数据（GetNoWinDataFb）…")
 	noWinDataAll, err := db.GetNoWinDataFb()
 	if err != nil {
 		log.Fatalf("获取购买模式不中奖数据失败: %v", err)
 	}
 	fmt.Printf("✅ [generateFb] 购买模式不中奖数据条数: %d\n", len(noWinDataAll))
 
-	// 从已获取的数据中获取TB值（单次投注额），优先使用盈利数据，如果没有则使用其他数据
 	var perBetAmount float64
 	if len(profitDataAll) > 0 {
 		perBetAmount = profitDataAll[0].TB
@@ -3206,7 +3229,6 @@ func runGenerateFbMode() {
 	}
 	fmt.Printf("💰 [generateFb] 单次投注额（从已获取数据中提取）: %.2f\n", perBetAmount)
 
-	// 计算总投注：使用从已获取数据中提取的单次投注额乘以数据条数
 	totalBet := perBetAmount * float64(config.Tables.DataNumFb)
 
 	if len(winDataAll) == 0 {
@@ -3217,12 +3239,10 @@ func runGenerateFbMode() {
 		fmt.Println("⚠️ [generateFb] 未获取到购买模式不中奖数据，后续将无法补全至目标条数。")
 	}
 
-	// 失败统计
 	var failedLevels []float64
 	var failedTests []string
 	var failedMu sync.Mutex
 
-	// 遍历 RTP 档位，每档位执行多次，并统计耗时
 	fbStartTime := time.Now()
 	worker := runtime.NumCPU()
 	sem := make(chan struct{}, worker)
@@ -3249,7 +3269,6 @@ func runGenerateFbMode() {
 
 				if err := runRtpFbTest(db, config, rtpNo, rtpVal, testIndex, totalBet, winDataAll, noWinDataAll, profitDataAll); err != nil {
 					log.Printf("[generateFb] RTP测试失败: %v", err)
-					// 记录失败的档位和测试（线程安全）
 					failedMu.Lock()
 					failedLevels = append(failedLevels, rtpNo)
 					failedTests = append(failedTests, fmt.Sprintf("RTP%.0f_第%d次", rtpNo, testIndex))
@@ -3264,11 +3283,19 @@ func runGenerateFbMode() {
 		fmt.Printf("⏱️  [generateFb] RTP等级 %.0f 总耗时: %v\n", levelNo, time.Since(levelStart))
 	}
 
-	// 输出失败统计
-	printFailureSummary("generateFb", config.Game.ID, failedLevels, failedTests)
+	summaryMode := "generateFb"
+	if remoteSource {
+		summaryMode = "generateFb-remote"
+	}
+	printFailureSummary(summaryMode, config.Game.ID, failedLevels, failedTests)
 
-	fmt.Printf("\n🎉 [generateFb] 全部档位生成完成！\n")
-	fmt.Printf("⏱️  [generateFb] 整体总耗时: %v\n", time.Since(fbStartTime))
+	if remoteSource {
+		fmt.Printf("\n🎉 [generateFb-remote] 全部档位生成完成！\n")
+		fmt.Printf("⏱️  [generateFb-remote] 整体总耗时: %v\n", time.Since(fbStartTime))
+	} else {
+		fmt.Printf("\n🎉 [generateFb] 全部档位生成完成！\n")
+		fmt.Printf("⏱️  [generateFb] 整体总耗时: %v\n", time.Since(fbStartTime))
+	}
 }
 
 // runRtpFbTest 生成购买夺宝 RTP 数据（智能替换策略：精确贪心算法）
