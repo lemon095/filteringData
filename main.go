@@ -954,6 +954,10 @@ func main() {
 		fmt.Println("  ./filteringData import-s3-sql              # 从S3导入（使用配置文件中的gameId）")
 		fmt.Println("  ./filteringData import-s3-sql 20063        # 从S3导入指定游戏ID的SQL文件")
 		fmt.Println("  ./filteringData import-s3-sql 20063 hp     # 从S3导入到指定环境")
+		fmt.Println("  ./filteringData fix-history [xlsx] [output.sql]              # 只生成 SQL，不连库")
+		fmt.Println("  ./filteringData fix-history --dry-run <env> [xlsx]           # 指定环境预览 (ht/up/hp 等)")
+		fmt.Println("  ./filteringData fix-history --execute <env> [xlsx]           # 指定环境执行")
+		fmt.Println("     env: local/l, hk-test/ht, br-test/bt, br-prod/bp, us-prod/up, hk-prod/hp")
 		os.Exit(1)
 	}
 
@@ -1114,9 +1118,11 @@ func main() {
 		// S3导入SQL命令：./filteringData import-s3-sql [gameId] [env]
 		// 从S3的SQL文件导入数据到source_table_prefix表
 		handleS3SQLImportCommand()
+	case "fix-history":
+		runUpdateGameHistoryCommand()
 	default:
 		fmt.Printf("未知命令: %s\n", command)
-		fmt.Println("支持的命令: generate4, import, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats, export, import-sql, import-s3-sql")
+		fmt.Println("支持的命令: generate4, import, importFb, import-s3, import-s3-normal, import-s3-fb, sp-stats, export, import-sql, import-s3-sql, fix-history")
 		os.Exit(1)
 	}
 }
