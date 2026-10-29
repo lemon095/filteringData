@@ -258,13 +258,14 @@ func (d *Database) GetProfitData() ([]GameResultData, error) {
 	return data, nil
 }
 
-// GetWinDataFb 获取购买模式的中奖但是亏损的数据 (aw > 0&aw<tb, fb = mode, sp = true, aw < tb*100)
+// GetWinDataFb 获取购买模式的中奖但是亏损的数据 (aw > 0&aw<=tb, fb = mode)
+// 全中奖场景下不强制 sp=true，否则大量非 sp 中奖数据无法进入候选池
 func (d *Database) GetWinDataFb() ([]GameResultData, error) {
 	tableName := d.GetTableName()
 	query := fmt.Sprintf(`
         SELECT id, tb, aw, gwt, sp, fb, '[]'::jsonb AS gd, "createdAt", "updatedAt"
         FROM %s 
-        WHERE aw > 0 AND aw <= tb AND fb = %d AND sp = true
+        WHERE aw > 0 AND aw <= tb AND fb = %d
         ORDER BY id
     `, tableName, d.Config.Game.Mode)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
@@ -299,7 +300,7 @@ func (d *Database) GetProfitDataFb() ([]GameResultData, error) {
 	query := fmt.Sprintf(`
         SELECT id, tb, aw, gwt, sp, fb, '[]'::jsonb AS gd, "createdAt", "updatedAt"
         FROM %s 
-        WHERE aw > 0 AND aw > tb AND fb = %d AND sp = true
+        WHERE aw > 0 AND aw > tb AND fb = %d
         ORDER BY id
     `, tableName, d.Config.Game.Mode)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Config.Settings.Timeout)*time.Second)
@@ -379,13 +380,14 @@ func (d *Database) GetNoWinData() ([]GameResultData, error) {
 	return data, nil
 }
 
-// GetNoWinDataFb 获取购买模式的不中奖数据 (aw = 0, fb = mode, sp = true)
+// GetNoWinDataFb 获取购买模式的不中奖数据 (aw = 0, fb = mode)
+// 全中奖场景下可不存在不中奖数据；不强制 sp=true
 func (d *Database) GetNoWinDataFb() ([]GameResultData, error) {
 	tableName := d.GetTableName()
 	query := fmt.Sprintf(`
         SELECT id, tb, aw, gwt, sp, fb, '[]'::jsonb AS gd, "createdAt", "updatedAt"
         FROM %s 
-        WHERE aw = 0 AND sp = true AND fb = %d
+        WHERE aw = 0 AND fb = %d
         ORDER BY id
     `, tableName, d.Config.Game.Mode)
 
@@ -481,7 +483,7 @@ func (d *Database) GetWinDataForFilling(remainingWin float64, excludeIds []int, 
 }
 
 // GetWinDataForFillingFb 获取用于填充的购买模式中奖数据
-// 条件：aw > 0 且 aw < tb*100 且 aw <= remainingWin，fb = mode，sp = true
+// 条件：aw > 0 且 aw < tb*100 且 aw <= remainingWin，fb = mode
 // 排除 excludeIds，按金额从大到小排序，限制返回条数
 func (d *Database) GetWinDataForFillingFb(remainingWin float64, excludeIds []int, limit int) ([]GameResultData, error) {
 	tableName := d.GetTableName()
@@ -507,7 +509,6 @@ func (d *Database) GetWinDataForFillingFb(remainingWin float64, excludeIds []int
         AND aw < tb * 100
         AND aw <= $%d
         AND fb = %d
-        AND sp = true
         %s
         ORDER BY aw DESC
         LIMIT $%d

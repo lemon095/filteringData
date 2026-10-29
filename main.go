@@ -2580,8 +2580,8 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 	// 智能打乱输出顺序，确保大倍率数据在整个序列中均匀分布（使用从数据库获取的单次投注额，虽然函数内部已改为使用item.TB）
 	ShuffleDataWithMultiplierDistribution(adjustedData, perBetAmount, rng)
 
-	// 确保前30%数据中不出现大于20倍的大奖
-	ensureNoHighMultiplierInFirst30Percent(adjustedData, rng, printf)
+	// 确保前10%数据中不出现大于20倍的大奖
+	ensureNoHighMultiplierInFirst10Percent(adjustedData, rng, printf)
 
 	// 保存到JSON文件
 	var outputDir string = filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
@@ -2599,24 +2599,24 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 	return nil
 }
 
-// ensureNoHighMultiplierInFirst30Percent 确保前30%数据中不出现大于20倍的大奖
+// ensureNoHighMultiplierInFirst10Percent 确保前10%数据中不出现大于20倍的大奖
 // 直接使用数据中的TB字段计算倍率
-func ensureNoHighMultiplierInFirst30Percent(data []GameResultData, rng *rand.Rand, printf func(string, ...interface{})) {
+func ensureNoHighMultiplierInFirst10Percent(data []GameResultData, rng *rand.Rand, printf func(string, ...interface{})) {
 	if len(data) == 0 {
 		return
 	}
 
-	// 计算前30%的数据量
-	first30PercentCount := int(math.Ceil(float64(len(data)) * 0.3))
-	if first30PercentCount == 0 {
+	// 计算前10%的数据量
+	first10PercentCount := int(math.Ceil(float64(len(data)) * 0.1))
+	if first10PercentCount == 0 {
 		return
 	}
 
-	// 检查前30%中是否有大于20倍的大奖
-	var highMultiplierIndices []int // 存储前30%中大于20倍的数据索引
-	var lowMultiplierIndices []int  // 存储后70%中小于等于20倍的数据索引
+	// 检查前10%中是否有大于20倍的大奖
+	var highMultiplierIndices []int // 存储前10%中大于20倍的数据索引
+	var lowMultiplierIndices []int  // 存储后90%中小于等于20倍的数据索引
 
-	for i := 0; i < first30PercentCount; i++ {
+	for i := 0; i < first10PercentCount; i++ {
 		// 直接使用数据中的TB字段计算倍率
 		if data[i].TB <= 0 {
 			continue // 跳过TB为0或负数的异常数据
@@ -2627,15 +2627,15 @@ func ensureNoHighMultiplierInFirst30Percent(data []GameResultData, rng *rand.Ran
 		}
 	}
 
-	// 如果前30%中没有大于20倍的大奖，直接返回
+	// 如果前10%中没有大于20倍的大奖，直接返回
 	if len(highMultiplierIndices) == 0 {
 		return
 	}
 
-	printf("🔄 前30%%数据中发现 %d 条大于20倍的大奖，开始调整...\n", len(highMultiplierIndices))
+	printf("🔄 前10%%数据中发现 %d 条大于20倍的大奖，开始调整...\n", len(highMultiplierIndices))
 
-	// 在后70%中查找小于等于20倍的数据用于替换
-	for i := first30PercentCount; i < len(data); i++ {
+	// 在后90%中查找小于等于20倍的数据用于替换
+	for i := first10PercentCount; i < len(data); i++ {
 		if data[i].TB <= 0 {
 			continue // 跳过TB为0或负数的异常数据
 		}
@@ -2645,9 +2645,9 @@ func ensureNoHighMultiplierInFirst30Percent(data []GameResultData, rng *rand.Ran
 		}
 	}
 
-	// 如果后70%中没有足够的小于等于20倍数据，输出警告
+	// 如果后90%中没有足够的小于等于20倍数据，输出警告
 	if len(lowMultiplierIndices) < len(highMultiplierIndices) {
-		printf("⚠️ 后70%%中小于等于20倍的数据不足（需要 %d 条，实际 %d 条），无法完全调整\n", len(highMultiplierIndices), len(lowMultiplierIndices))
+		printf("⚠️ 后90%%中小于等于20倍的数据不足（需要 %d 条，实际 %d 条），无法完全调整\n", len(highMultiplierIndices), len(lowMultiplierIndices))
 		// 只调整能调整的部分
 		if len(lowMultiplierIndices) == 0 {
 			return
@@ -2656,7 +2656,7 @@ func ensureNoHighMultiplierInFirst30Percent(data []GameResultData, rng *rand.Ran
 		highMultiplierIndices = highMultiplierIndices[:len(lowMultiplierIndices)]
 	}
 
-	// 执行交换：将前30%中的大于20倍数据与后70%中的小于等于20倍数据交换
+	// 执行交换：将前10%中的大于20倍数据与后90%中的小于等于20倍数据交换
 	// 使用随机交换，避免大奖位置变得可预测
 	swappedCount := 0
 	swapCount := len(highMultiplierIndices)
@@ -2664,7 +2664,7 @@ func ensureNoHighMultiplierInFirst30Percent(data []GameResultData, rng *rand.Ran
 		swapCount = len(lowMultiplierIndices)
 	}
 
-	// 随机打乱后70%中可交换数据的顺序
+	// 随机打乱后90%中可交换数据的顺序
 	perm := rng.Perm(len(lowMultiplierIndices))
 	for i := 0; i < swapCount; i++ {
 		highIdx := highMultiplierIndices[i]
@@ -2675,7 +2675,7 @@ func ensureNoHighMultiplierInFirst30Percent(data []GameResultData, rng *rand.Ran
 		swappedCount++
 	}
 
-	printf("✅ 已调整 %d 条数据，前30%%数据中不再包含大于20倍的大奖\n", swappedCount)
+	printf("✅ 已调整 %d 条数据，前10%%数据中不再包含大于20倍的大奖\n", swappedCount)
 }
 
 // parseGameIds 解析游戏ID字符串
@@ -3062,9 +3062,6 @@ func runGenerateFbMode() {
 	if err != nil {
 		log.Fatalf("获取购买模式中奖数据失败: %v", err)
 	}
-	if len(profitDataAll) == 0 {
-		return
-	}
 	fmt.Printf("✅ [generateFb] 购买模式中奖并且盈利的数据条数: %d\n", len(profitDataAll))
 
 	fmt.Println("🔄 [generateFb] 正在获取购买模式不中奖数据...")
@@ -3090,12 +3087,13 @@ func runGenerateFbMode() {
 	// 计算总投注：使用从已获取数据中提取的单次投注额乘以数据条数
 	totalBet := perBetAmount * float64(config.Tables.DataNumFb)
 
-	if len(winDataAll) == 0 {
-		fmt.Println("⚠️ [generateFb] 未获取到购买模式中奖数据，无法继续。请检查数据条件 (aw>0, gwt<=3, fb=2, sp=true)。")
+	// 全中奖场景：只要有中奖(不盈利)或盈利数据即可继续；不中奖可选
+	if len(winDataAll) == 0 && len(profitDataAll) == 0 {
+		fmt.Printf("⚠️ [generateFb] 未获取到购买模式中奖数据，无法继续。请检查数据条件 (aw>0, fb=%d)。\n", config.Game.Mode)
 		return
 	}
 	if len(noWinDataAll) == 0 {
-		fmt.Println("⚠️ [generateFb] 未获取到购买模式不中奖数据，后续将无法补全至目标条数。")
+		fmt.Println("⚠️ [generateFb] 无不中奖数据，将按全中奖模式生成（用不中奖补条数的逻辑会跳过，条数不足时用中奖数据重复补齐）。")
 	}
 
 	// 失败统计
