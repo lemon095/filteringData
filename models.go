@@ -69,7 +69,7 @@ func (j *JsonData) UnmarshalJSON(data []byte) error {
 
 // FilterCriteria 筛选条件
 type FilterCriteria struct {
-	MaxAWRatio float64 // aw/tb 的最大比例 (100)
+	MaxAWRatio float64 // aw/tb 的最大比例 (99)
 	TotalCount int     // 总数量
 
 	// 目标比例（可调整）

@@ -187,13 +187,13 @@ func (d *Database) GetTableName() string {
 	return fmt.Sprintf("\"%s%d\"", d.Config.Tables.SourceTablePrefix, d.Config.Game.ID)
 }
 
-// GetWinData 获取所有中奖数据 (aw > 0 且 aw/tb < 100)
+// GetWinData 获取所有中奖数据 (aw > 0 且 aw/tb <= 99)
 func (d *Database) GetWinData() ([]GameResultData, error) {
 	tableName := d.GetTableName()
 	query := fmt.Sprintf(`
 		SELECT id, tb, aw, gwt, sp, fb, '[]'::jsonb AS gd, "createdAt", "updatedAt"
 		FROM %s 
-		WHERE aw > 0 AND aw < tb * 100
+		WHERE aw > 0 AND aw <= tb * 99
 		AND fb = %d
 		ORDER BY id
 	`, tableName, d.Config.Game.Mode)
@@ -440,7 +440,7 @@ func (d *Database) GetWinDataForFilling(remainingWin float64, excludeIds []int, 
 	}
 
 	// 查询条件：
-	// 1. 中奖金额 > 0 且 < tb * 100
+	// 1. 中奖金额 > 0 且 <= tb * 99
 	// 2. 中奖金额 <= remainingWin（比需要填充金额低的）
 	// 3. 排除已使用的ID
 	// 4. 按中奖金额降序排列，优先选择金额大的
@@ -450,7 +450,7 @@ func (d *Database) GetWinDataForFilling(remainingWin float64, excludeIds []int, 
         FROM %s 
         WHERE aw > 0 
         AND fb = %d
-        AND aw < tb * 100
+        AND aw <= tb * 99
         AND aw <= $%d
         %s
         ORDER BY aw DESC
@@ -483,7 +483,7 @@ func (d *Database) GetWinDataForFilling(remainingWin float64, excludeIds []int, 
 }
 
 // GetWinDataForFillingFb 获取用于填充的购买模式中奖数据
-// 条件：aw > 0 且 aw < tb*100 且 aw <= remainingWin，fb = mode
+// 条件：aw > 0 且 aw <= tb*99 且 aw <= remainingWin，fb = mode
 // 排除 excludeIds，按金额从大到小排序，限制返回条数
 func (d *Database) GetWinDataForFillingFb(remainingWin float64, excludeIds []int, limit int) ([]GameResultData, error) {
 	tableName := d.GetTableName()
@@ -506,7 +506,7 @@ func (d *Database) GetWinDataForFillingFb(remainingWin float64, excludeIds []int
         SELECT id, tb, aw, gwt, sp, fb, gd, "createdAt", "updatedAt"
         FROM %s 
         WHERE aw > 0 
-        AND aw < tb * 100
+        AND aw <= tb * 99
         AND aw <= $%d
         AND fb = %d
         %s
@@ -564,7 +564,7 @@ func (d *Database) GetBestSingleMatch(targetWin float64, excludeIds []int, maxDe
 	}
 
 	// 查询条件：
-	// 1. 中奖金额 > 0 且 < tb * 100
+	// 1. 中奖金额 > 0 且 <= tb * 99
 	// 2. 中奖金额在允许偏差范围内
 	// 3. 排除已使用的ID
 	// 4. 按与目标金额的差值排序，选择最接近的
@@ -573,7 +573,7 @@ func (d *Database) GetBestSingleMatch(targetWin float64, excludeIds []int, maxDe
 		FROM %s 
 		WHERE aw > 0
 		AND fb = %d
-		AND aw < tb * 100
+		AND aw <= tb * 99
 		AND aw >= $%d * (1 - $%d)
 		AND aw <= $%d * (1 + $%d)
 		%s

@@ -26,8 +26,8 @@ type RtpMultiplierDistribution struct {
 		HighMultiplier      float64 `yaml:"high_multiplier"`       // 5-10倍
 		VeryHighMultiplier  float64 `yaml:"very_high_multiplier"`  // 10-20倍
 		MegaMultiplier      float64 `yaml:"mega_multiplier"`       // 20-50倍
-		SuperMegaMultiplier float64 `yaml:"super_mega_multiplier"` // 50-100倍
-		UltraMegaMultiplier float64 `yaml:"ultra_mega_multiplier"` // 100-500倍
+		SuperMegaMultiplier float64 `yaml:"super_mega_multiplier"` // 50-99倍
+		UltraMegaMultiplier float64 `yaml:"ultra_mega_multiplier"` // >99倍（禁用，不入选）
 	} `yaml:"multiplier_distribution"`
 }
 
@@ -82,8 +82,8 @@ func ClassifyDataByMultiplier(data []GameResultData, betAmount float64) map[stri
 	ranges["high_multiplier"] = MultiplierRange{Min: 5, Max: 10, Count: 0, Percentage: 0, Data: []GameResultData{}}
 	ranges["very_high_multiplier"] = MultiplierRange{Min: 10, Max: 20, Count: 0, Percentage: 0, Data: []GameResultData{}}
 	ranges["mega_multiplier"] = MultiplierRange{Min: 20, Max: 50, Count: 0, Percentage: 0, Data: []GameResultData{}}
-	ranges["super_mega_multiplier"] = MultiplierRange{Min: 50, Max: 100, Count: 0, Percentage: 0, Data: []GameResultData{}}
-	ranges["ultra_mega_multiplier"] = MultiplierRange{Min: 100, Max: 500, Count: 0, Percentage: 0, Data: []GameResultData{}}
+	ranges["super_mega_multiplier"] = MultiplierRange{Min: 50, Max: 99, Count: 0, Percentage: 0, Data: []GameResultData{}}
+	ranges["ultra_mega_multiplier"] = MultiplierRange{Min: 99, Max: 500, Count: 0, Percentage: 0, Data: []GameResultData{}} // 仅占位，>99 不入池
 
 	// 分类数据
 	for _, item := range data {
@@ -128,16 +128,14 @@ func ClassifyDataByMultiplier(data []GameResultData, betAmount float64) map[stri
 			rangeData.Data = append(rangeData.Data, item)
 			rangeData.Count++
 			ranges["mega_multiplier"] = rangeData
-		} else if multiplier > 50 && multiplier <= 100 {
+		} else if multiplier > 50 && multiplier <= 99 {
 			rangeData := ranges["super_mega_multiplier"]
 			rangeData.Data = append(rangeData.Data, item)
 			rangeData.Count++
 			ranges["super_mega_multiplier"] = rangeData
-		} else if multiplier > 100 && multiplier <= 500 {
-			rangeData := ranges["ultra_mega_multiplier"]
-			rangeData.Data = append(rangeData.Data, item)
-			rangeData.Count++
-			ranges["ultra_mega_multiplier"] = rangeData
+		} else if multiplier > 99 {
+			// 超过99倍最开始就不选入（ultra 池保持空）
+			continue
 		}
 	}
 
@@ -166,7 +164,8 @@ func GenerateDataByDistribution(distribution *RtpMultiplierDistribution, totalCo
 	allocations["very_high_multiplier"] = int(float64(totalCount) * distribution.MultiplierDistribution.VeryHighMultiplier)
 	allocations["mega_multiplier"] = int(float64(totalCount) * distribution.MultiplierDistribution.MegaMultiplier)
 	allocations["super_mega_multiplier"] = int(float64(totalCount) * distribution.MultiplierDistribution.SuperMegaMultiplier)
-	allocations["ultra_mega_multiplier"] = int(float64(totalCount) * distribution.MultiplierDistribution.UltraMegaMultiplier)
+	// 超过99倍不允许选中：强制 ultra 配额为 0
+	allocations["ultra_mega_multiplier"] = 0
 
 	// 创建随机数生成器
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -1233,7 +1232,7 @@ func ShuffleDataWithMultiplierDistribution(data []GameResultData, betAmount floa
 	// 步骤1：按倍率分类，将数据分成三类
 	var zeroWinData []GameResultData       // 不中奖数据（multiplier == 0）
 	var normalWinData []GameResultData     // 普通中奖数据（0 < multiplier <= 20）
-	var bigMultiplierData []GameResultData // 大倍率数据（20 < multiplier <= 100）
+	var bigMultiplierData []GameResultData // 大倍率数据（20 < multiplier <= 99）
 
 	for _, item := range data {
 		// 直接使用数据中的TB字段计算倍率
@@ -1248,12 +1247,10 @@ func ShuffleDataWithMultiplierDistribution(data []GameResultData, betAmount floa
 			zeroWinData = append(zeroWinData, item)
 		} else if multiplier > 0 && multiplier <= 20 {
 			normalWinData = append(normalWinData, item)
-		} else if multiplier > 20 && multiplier <= 100 {
+		} else if multiplier > 20 && multiplier <= 99 {
 			bigMultiplierData = append(bigMultiplierData, item)
-		} else {
-			// 超过100倍的数据也归入普通中奖数据
-			normalWinData = append(normalWinData, item)
 		}
+		// multiplier > 99：丢弃，不参与打散选序
 	}
 
 	// 步骤2：计算参数

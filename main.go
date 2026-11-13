@@ -156,10 +156,10 @@ func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, tes
 			break
 		}
 
-		// 判断本条是什么奖励配额（基于aw < tb * 100条件）
+		// 判断本条是什么奖励配额（不超过99倍：aw <= tb * 99）
 		// 根据中奖金额判断奖励类型
 		var rewardType int
-		if item.AW < item.TB*100 {
+		if item.AW <= item.TB*99 {
 			// 根据中奖金额范围判断奖励类型
 			if item.AW >= item.TB*50 {
 				rewardType = 4 // 超级巨奖
@@ -169,7 +169,7 @@ func runRtpTest(db *Database, config *Config, rtpLevel float64, rtp float64, tes
 				rewardType = 2 // 大奖
 			}
 		} else {
-			continue // 不符合aw < tb * 100条件，跳过
+			continue // 超过99倍，跳过
 		}
 
 		switch rewardType {
@@ -2582,6 +2582,9 @@ func runRtpTestV4(db *Database, config *Config, rtpConfig *RtpMultiplierConfig, 
 
 	// 确保前10%数据中不出现大于20倍的大奖
 	ensureNoHighMultiplierInFirst10Percent(adjustedData, rng, printf)
+
+	// 体验序列优化（仅 1–13/20/30/40/50）：大奖间距 + 连黑缓冲（缓冲内用≤10x小/中奖）
+	OptimizePlayExperience(adjustedData, rtpLevel, rng, printf)
 
 	// 保存到JSON文件
 	var outputDir string = filepath.Join("output", fmt.Sprintf("%d", config.Game.ID))
